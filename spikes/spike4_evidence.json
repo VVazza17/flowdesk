@@ -1,0 +1,141 @@
+{
+  "run_at_utc": "2026-08-01T04:13:07.488256+00:00",
+  "user_agent_used": "FlowDesk Research kyle.deng01@gmail.com",
+  "ua_test": {
+    "without": {
+      "ok": false,
+      "status": 403
+    },
+    "with": {
+      "ok": true,
+      "status": 200,
+      "len": 798160
+    }
+  },
+  "cik": {
+    "ticker": "NVDA",
+    "cik": "0001045810",
+    "total_tickers_in_file": 10432
+  },
+  "submission_fields": [
+    "accessionNumber",
+    "filingDate",
+    "reportDate",
+    "acceptanceDateTime",
+    "act",
+    "form",
+    "fileNumber",
+    "filmNumber",
+    "items",
+    "core_type",
+    "size",
+    "isXBRL",
+    "isInlineXBRL",
+    "isXBRLNumeric",
+    "primaryDocument",
+    "primaryDocDescription"
+  ],
+  "form_counts": {
+    "SCHEDULE 13G": 3,
+    "3": 8,
+    "4": 566,
+    "8-K": 61,
+    "144": 243,
+    "424B5": 4,
+    "FWP": 2,
+    "10-Q": 18,
+    "SD": 6,
+    "13F-HR": 10,
+    "PX14A6G": 2,
+    "ARS": 4,
+    "DEFA14A": 7,
+    "DEF 14A": 7,
+    "SCHEDULE 13G/A": 4,
+    "144/A": 5,
+    "10-K": 6,
+    "UPLOAD": 7,
+    "N-PX": 1,
+    "CORRESP": 4,
+    "S-3ASR": 1,
+    "PRE 14A": 3,
+    "5/A": 2,
+    "5": 6,
+    "SC 13G/A": 13,
+    "SC 13G": 1,
+    "4/A": 3,
+    "EFFECT": 1,
+    "S-3/A": 1,
+    "S-3": 1,
+    "S-8": 4,
+    "8-K/A": 1
+  },
+  "filings_4": [
+    {
+      "form": "4",
+      "filingDate": "2026-07-06",
+      "reportDate": "2026-07-01",
+      "acceptanceDateTime": "2026-07-06T21:01:46.000Z",
+      "accessionNumber": "0001197647-26-000005",
+      "primaryDocument": "xslF345X06/wk-form4_1783371701.xml"
+    },
+    {
+      "form": "4",
+      "filingDate": "2026-06-29",
+      "reportDate": "2026-06-25",
+      "acceptanceDateTime": "2026-06-29T21:07:02.000Z",
+      "accessionNumber": "0001199039-26-000009",
+      "primaryDocument": "xslF345X06/wk-form4_1782767219.xml"
+    },
+    {
+      "form": "4",
+      "filingDate": "2026-06-29",
+      "reportDate": "2026-06-25",
+      "acceptanceDateTime": "2026-06-29T21:06:22.000Z",
+      "accessionNumber": "0001725292-26-000004",
+      "primaryDocument": "xslF345X06/wk-form4_1782767179.xml"
+    }
+  ],
+  "filings_8-K": [
+    {
+      "form": "8-K",
+      "filingDate": "2026-07-02",
+      "reportDate": "2026-06-28",
+      "acceptanceDateTime": "2026-07-02T13:23:16.000Z",
+      "accessionNumber": "0001045810-26-000060",
+      "primaryDocument": "nvda-20260628.htm"
+    },
+    {
+      "form": "8-K",
+      "filingDate": "2026-06-30",
+      "reportDate": "2026-06-24",
+      "acceptanceDateTime": "2026-06-30T20:27:26.000Z",
+      "accessionNumber": "0001045810-26-000056",
+      "primaryDocument": "nvda-20260624.htm"
+    },
+    {
+      "form": "8-K",
+      "filingDate": "2026-06-18",
+      "reportDate": "2026-06-15",
+      "acceptanceDateTime": "2026-06-18T20:00:24.000Z",
+      "accessionNumber": "0001193125-26-275783",
+      "primaryDocument": "d48176d8k.htm"
+    }
+  ],
+  "rate_limit_test": {
+    "statuses": [
+      "200",
+      "200",
+      "200",
+      "200",
+      "200",
+      "200",
+      "200",
+      "200",
+      "200",
+      "200",
+      "200",
+      "200"
+    ],
+    "blocked": 0
+  }
+}

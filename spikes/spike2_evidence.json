@@ -1,0 +1,242 @@
+{
+  "run_at_utc": "2026-07-31T21:56:11.356124+00:00",
+  "split_auto_adjust_true": {
+    "empty": false,
+    "columns": [
+      "Open",
+      "High",
+      "Low",
+      "Close",
+      "Volume",
+      "Dividends",
+      "Stock Splits"
+    ],
+    "rows": [
+      {
+        "date": "2024-06-05",
+        "Open": 118.16651413530396,
+        "Close": 122.22848510742188,
+        "Volume": 528402000.0,
+        "Dividends": 0.0,
+        "Stock Splits": 0.0
+      },
+      {
+        "date": "2024-06-06",
+        "Open": 123.83369734866147,
+        "Close": 120.78897094726562,
+        "Volume": 664696000.0,
+        "Dividends": 0.0,
+        "Stock Splits": 0.0
+      },
+      {
+        "date": "2024-06-07",
+        "Open": 119.56309618694148,
+        "Close": 120.67916870117188,
+        "Volume": 412386000.0,
+        "Dividends": 0.0,
+        "Stock Splits": 0.0
+      },
+      {
+        "date": "2024-06-10",
+        "Open": 120.16206756268633,
+        "Close": 121.5796127319336,
+        "Volume": 313434100.0,
+        "Dividends": 0.0,
+        "Stock Splits": 10.0
+      },
+      {
+        "date": "2024-06-11",
+        "Open": 121.56962984389475,
+        "Close": 120.71105194091797,
+        "Volume": 222551200.0,
+        "Dividends": 0.01,
+        "Stock Splits": 0.0
+      },
+      {
+        "date": "2024-06-12",
+        "Open": 122.85750238613136,
+        "Close": 124.99398040771484,
+        "Volume": 299595000.0,
+        "Dividends": 0.0,
+        "Stock Splits": 0.0
+      },
+      {
+        "date": "2024-06-13",
+        "Open": 129.177104537848,
+        "Close": 129.39674377441406,
+        "Volume": 260704500.0,
+        "Dividends": 0.0,
+        "Stock Splits": 0.0
+      }
+    ]
+  },
+  "split_auto_adjust_false": {
+    "empty": false,
+    "columns": [
+      "Open",
+      "High",
+      "Low",
+      "Close",
+      "Adj Close",
+      "Volume",
+      "Dividends",
+      "Stock Splits"
+    ],
+    "rows": [
+      {
+        "date": "2024-06-05",
+        "Open": 118.37100219726562,
+        "Close": 122.44000244140625,
+        "Adj Close": 122.22848510742188,
+        "Volume": 528402000.0,
+        "Dividends": 0.0,
+        "Stock Splits": 0.0
+      },
+      {
+        "date": "2024-06-06",
+        "Open": 124.0479965209961,
+        "Close": 120.99800109863281,
+        "Adj Close": 120.78897094726562,
+        "Volume": 664696000.0,
+        "Dividends": 0.0,
+        "Stock Splits": 0.0
+      },
+      {
+        "date": "2024-06-07",
+        "Open": 119.7699966430664,
+        "Close": 120.88800048828125,
+        "Adj Close": 120.67916870117188,
+        "Volume": 412386000.0,
+        "Dividends": 0.0,
+        "Stock Splits": 0.0
+      },
+      {
+        "date": "2024-06-10",
+        "Open": 120.37000274658203,
+        "Close": 121.79000091552734,
+        "Adj Close": 121.5796127319336,
+        "Volume": 313434100.0,
+        "Dividends": 0.0,
+        "Stock Splits": 10.0
+      },
+      {
+        "date": "2024-06-11",
+        "Open": 121.7699966430664,
+        "Close": 120.91000366210938,
+        "Adj Close": 120.71105194091797,
+        "Volume": 222551200.0,
+        "Dividends": 0.01,
+        "Stock Splits": 0.0
+      },
+      {
+        "date": "2024-06-12",
+        "Open": 123.05999755859375,
+        "Close": 125.19999694824219,
+        "Adj Close": 124.99398040771484,
+        "Volume": 299595000.0,
+        "Dividends": 0.0,
+        "Stock Splits": 0.0
+      },
+      {
+        "date": "2024-06-13",
+        "Open": 129.38999938964844,
+        "Close": 129.61000061035156,
+        "Adj Close": 129.39674377441406,
+        "Volume": 260704500.0,
+        "Dividends": 0.0,
+        "Stock Splits": 0.0
+      }
+    ]
+  },
+  "dividend_rows": {
+    "empty": false,
+    "columns": [
+      "Open",
+      "High",
+      "Low",
+      "Close",
+      "Adj Close",
+      "Volume",
+      "Dividends",
+      "Stock Splits"
+    ],
+    "rows": [
+      {
+        "date": "2025-03-14",
+        "Open": 68.51000213623047,
+        "Close": 69.16000366210938,
+        "Adj Close": 66.78047943115234,
+        "Volume": 14205100.0,
+        "Dividends": 0.51,
+        "Stock Splits": 0.0
+      },
+      {
+        "date": "2025-06-13",
+        "Open": 71.7699966430664,
+        "Close": 71.0199966430664,
+        "Adj Close": 69.06404876708984,
+        "Volume": 17467200.0,
+        "Dividends": 0.51,
+        "Stock Splits": 0.0
+      }
+    ]
+  },
+  "holiday_window": {
+    "empty": false,
+    "columns": [
+      "Open",
+      "High",
+      "Low",
+      "Close",
+      "Adj Close",
+      "Volume",
+      "Dividends",
+      "Stock Splits",
+      "Capital Gains"
+    ],
+    "rows": [
+      {
+        "date": "2025-07-01",
+        "Open": 616.3599853515625,
+        "Close": 617.6500244140625,
+        "Adj Close": 610.8812866210938,
+        "Volume": 70030100.0,
+        "Dividends": 0.0,
+        "Stock Splits": 0.0
+      },
+      {
+        "date": "2025-07-02",
+        "Open": 617.239990234375,
+        "Close": 620.4500122070312,
+        "Adj Close": 613.6505737304688,
+        "Volume": 66510400.0,
+        "Dividends": 0.0,
+        "Stock Splits": 0.0
+      },
+      {
+        "date": "2025-07-03",
+        "Open": 622.4500122070312,
+        "Close": 625.3400268554688,
+        "Adj Close": 618.4869995117188,
+        "Volume": 51065800.0,
+        "Dividends": 0.0,
+        "Stock Splits": 0.0
+      },
+      {
+        "date": "2025-07-07",
+        "Open": 623.3599853515625,
+        "Close": 620.6799926757812,
+        "Adj Close": 613.8780517578125,
+        "Volume": 74814500.0,
+        "Dividends": 0.0,
+        "Stock Splits": 0.0
+      }
+    ]
+  },
+  "bad_ticker": {
+    "raised": false,
+    "empty": true,
+    "columns": [],
+    "rows": []
+  }
+}

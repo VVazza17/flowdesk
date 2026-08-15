@@ -1,0 +1,48 @@
+{
+  "run_at_utc": "2026-08-01T00:05:41.302213+00:00",
+  "metadata": {
+    "id": "DGS10",
+    "title": "Market Yield on U.S. Treasury Securities at 10-Year Constant Maturity, Quoted on an Investment Basis",
+    "frequency": "Daily",
+    "units": "Percent",
+    "seasonal_adjustment": "Not Seasonally Adjusted",
+    "last_updated": "2026-07-31 15:16:25-05",
+    "observation_start": "1962-01-02",
+    "observation_end": "2026-07-30"
+  },
+  "as_of_past": {
+    "as_of": "2025-05-01",
+    "observations": [
+      [
+        "2025-01-01",
+        "23526.085"
+      ]
+    ]
+  },
+  "as_of_today": {
+    "as_of": "2026-07-31",
+    "observations": [
+      [
+        "2025-01-01",
+        "23548.21"
+      ],
+      [
+        "2025-04-01",
+        "23770.976"
+      ],
+      [
+        "2025-07-01",
+        "24026.834"
+      ],
+      [
+        "2025-10-01",
+        "24055.749"
+      ]
+    ]
+  },
+  "bad_series": {
+    "ok": false,
+    "status": 400,
+    "body": "{\"error_code\":400,\"error_message\":\"Bad Request.  The series does not exist.\"}"
+  }
+}

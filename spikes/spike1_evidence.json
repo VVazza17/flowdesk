@@ -1,0 +1,82 @@
+{
+  "run_at_utc": "2026-07-31T06:58:06.270060+00:00",
+  "assumptions_under_test": [
+    "foreign ticker retrievable",
+    "price field + timestamp understood",
+    "FX direction explicit and verifiable",
+    "ADR ratio convention unambiguous",
+    "premium reproducible by hand"
+  ],
+  "us_leg": {
+    "ticker": "SKHY",
+    "timestamp": "2026-07-30 00:00:00-04:00",
+    "close": 149.0,
+    "columns_returned": [
+      "Open",
+      "High",
+      "Low",
+      "Close",
+      "Volume",
+      "Dividends",
+      "Stock Splits"
+    ],
+    "last_5_closes": [
+      154.57000732421875,
+      143.02000427246094,
+      130.1699981689453,
+      126.79000091552734,
+      149.0
+    ]
+  },
+  "foreign_leg": {
+    "ticker": "000660.KS",
+    "timestamp": "2026-07-31 00:00:00+09:00",
+    "close": 1718000.0,
+    "columns_returned": [
+      "Open",
+      "High",
+      "Low",
+      "Close",
+      "Volume",
+      "Dividends",
+      "Stock Splits"
+    ],
+    "last_5_closes": [
+      1816000.0,
+      1550000.0,
+      1401000.0,
+      1322000.0,
+      1718000.0
+    ]
+  },
+  "fx_raw": {
+    "ticker": "KRW=X",
+    "timestamp": "2026-07-31 00:00:00+01:00",
+    "close": 1428.5999755859375,
+    "columns_returned": [
+      "Open",
+      "High",
+      "Low",
+      "Close",
+      "Volume",
+      "Dividends",
+      "Stock Splits"
+    ],
+    "last_5_closes": [
+      1458.010009765625,
+      1464.43994140625,
+      1453.1600341796875,
+      1442.280029296875,
+      1428.5999755859375
+    ]
+  },
+  "fx_interpretation": {
+    "raw_rate": 1428.5999755859375,
+    "inferred_usd_per_krw": 0.0006999860122424067
+  },
+  "computed": {
+    "implied_us_price": 120.25759690324549,
+    "premium_pct": 23.900696369211104,
+    "adr_ratio_used": 0.1
+  }
+}
