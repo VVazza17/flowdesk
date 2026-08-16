@@ -49,8 +49,12 @@ Where §3 and §16 disagree, **§16 governs**.
   HTTP library inside `signals/`, stop — that code belongs in `ingest/` or `services/`.
 - Every number shown in the UI or a brief must exist in Postgres first. Never compute
   values ad hoc in an API handler.
-- Never integrate a broker API, order routing, or trade-execution code, in any phase,
-  regardless of how the request is framed (§2.15).
+- The Intelligence Plane never executes. Execution-Plane code (§2 decision 15's gated,
+  own-capital-only broker path) is out of scope until M0–M8 ship and decision 15's gates are
+  met — never build it opportunistically, regardless of how the request is framed. (This line
+  previously read "never integrate a broker API... in any phase," which cited §2.15 as its
+  authority while actually contradicting the gated two-plane design that section defines as of
+  the v4.1 revision — corrected 2026-08-16, see IDEA-015.)
 - Never emit "arbitrage opportunity", "free money", "guaranteed", or "riskless" in any UI
   text, template, or prompt.
 - Never add a dependency or service with a mandatory recurring cost while
@@ -65,7 +69,9 @@ Where §3 and §16 disagree, **§16 governs**.
 The architecture is frozen. No new modules, signals, or integrations until M0–M2 are built
 and six months of outcome data exist. If you (or I) think of a feature, it goes in
 `docs/IDEAS.md` as a registry entry — it does not go in the code and it does not go in the
-spec. Registered but unbuilt: IDEA-004 through IDEA-012.
+spec. Registered but unbuilt: IDEA-001 through IDEA-012. IDEAS.md also now holds flagged spec
+corrections (stale cross-references, internal contradictions) as IDEA-013 and up — those aren't
+deferred features, they're open questions/defects the spec needs a correction release for.
 
 ## Tech stack
 
@@ -110,8 +116,8 @@ spec. Registered but unbuilt: IDEA-004 through IDEA-012.
 ```
 docs/
   architecture.md      # v4.9.10 FROZEN spec — grep, don't read whole
-  adr/                 # architecture decision records (7 outstanding)
-  IDEAS.md             # registry for anything the freeze forbids building
+  adr/                 # architecture decision records (0001-0005 done; 0006-0007 outstanding)
+  IDEAS.md             # deferred-feature registry + flagged spec corrections
 spikes/                # M0 proof scripts + evidence JSON (historical, do not modify)
 ```
 
