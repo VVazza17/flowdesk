@@ -660,13 +660,138 @@ gates are met — never build it opportunistically." This preserves the practica
 Requires an explicit owner decision between (a) and (b), then a matching edit to CLAUDE.md's
 §17.1 hard-rule line. Not resolved by this entry.
 
-**Broader pattern:** this is the third confirmed stale internal cross-reference found in one
-sitting — IDEA-014 (`events.episode_id`'s `§7.15` comment, stale since the v4.7 section
-renumbering), IDEA-006's "enters §7.16 when the simulator is built" line (same v4.7 renumbering,
-should read §7.17), and this entry (pre-v4.1 text surviving the decision-15 revision). A
-systematic pass — grep every `§` cross-reference in the spec and CLAUDE.md, and check the target
-section actually still says what the citing text claims — is worth doing as its own piece of work,
-separate from the remaining ADRs.
+**Broader pattern (updated as later ADRs surfaced more instances — see IDEA-016, IDEA-018):**
+this is now five confirmed instances of the same drift class, found across ADR-0004 through
+ADR-0006 — a revision or renumbering happened somewhere in the document and a dependent reference
+elsewhere was never updated to match: (1) `events.episode_id`'s `§7.15` comment, stale since the
+v4.7 section renumbering (IDEA-014); (2) IDEA-006's "enters §7.16 when the simulator is built"
+line, same v4.7 renumbering, should read §7.17; (3) this entry — pre-v4.1 text surviving the
+decision-15 revision; (4) `IDEA-003`'s "confidence tier: low, per ADR-0007" citation — confidence
+tiers are §7.16/v4.9 content, and none of the seven planned ADRs (ADR-0007 is private-vs-public
+deployment mode) covers them (IDEA-018); (5) `alerts` (§8) having no `event_id` FK back to
+`events`, because `alert_rules`/`alerts` predate the events-v2 lineage redesign and were never
+updated to match it (IDEA-016) — this last one matters most for the pattern, since it shows the
+drift isn't confined to prose citations, it reached the schema itself. A systematic pass — grep
+every `§` cross-reference in the spec and CLAUDE.md, and check the target section actually still
+says what the citing text claims, plus a schema-level check for tables that predate a later
+redesign — is worth doing as its own piece of work, separate from the remaining ADRs.
+
+---
+
+## IDEA-016: `alerts` has no FK back to the `events` row it fired from
+
+**Status:** Open — spec/schema defect, likely blocks M4's "alert history" join and M8's
+per-alert retry view
+**Raised:** 2026-08-16 (ADR-0006)
+
+### The proposal
+Not a feature proposal — a structural gap between two subsystems in the same schema.
+`alerts(id PK, rule_id FK, fingerprint TEXT UNIQUE, entity TEXT, payload JSONB, fired_at,
+delivered JSONB)` (§8) names no `event_id`, `calculation_run_id`, or `snapshot_id` — nothing
+ties an alert row to the specific `events` row that triggered it. §4 states directly that
+"Alerts, outcome tracking, websockets, and scorecards all consume this one stream [`events`],"
+and decision 26's lineage discipline stamps snapshot/calculation/code lineage on every event so
+any displayed number traces back to its source; `alerts` has none of that. The M4 gate requires
+"one event appears in API, alert history, and outcome queue" (§16) — querying "the alert(s) for
+event X," or displaying the event lineage behind a given alert, needs a link that isn't declared.
+
+### Why it is appealing
+N/A — flagged spec defect, not a proposed feature.
+
+### Why it is parked
+Not parked by choice — genuinely unresolved. `alert_rules`/`alerts` read as though they predate
+the events-v2 lineage redesign (the v4.0 changelog: schema-versioned payloads, event_subjects,
+rich natural keys, episodes, supersession, transactional outbox) and were never updated to match
+it — the same class of drift as IDEA-014 and IDEA-015 (a revision happened and a neighboring
+piece of the document/schema wasn't updated to match), this time in the schema itself rather than
+in a cross-reference or a hard rule.
+
+### The version that would be legitimate
+Most likely fix, not applied here: add `event_id FK` (and arguably `calculation_run_id`,
+`snapshot_id` for full parity with `events`) to `alerts`, so an alert's lineage is a direct join
+rather than an implicit match on `fingerprint`'s embedded `entity`/date against
+`events.primary_subject_id`/`occurred_at`.
+
+### Unfreeze triggers
+A `# DECISION:` comment or spec correction release, before M3's outbox work or M8's alert-rules
+work begins — not something to discover mid-implementation. See ADR-0006, Open Questions and
+Consequences.
+
+## IDEA-017: M3's "exactly once" dispatch guarantee is unachievable for webhook channels
+
+**Status:** Open — spec defect (overclaim), not just an unspecified mechanism
+**Raised:** 2026-08-16 (ADR-0006)
+
+### The proposal
+Not a feature — an overclaim in the M3 gate. "dispatcher restart delivers pending exactly once"
+(§16 M3 gate) is stated as a flat, universal guarantee across whatever
+`notification_deliveries.channel` covers (`discord|websocket|inapp|email`, §8). Exactly-once
+delivery is not achievable for Discord (the only P1 external channel, §7.16) by any dispatcher
+design: Discord's webhook API exposes no idempotency key, so a send that times out after the
+server actually received it is indistinguishable, from the dispatcher's side, from one that never
+arrived. Retrying either duplicates the post or drops it — there is no third option. At-least-once
+(accepting occasional duplicate posts on retry) is the real ceiling for that channel. In-app
+delivery is different in kind: it's a Postgres write the app fully controls, so exactly-once
+*materialization* (e.g., an insert gated by a `UNIQUE(outbox_id, channel)`-style constraint — not
+currently declared in §8) is genuinely achievable there. This is presumably why the M8 gate
+narrows its own claim to "retries never duplicate **in-app** alerts" rather than repeating M3's
+unqualified "exactly once."
+
+### Why it is appealing
+N/A — flagged spec defect, not a proposed feature.
+
+### Why it is parked
+Not parked by choice. M3's literal gate text, taken as written, is unsatisfiable for the Discord
+channel — no implementation can pass a test asserting exactly-once webhook delivery, because the
+failure mode (an ambiguous timeout) is a property of the transport, not the code.
+
+### The version that would be legitimate
+Split the M3 gate's single "exactly once" line into two explicit guarantees: (a) in-app delivery
+and outbox/event bookkeeping are exactly-once (Postgres-enforced); (b) external webhook channels
+(Discord, and any future paid email channel) are at-least-once, with
+`notification_deliveries.attempts`/`status` used to bound and surface retries rather than to
+promise a guarantee the transport can't back. M8's "retries never duplicate in-app alerts" already
+reads consistently with this split; M3's gate is what needs the correction.
+
+### Unfreeze triggers
+A spec correction release (same class as v4.9.9/v4.9.10) to reword the M3 gate, ideally before
+M3's acceptance tests are drafted — a test suite that literally asserts "exactly once" against a
+mocked Discord webhook would either be quietly weakened later or block the gate on an impossible
+bar. See ADR-0006, Open Questions and Consequences.
+
+## IDEA-018: `IDEA-003`'s "per ADR-0007" citation is dangling
+
+**Status:** Open — stale cross-reference in the registry itself
+**Raised:** 2026-08-16 (found while backfilling this registry for ADR-0005; registered separately
+per ADR-0006 review)
+
+### The proposal
+Not a feature proposal — a stale citation inside `IDEA-003` (Options-flow detail), unrelated to
+that entry's own subject. Its Unfreeze triggers section reads: "Options-chain ingestion has proven
+stable enough that OI and volume fields are trustworthy (delayed chains are the weakest data
+source in the stack — confidence tier: low, per ADR-0007)." Confidence tiers (high/medium/low,
+weakest-input chips, hedged brief wording) are §7.16/v4.9 content ("Input confidence tiers and
+score bands," introduced in the v4.9 changelog) — nothing to do with ADR-0007, which this
+project's ADR plan (CLAUDE.md; ADR-0004/0005/0006's own numbering) assigns to private-vs-public
+deployment mode. None of the seven planned ADRs covers confidence tiers at all.
+
+### Why it is appealing
+N/A — flagged citation defect, not a proposed feature.
+
+### Why it is parked
+Not parked by choice — a dangling reference that predates the current ADR numbering (IDEA-003 was
+raised 2026-08-01, before ADR-0001 through ADR-0006 existed) and was never reconciled against it.
+Left in place rather than corrected here per the instruction not to modify IDEA-001 through
+IDEA-005 (IDEA-003 is one of those).
+
+### The version that would be legitimate
+Either drop the "(...per ADR-0007)" parenthetical from IDEA-003 (confidence tiers are already
+fully specified in §7.16 with no ADR needed), or point it at wherever confidence-tier provenance
+actually ends up documented, if that ever becomes its own ADR-adjacent note.
+
+### Unfreeze triggers
+A one-line edit to IDEA-003 itself, whenever someone other than this drift-preserving pass touches
+that entry. Not resolved here.
 
 ---
 
