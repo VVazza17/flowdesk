@@ -1,0 +1,100 @@
+{
+  "_meta": {
+    "purpose": "Hand-computed oracle fixtures for signals/premiums.py (§7.5), recorded per the M0 deliverable outstanding since 2026-07-31 (CLAUDE.md 'Current state'; §15; §16 M0 exit gate: 'the §7.5 worked FX example passes through the typed convert()'). This file is data only — no test code and no application code, since signals/premiums.py does not exist yet. A future pytest test (M2+) loads this file and asserts against it.",
+    "formula": "foreign_price_usd = foreign_price_local * usd_per_foreign_currency; implied_us_price = foreign_price_usd * local_ordinary_shares_per_adr; premium_pct = (us_price / implied_us_price - 1) * 100  — §7.5 pseudocode. local_ordinary_shares_per_adr is the count of foreign ordinary shares one ADR represents, and it is ALWAYS the multiplier in that direction in every case below — it can be < 1 (SKHY: 0.1, one ADR is a tenth of a Korean share) or > 1 (TSM-style: 5, one ADR bundles five local shares), but the arithmetic never flips to division either way; only the magnitude changes. It is named directionally rather than a bare 'ratio' or 'adr_ratio' for the same reason ADR-0001 forbids a bare fx_rate: a plain scalar's direction has to be guessed, and guessing wrong produces a plausible-looking wrong number instead of a loud error.",
+    "adr_0001_alignment": "usd_per_foreign_currency is always the ADR-0001 named quantity, never a bare fx_rate. Each case also records the raw provider-convention quoted_rate it was derived from, and that provider's quoting convention (e.g. 'KRW per USD', per the verified KRW=X finding), so an inversion is visible in the fixture itself rather than hidden behind the final number.",
+    "tolerance_rationale": "expected.premium_pct in each case is the EXACT result of the stated formula on the stated inputs, computed independently of the spec's prose rounding. Case spec_worked_example's exact result is -3.348582% (as a fraction, -3660/1093), not -3.3% — the '-3.3%' in §7.5 line 491 is prose rounded for readability, not a second figure a correct implementation needs to hit. Because 'expected' here is already the precise value, tolerance_abs_pct only has to absorb floating-point representation noise from re-deriving the same arithmetic in a different order or language — not spec rounding. That's why the tolerances below are tight (1e-4 to 1e-9 absolute percentage points) rather than loose enough to swallow the ~0.049-point gap to the prose figure: a tolerance wide enough to accept -3.3% would also silently accept a real ~0.05-point calculation error, which defeats a fixture whose entire purpose (§15: 'MUST reproduce exactly') is to fail loudly on exactly that class of bug.",
+    "sources": [
+      "docs/architecture.md §7.5 (line 491: worked example; lines 486-488: session-pairing rule and the real pairing numbers used in case spike1_live_pairing)",
+      "docs/architecture.md §15 (line 1075: fixture is mandatory, MUST reproduce exactly, plus a non-0.1-ratio fixture)",
+      "docs/adr/0001-fx-base-quote-convention.md (usd_per_foreign_currency naming; KRW=X direction finding; names this worked example the canonical regression fixture for a reintroduced inversion bug)",
+      "spikes/spike1_evidence.json (case spike1_live_pairing, values copied verbatim, not re-derived, so the fixture can't drift from the source)"
+    ]
+  },
+  "cases": [
+    {
+      "id": "spec_worked_example",
+      "description": "§7.5 hand-computed worked example (line 491). MUST reproduce exactly per §15 — ADR-0001 names this the canonical regression fixture for a reintroduced FX/ratio inversion bug.",
+      "source": "docs/architecture.md §7.5, line 491",
+      "synthetic": false,
+      "note_on_inputs": "The USD/KRW=1390 rate is the spec text's own illustrative rate, not a live pull. ADR-0001 explicitly notes this is unrelated to the 1428.5999755859375 spot rate used in case spike1_live_pairing below, and the two are not expected to match.",
+      "listing_pair": "SKHY / 000660.KS",
+      "foreign_currency": "KRW",
+      "inputs": {
+        "foreign_price_local": 2186000,
+        "quoted_rate": 1390,
+        "quoted_rate_convention": "KRW per USD (yfinance KRW=X direction, ADR-0001)",
+        "usd_per_foreign_currency": 0.0007194244604316546,
+        "local_ordinary_shares_per_adr": 0.1,
+        "us_price": 152
+      },
+      "arithmetic": "foreign_price_usd = 2186000 * 0.0007194244604316546 = 1572.6618705035972 (spec prose: $1,572.66); implied_us_price = 1572.6618705035972 * 0.1 = 157.26618705035972 (spec prose: $157.27); premium_pct = (152 / 157.26618705035972 - 1) * 100 = -3660/1093 exactly",
+      "expected": {
+        "foreign_price_usd": 1572.6618705035972,
+        "implied_us_price": 157.26618705035972,
+        "premium_pct": -3.348582
+      },
+      "tolerance_abs_pct": 0.0001,
+      "spec_prose_rounds_to": "-3.3%"
+    },
+    {
+      "id": "spike1_live_pairing",
+      "description": "Real (non-synthetic) M0 spike 1 evidence for the session-mismatch pairing case discussed in §7.5's spike-1 paragraph (line 486): NY close 2026-07-30 paired against Seoul close 2026-07-31, one calendar day apart, per the most-recent-close-to-most-recent-close pairing rule §7.5 decides on.",
+      "source": "spikes/spike1_evidence.json — values below are copied verbatim from that file, not independently re-derived, so this fixture can never drift from the actual spike run.",
+      "synthetic": false,
+      "warning": "premium_pct here is +23.90%, an order of magnitude larger than a typical cross-listing premium. THIS IS NOT A CALCULATION BUG AND NOT ARBITRAGE. It is the measured cost of the pairing convention itself: the Seoul leg is one session newer than the NY leg (Seoul had already closed hours before this NY session opened). §7.5 documents the same underlying pair on date-aligned legs giving +61.01% instead — a 37-point swing from pairing choice alone, not from a calculation error. If a reproduction of this fixture yields anything other than ~+23.90%, that IS a bug. If a future reader is surprised to see +23.9% in 'premium' test data, they are seeing exactly the timing artifact §7.5 warns about, not a regression — do not 'fix' this fixture's value to look smaller.",
+      "listing_pair": "SKHY / 000660.KS",
+      "foreign_currency": "KRW",
+      "us_leg_timestamp": "2026-07-30 00:00:00-04:00",
+      "foreign_leg_timestamp": "2026-07-31 00:00:00+09:00",
+      "fx_observed_at": "2026-07-31 00:00:00+01:00",
+      "sourced_fields": {
+        "us_price": "spike1_evidence.json: us_leg.close",
+        "foreign_price_local": "spike1_evidence.json: foreign_leg.close",
+        "quoted_rate": "spike1_evidence.json: fx_raw.close",
+        "usd_per_foreign_currency": "spike1_evidence.json: fx_interpretation.inferred_usd_per_krw",
+        "local_ordinary_shares_per_adr": "spike1_evidence.json: computed.adr_ratio_used",
+        "expected.implied_us_price": "spike1_evidence.json: computed.implied_us_price",
+        "expected.premium_pct": "spike1_evidence.json: computed.premium_pct"
+      },
+      "inputs": {
+        "foreign_price_local": 1718000.0,
+        "quoted_rate": 1428.5999755859375,
+        "quoted_rate_convention": "KRW per USD (yfinance KRW=X direction, ADR-0001)",
+        "usd_per_foreign_currency": 0.0006999860122424067,
+        "local_ordinary_shares_per_adr": 0.1,
+        "us_price": 149.0
+      },
+      "arithmetic": "foreign_price_usd = 1718000.0 * 0.0006999860122424067; implied_us_price = foreign_price_usd * 0.1 = 120.25759690324549; premium_pct = (149.0 / 120.25759690324549 - 1) * 100 = 23.900696369211104",
+      "expected": {
+        "implied_us_price": 120.25759690324549,
+        "premium_pct": 23.900696369211104
+      },
+      "tolerance_abs_pct": 0.000001
+    },
+    {
+      "id": "synthetic_non_0.1_ratio",
+      "description": "SYNTHETIC fixture, invented for this test only — not a real quote for any ticker on any date. Exists solely to satisfy §7.5/§15/ADR-0001's requirement for a non-0.1-ratio fixture, so a ratio/FX inversion bug that happens to cancel out or go unnoticed at ratio=0.1 can't hide. Modeled on the real TSM/2330.TW config entry's ratio (ratio 5, TWD, §6 listing pairs) purely for realistic magnitude; the price levels and FX rate below are round numbers chosen for easy hand verification, not observed market data.",
+      "source": "Constructed for this fixture file; ratio magnitude modeled on the TSM/2330.TW config entry (docs/architecture.md line 364).",
+      "synthetic": true,
+      "listing_pair": "illustrative TSM-style pair (ratio 5, TWD) — do NOT treat as an actual TSM/2330.TW quote",
+      "foreign_currency": "TWD",
+      "inputs": {
+        "foreign_price_local": 600,
+        "quoted_rate": 32,
+        "quoted_rate_convention": "TWD per USD (same XXX=X convention as KRW=X, ADR-0001)",
+        "usd_per_foreign_currency": 0.03125,
+        "local_ordinary_shares_per_adr": 5,
+        "us_price": 96.0
+      },
+      "arithmetic": "foreign_price_usd = 600 * 0.03125 = 18.75; implied_us_price = 18.75 * 5 = 93.75 (multiply — same direction as the ratio-0.1 cases above: local_ordinary_shares_per_adr always multiplies foreign_price_usd, whether it is below 1 or above 1); premium_pct = (96.0 / 93.75 - 1) * 100 = 2.4 exactly",
+      "expected": {
+        "foreign_price_usd": 18.75,
+        "implied_us_price": 93.75,
+        "premium_pct": 2.4
+      },
+      "tolerance_abs_pct": 0.000000001,
+      "note": "premium_pct is an exact rational (2.4) by construction, unlike cases 1-2 which involve repeating decimals — a fast sanity fixture to trust before relying on the messier real-derived ones, and the one that most directly exercises local_ordinary_shares_per_adr > 1."
+    }
+  ]
+}
