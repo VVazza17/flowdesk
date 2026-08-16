@@ -793,6 +793,72 @@ actually ends up documented, if that ever becomes its own ADR-adjacent note.
 A one-line edit to IDEA-003 itself, whenever someone other than this drift-preserving pass touches
 that entry. Not resolved here.
 
+## IDEA-019: M1 gate's "public profile exposes read-only routes only" conflicts with §14's admin-route design
+
+**Status:** Open — ambiguous acceptance gate, needs a `# DECISION:` before M1's tests are written
+**Raised:** 2026-08-16 (ADR-0007)
+
+### The proposal
+Not a feature — a tension between an exit gate and the section it's testing. §14 gives public
+deployment mode a two-tier design: anonymous routes are read-only, but there is a "separate
+authenticated admin routes" surface (session cookie + CSRF, audit log) that can mutate — alert-rule
+mutation is disabled only "for anonymous users," implying the authenticated tier can still mutate.
+The M1 gate (§16) instead states flatly: "public profile exposes read-only routes only." Read as a
+literal route-level test (no non-`GET` endpoint reachable under the public compose profile,
+authenticated or not), this excludes the very admin routes §14 requires. Read loosely (anonymous
+access is read-only), it's consistent with §14. The gate text doesn't say which.
+
+### Why it is appealing
+N/A — flagged spec defect, not a proposed feature.
+
+### Why it is parked
+Not parked by choice — an acceptance test for M1 has to pick a reading before it can be written,
+and the two readings produce materially different implementations (no public admin surface at all,
+vs. an authenticated admin surface that mutates).
+
+### The version that would be legitimate
+Reword the M1 gate to name the scope explicitly, e.g.: "anonymous access under the public profile
+is read-only; the authenticated admin surface may mutate per §14." Leaves the two-tier design
+intact and makes the gate testable.
+
+### Unfreeze triggers
+A spec correction release or a `# DECISION:` comment before M1's acceptance tests are drafted. See
+ADR-0007, Open Questions and Consequences.
+
+## IDEA-020: LLM budget hard-stop depends on a non-durable Redis counter
+
+**Status:** Open — fail-open risk in a governance guarantee, small in dollar terms but real
+**Raised:** 2026-08-16 (ADR-0007)
+
+### The proposal
+Not a feature — a reliability gap in a cost-control mechanism. §14's cent-level LLM spend cap is
+enforced entirely by "a Redis daily token-budget counter that hard-stops LLM calls when exceeded."
+Decision 26 (§2) and the §4 architectural rule both state Redis is never the source of truth and
+that killing it should lose nothing durable. But this counter *is* the whole enforcement mechanism
+for a stated governance guarantee — the one exception to "$0/month in default configuration" (§14),
+capped. A Redis restart or eviction mid-day resets the counter to zero, and the system then honors
+another day's worth of spend before hitting the cap again: a real, if small ("roughly cents/day"
+per §14), violation of the stated guarantee, caused by exactly the failure mode decision 26 was
+written to make safe to ignore everywhere else.
+
+### Why it is appealing
+N/A — flagged spec defect, not a proposed feature.
+
+### Why it is parked
+Not parked by choice. Given the dollar amounts involved this is unlikely to be a real financial
+problem, but as specified the cap is best-effort, not the "hard-stop" the spec's own wording
+claims.
+
+### The version that would be legitimate
+Either state the cap as best-effort explicitly (drop "hard-stops"), or give the counter a cheap
+durable backstop — e.g., a Postgres row written on the same cadence, costing nothing under
+Zero-Cost Mode — before `ENABLE_AI=true` is treated as safe to leave on unattended.
+
+### Unfreeze triggers
+A spec correction release, or a `# DECISION:` comment adding the durable backstop, before
+`ENABLE_AI=true` is documented as safe for unattended use. See ADR-0007, Open Questions and
+Consequences.
+
 ---
 
 ## How to add an idea here
