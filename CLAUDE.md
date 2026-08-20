@@ -30,12 +30,23 @@ Where §3 and §16 disagree, **§16 governs**.
 ## Current state
 
 - M0 proof spikes 1–4: COMPLETE (2026-07-31). Findings already folded into §6.
-- M0 is **NOT closed**. Two deliverables remain:
-  1. Seven ADRs in `docs/adr/` — raw-vs-adjusted price policy, point-in-time observation
-     model, FX base/quote convention, snapshot/watermark policy, event natural keys &
-     episodes, delivery semantics, private-vs-public deployment mode.
-  2. Oracle fixtures — the hand-computed premium numbers from §7.5, recorded as test data.
-  Both are transcription from evidence already gathered. Neither requires new research.
+- Build history lives in `docs/BUILD-LOG.md` — read it if you need context on why
+  something is the way it is. "Current state" above stays short; detail goes to the log.
+- M0 is **CLOSED** (2026-08-16). Both outstanding deliverables are done:
+  1. Seven ADRs in `docs/adr/` (0001–0007) — raw-vs-adjusted price policy, point-in-time
+     observation model, FX base/quote convention, snapshot/watermark policy, event natural
+     keys & episodes, delivery semantics, private-vs-public deployment mode.
+  2. Oracle fixtures — `tests/fixtures/premium_oracle.json`: the §7.5 hand-computed worked
+     example, a real spike-evidence case (verbatim from `spikes/spike1_evidence.json`), and
+     a synthetic non-0.1-ratio case, per the §15/ADR-0001 requirement.
+- Before M1, two cleanup items are in progress:
+  1. Split `docs/IDEAS.md` into a parked-features registry and a spec-defects registry —
+     manual, in the editor, not a Claude Code task.
+  2. A full §-cross-reference audit for stale section numbers across `architecture.md`.
+     Seven stale references already surfaced incidentally while reading roughly a third of
+     the spec (logged as IDEA-013+). M1 builds directly from §13, §14, and §16, so any stale
+     citation in those sections specifically should be caught before code exists — do this
+     audit in a fresh session.
 - Next after that: M1 (platform & ops foundation).
 - Zero application code exists yet.
 
@@ -116,9 +127,12 @@ deferred features, they're open questions/defects the spec needs a correction re
 ```
 docs/
   architecture.md      # v4.9.10 FROZEN spec — grep, don't read whole
-  adr/                 # architecture decision records (0001-0005 done; 0006-0007 outstanding)
-  IDEAS.md             # deferred-feature registry + flagged spec corrections
+  adr/                 # architecture decision records (0001-0007, all done)
+  IDEAS.md             # deferred-feature registry + flagged spec corrections (pending split
+                        # into two files — see Current state)
 spikes/                # M0 proof scripts + evidence JSON (historical, do not modify)
+tests/
+  fixtures/             # oracle/golden test data (premium_oracle.json — §7.5 fixtures)
 ```
 
 Everything below `backend/`, `frontend/`, and `infra/` gets created during M1.
