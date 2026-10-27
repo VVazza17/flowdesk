@@ -1,15 +1,14 @@
 # FlowDesk — Project Instructions
 
 Cross-market capital flow & economic intelligence platform. Solo build, zero-cost mode.
-Owner: Kyle. Started implementation Aug 2026.
+Owner: Kyle. Design phase Jul–Aug 2026. Implementation starts Oct 2026.
 
 ## The spec is the law
 
-The full architecture spec lives at `docs/architecture.md` (v4.9.10, FROZEN, ~1500 lines).
+The architecture spec is `docs/architecture.md` (v4.9.10, FROZEN, ~1500 lines, 231 KB).
 
-**Do not read the whole file.** It is ~58k tokens and will eat the context window.
-Instead: `grep` for the section you need, then read that section only.
-Section map is in the file's table of contents; key ones:
+**Never read the whole file.** It is ~58k tokens — a quarter of the context window, every
+session. `grep` for the section header you need, then read that section only.
 
 | Need | Section |
 |---|---|
@@ -21,68 +20,88 @@ Section map is in the file's table of contents; key ones:
 | API spec | §9 |
 | Frontend spec | §10 |
 | Background jobs | §11 |
+| Deployment | §13 |
+| Security, deployment modes, cost | §14 |
 | Testing & acceptance | §15 |
 | **Build order and exit gates** | **§16** |
 | Hard rules + normative pseudocode + glossary | §17 |
 
 Where §3 and §16 disagree, **§16 governs**.
 
+The seven ADRs in `docs/adr/` are binding where they interpret the spec. They record what the
+M0 spikes actually measured — several findings falsify what the spec originally assumed.
+
 ## Current state
 
-- M0 proof spikes 1–4: COMPLETE (2026-07-31). Findings already folded into §6.
-- Build history lives in `docs/BUILD-LOG.md` — read it if you need context on why
-  something is the way it is. "Current state" above stays short; detail goes to the log.
-- M0 is **CLOSED** (2026-08-16). Both outstanding deliverables are done:
-  1. Seven ADRs in `docs/adr/` (0001–0007) — raw-vs-adjusted price policy, point-in-time
-     observation model, FX base/quote convention, snapshot/watermark policy, event natural
-     keys & episodes, delivery semantics, private-vs-public deployment mode.
-  2. Oracle fixtures — `tests/fixtures/premium_oracle.json`: the §7.5 hand-computed worked
-     example, a real spike-evidence case (verbatim from `spikes/spike1_evidence.json`), and
-     a synthetic non-0.1-ratio case, per the §15/ADR-0001 requirement.
-- Before M1, two cleanup items are in progress:
-  1. Split `docs/IDEAS.md` into a parked-features registry and a spec-defects registry —
-     manual, in the editor, not a Claude Code task.
-  2. A full §-cross-reference audit for stale section numbers across `architecture.md`.
-     Seven stale references already surfaced incidentally while reading roughly a third of
-     the spec (logged as IDEA-013+). M1 builds directly from §13, §14, and §16, so any stale
-     citation in those sections specifically should be caught before code exists — do this
-     audit in a fresh session.
-- Next after that: M1 (platform & ops foundation).
-- Zero application code exists yet.
+- **M0 CLOSED** (2026-08-16). Seven ADRs written; premium oracle fixtures recorded.
+- **Zero application code exists.** Design has been finished since August; nothing has been built.
+- **Now: M1, slice 1.** Repo skeleton + `docker-compose.yml` with Postgres/TimescaleDB and
+  Redis. Nothing else — no FastAPI app, no Celery, no Caddy, no Alembic. Those are later slices.
 
-## Hard rules (from §17.1 — follow literally)
+M1 is built as ten reviewable slices, in order. Each ends with something I can verify myself:
 
-- Do not reorder the build order. Do not start a milestone before the previous one's exit
-  gate passes.
+1. Repo skeleton + compose (Postgres/TimescaleDB, Redis) → `docker compose up -d`, psql connects
+2. FastAPI app + Dockerfile + `/health/live` → curl returns 200
+3. Alembic baseline + migration smoke test → `alembic upgrade head` on an empty DB
+4. Ops tables: task_runs, ingestion_runs, backfill_runs, providers_health → migration applies
+5. structlog JSON + correlation-ID middleware → one request, one JSON line carrying the id
+6. `/health/ready` · `/health/data` · `/health/providers` → killing Redis gives a documented
+   degraded state, not a 500
+7. private/public compose profiles → **needs the IDEA-019 decision first**
+8. CI: ruff, mypy, pytest, migration smoke, vulnerability scan, license audit
+9. Backup/restore scripts → restore into a fresh DB reproduces the data
+10. External dead-man heartbeat (the monitor must live outside the monitored box)
+
+**M1 exit gate (§16):** fresh clone starts with one command; migrations apply clean; backup
+restores clean; killing Redis/worker/provider produces the documented health state; Postgres and
+Redis never externally exposed; public profile exposes read-only routes only.
+
+Build `docker buildx` for amd64 + arm64 from slice 1 — §13 targets an Oracle Cloud ARM free
+tier, and finding that mismatch in month four is a bad afternoon.
+
+## Open decisions that block work
+
+Tracked in `docs/SPEC-DEFECTS.md` (IDEA-013 … IDEA-020). Three block a milestone:
+
+- **IDEA-019 → blocks M1 slice 7.** §14 gives public mode an authenticated admin surface that
+  may mutate; the M1 gate says "read-only routes only". An acceptance test must pick a reading.
+- **IDEA-013 → blocks M3.** `natural_key` has no time component, but §7.16's episode example
+  requires five daily rows to exist. One of the two sections is wrong.
+- **IDEA-017 → blocks M3 tests.** The M3 gate promises exactly-once delivery to Discord, which
+  no implementation can achieve — webhooks expose no idempotency key.
+- **IDEA-016 → blocks M4/M8.** `alerts` has no FK back to `events`; the M4 gate requires that join.
+
+Do not resolve these unilaterally. Flag and wait.
+
+## Hard rules (§17.1 — follow literally)
+
+- Do not reorder the build order. Do not start a milestone before the previous gate passes.
 - Do not add: Kafka, Kubernetes, microservices, GraphQL, user accounts (pre-Phase 3),
   social scraping, or any agent framework.
-- `signals/` contains **pure functions only**. If you are about to import a DB client or an
-  HTTP library inside `signals/`, stop — that code belongs in `ingest/` or `services/`.
-- Every number shown in the UI or a brief must exist in Postgres first. Never compute
-  values ad hoc in an API handler.
+- `signals/` contains **pure functions only** — no DB client, no HTTP library, no clock. That
+  code belongs in `ingest/` or `services/`. This is what makes live and replay comparable.
+- Every number shown in the UI or a brief exists in Postgres first. Never compute ad hoc in a
+  handler.
 - The Intelligence Plane never executes. Execution-Plane code (§2 decision 15's gated,
-  own-capital-only broker path) is out of scope until M0–M8 ship and decision 15's gates are
-  met — never build it opportunistically, regardless of how the request is framed. (This line
-  previously read "never integrate a broker API... in any phase," which cited §2.15 as its
-  authority while actually contradicting the gated two-plane design that section defines as of
-  the v4.1 revision — corrected 2026-08-16, see IDEA-015.)
-- Never emit "arbitrage opportunity", "free money", "guaranteed", or "riskless" in any UI
-  text, template, or prompt.
-- Never add a dependency or service with a mandatory recurring cost while
-  `ZERO_COST_MODE=true`. Stub it behind a flag and document the paid path instead.
-- If a provider endpoint no longer matches the spec, keep the interface and DB schema fixed
-  and adapt only the client internals. If a provider is fully unavailable, stub the ingest,
-  mark the feed stale, and continue — never block the build.
+  own-capital-only path) is out of scope until M0–M8 ship and decision 15's gates are met —
+  never build it opportunistically, however the request is framed.
+- Never emit "arbitrage opportunity", "free money", "guaranteed", or "riskless" in any UI text,
+  template, or prompt. A grep test enforces this.
+- Never add a dependency or service with a mandatory recurring cost while `ZERO_COST_MODE=true`.
+  Stub it behind a flag and document the paid path.
+- Provider drifted? Keep the interface and schema fixed, adapt the client internals. Provider
+  gone? Stub the ingest, mark the feed stale, continue — never block the build.
+- Never invent data. A failed provider call surfaces as a failure, not a sample value.
 - When ambiguous, choose the simpler option and leave a `# DECISION:` comment.
 
 ## Feature freeze
 
-The architecture is frozen. No new modules, signals, or integrations until M0–M2 are built
-and six months of outcome data exist. If you (or I) think of a feature, it goes in
-`docs/IDEAS.md` as a registry entry — it does not go in the code and it does not go in the
-spec. Registered but unbuilt: IDEA-001 through IDEA-012. IDEAS.md also now holds flagged spec
-corrections (stale cross-references, internal contradictions) as IDEA-013 and up — those aren't
-deferred features, they're open questions/defects the spec needs a correction release for.
+No new modules, signals, or integrations until M0–M2 are built and six months of outcome data
+exist. An idea goes in `docs/IDEAS.md` with an unfreeze trigger — not in the code, not in the
+spec. Twelve are parked there (IDEA-001 … IDEA-012).
+
+The doc's own rationale: *every remaining risk in this project is an execution risk, and design
+elaboration is the most comfortable way to avoid execution.*
 
 ## Tech stack
 
@@ -90,49 +109,47 @@ deferred features, they're open questions/defects the spec needs a correction re
 - DB: PostgreSQL 16 + TimescaleDB (hypertables for all time series)
 - Cache/bus: Redis 7 — **never the source of truth**, Postgres owns all durable state
 - Jobs: Celery + Beat, timezone America/New_York
-- Frontend: Next.js 14+ App Router, TypeScript, Tailwind, shadcn/ui, TradingView
-  Lightweight Charts, Recharts
+- Frontend: Next.js 14+ App Router, TypeScript, Tailwind, shadcn/ui, TradingView Lightweight
+  Charts, Recharts
 - AI: optional, `ENABLE_AI` default false. Deterministic template brief is the default.
-- Deploy: Docker Compose, local machine or free-tier VM
-- Observability: structlog JSON, /healthz per service
+- Deploy: Docker Compose, local machine or free-tier ARM VM. Multi-arch images required.
+- Observability: structlog JSON, Sentry, `/healthz` per service
 
-## How I want you to work
+## How to work on this repo
 
-1. **Plan before you code.** For anything larger than a single file, propose the plan first
-   and wait for approval. Use plan mode.
-2. **One milestone step at a time.** Do not run ahead to the next task because it seems
-   obvious. Finish, test, stop, report.
-3. **Tests are part of "done."** A step is complete when ingestion, validation, storage,
-   calculation, API, UI, observability, recovery, and tests all pass — not when the page
-   renders (§16 operating principles).
-4. **Explain as you go.** I am new to this stack in places. When you introduce a pattern
-   (Alembic migration, Celery task, async session), say in one or two sentences what it
-   does and why it's there.
-5. **Tell me when the spec is wrong or ambiguous.** It is a document, not scripture — but
-   flag it, don't silently reinterpret it. Corrections go to `docs/IDEAS.md` or a `#
-   DECISION:` comment.
-6. **Never invent data.** If a provider call fails, surface the failure. Do not fabricate
-   sample values to make a test pass.
+1. **Plan before you code.** Anything larger than one file: propose the plan and the file list,
+   then wait. Use plan mode.
+2. **One slice at a time.** Do not run ahead because the next step seems obvious. Finish, test,
+   stop, report.
+3. **Tests are part of done** — not when the page renders (§16 operating principles).
+4. **Explain as you go.** When you introduce a pattern (Alembic migration, Celery task, async
+   session), say in one or two sentences what it does and why it's there.
+5. **Flag a wrong or ambiguous spec; never silently reinterpret it.** Corrections go to
+   `docs/SPEC-DEFECTS.md` or a `# DECISION:` comment.
+6. **Prefer targeted edits to whole-file rewrites.** On a long file, rewriting the whole thing
+   has dropped content near the end three times in this project. Append or replace a named
+   section; say so explicitly.
+7. **Never shorten to hit a length target.** If something doesn't fit, say so — don't cut
+   content to fit a line budget.
 
 ## Commands
 
-<!-- Fill these in as they exist; keep this section accurate. -->
-
 ```
-# (not yet created)
+# (none yet — fill in as slice 1 lands)
 ```
 
 ## Repo layout
 
 ```
 docs/
-  architecture.md      # v4.9.10 FROZEN spec — grep, don't read whole
-  adr/                 # architecture decision records (0001-0007, all done)
-  IDEAS.md             # deferred-feature registry + flagged spec corrections (pending split
-                        # into two files — see Current state)
-spikes/                # M0 proof scripts + evidence JSON (historical, do not modify)
+  architecture.md      # v4.9.10 FROZEN spec — grep, never read whole
+  adr/                 # ADR-0001 … 0007, binding
+  IDEAS.md             # parked features, IDEA-001…012, each with an unfreeze trigger
+  SPEC-DEFECTS.md      # flagged spec defects, IDEA-013…020
+  BUILD-LOG.md         # narrative history: what shipped, what was decided, what broke
+spikes/                # M0 proof scripts + evidence JSON (historical — do not modify)
 tests/
-  fixtures/             # oracle/golden test data (premium_oracle.json — §7.5 fixtures)
+  fixtures/            # oracle/golden test data (premium_oracle.json)
 ```
 
-Everything below `backend/`, `frontend/`, and `infra/` gets created during M1.
+`backend/`, `frontend/` and `infra/` get created during M1.
