@@ -3,11 +3,11 @@
 # is exposed beyond loopback. Run from the repo root (needs a .env; see .env.example).
 set -euo pipefail
 
-fail() { echo "FAIL: $1" >&2; exit 1; }
-
 set -a; . ./.env; set +a
+. "$(dirname "$0")/lib.sh"
 
-docker compose up -d --wait
+docker compose up -d
+wait_ready
 
 out=$(docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tA -c "select 1")
 [ "$out" = "1" ] || fail "psql select 1 returned '$out'"

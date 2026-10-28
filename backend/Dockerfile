@@ -13,6 +13,8 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 
 COPY app ./app
+COPY alembic.ini ./
+COPY alembic ./alembic
 
 RUN useradd --system --uid 10001 --no-create-home flowdesk
 USER flowdesk

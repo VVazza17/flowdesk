@@ -4,9 +4,8 @@
 # Run from the repo root (needs a .env; see .env.example).
 set -euo pipefail
 
-fail() { echo "FAIL: $1" >&2; exit 1; }
-
 set -a; . ./.env; set +a
+. "$(dirname "$0")/lib.sh"
 API_PORT="${API_PORT:-8000}"
 
 # A multi-platform manifest list needs either the containerd image store or a
@@ -24,7 +23,8 @@ docker buildx build "${builder[@]}" --platform linux/amd64,linux/arm64 ./backend
   || fail "multi-arch build (amd64 + arm64) failed"
 
 # 2. Run the host-platform image through compose.
-docker compose up -d --build --wait api
+docker compose up -d --build api
+wait_ready api
 
 code=$(curl -s -o /tmp/live.json -w '%{http_code}' "http://127.0.0.1:${API_PORT}/health/live")
 [ "$code" = "200" ] || fail "/health/live returned HTTP $code"

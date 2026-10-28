@@ -1,3 +1,4 @@
+import subprocess
 import sys
 
 from fastapi.testclient import TestClient
@@ -19,5 +20,11 @@ def test_live_is_get_only() -> None:
 
 def test_live_does_not_pull_in_db_or_redis_clients() -> None:
     # Liveness must stay independent of dependencies (slice 6 documents degraded states).
-    for mod in ("sqlalchemy", "redis", "asyncpg", "psycopg"):
-        assert mod not in sys.modules, f"{mod} imported by the live path"
+    # A fresh interpreter: the test process itself may have imported these for other tests.
+    code = (
+        "import sys; import app.main; app.main.create_app(); "
+        "bad = [m for m in ('sqlalchemy','redis','asyncpg','psycopg') if m in sys.modules]; "
+        "sys.exit(','.join(bad) or 0)"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert result.returncode == 0, f"imported by the live path: {result.stderr.strip()}"

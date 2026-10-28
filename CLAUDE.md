@@ -35,10 +35,11 @@ M0 spikes actually measured — several findings falsify what the spec originall
 
 - **M0 CLOSED** (2026-08-16). Seven ADRs written; premium oracle fixtures recorded.
 - **Zero application code exists.** Design has been finished since August; nothing has been built.
-- **M1 slice 1 done.** Compose with Postgres/TimescaleDB and Redis.
-- **Now: M1, slice 2 built, awaiting your review.** FastAPI app, `backend/Dockerfile`, and
-  `/health/live`, plus an `api` compose service. No DB/Redis use yet, no Celery, no Caddy, no
-  Alembic. Those are later slices.
+- **M1 slices 1–2 done.** Compose with Postgres/TimescaleDB and Redis; FastAPI app,
+  `backend/Dockerfile`, `/health/live`, and an `api` compose service.
+- **Now: M1, slice 3 built, awaiting your review.** Alembic baseline (`0001`: the timescaledb
+  extension, no tables), async `env.py`, a one-shot `migrate` compose service, and a migration
+  smoke test. No ops tables yet (slice 4), no Celery, no Caddy.
 
 M1 is built as ten reviewable slices, in order. Each ends with something I can verify myself:
 
@@ -143,7 +144,12 @@ docker compose exec postgres psql -U flowdesk -d flowdesk
 docker compose exec redis redis-cli ping
 bash infra/smoke-slice1.sh        # slice 1 acceptance check
 bash infra/smoke-slice2.sh        # slice 2: amd64+arm64 build, /health/live 200, loopback bind
+bash infra/smoke-slice3.sh        # slice 3: alembic upgrade head on an empty DB; up -d runs migrate
 docker compose down               # add -v to wipe the pgdata volume
+# NOTE: smoke scripts use infra/lib.sh wait_ready, not `up --wait` (Compose 5.6.1 fails --wait
+# on the migrate one-shot even when it exits 0). `docker compose up -d` is still the one command.
+# Migration tests (skipped without DATABASE_URL), from backend/:
+#   DATABASE_URL=postgresql+asyncpg://flowdesk:<pw>@127.0.0.1:5432/flowdesk pytest
 ```
 
 ## Repo layout

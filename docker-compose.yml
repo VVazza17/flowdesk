@@ -42,5 +42,19 @@ services:
       - "127.0.0.1:${API_PORT:-8000}:8000"
     restart: unless-stopped
 
+  migrate:
+    # DECISION: a one-shot service, not a dependency of `api`. /health/live must stay up when
+    # Postgres is down (slice 2), so the API never waits on migrations; slice 6's /health/ready
+    # will report "migrations not applied" instead. restart "no" because it exits 0 by design.
+    # DATABASE_URL is assembled here; a password with URL-reserved characters must be encoded.
+    build: ./backend
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:?set in .env}:${POSTGRES_PASSWORD:?set in .env}@postgres:5432/${POSTGRES_DB:?set in .env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
 volumes:
   pgdata:

@@ -10,6 +10,38 @@ editing history.
 
 ---
 
+## 2026-10-28 — M1 slice 3: Alembic baseline + migration smoke test
+
+- **Baseline `0001`** creates the timescaledb extension and nothing else; downgrade is a
+  deliberate no-op (dropping the extension would cascade into every later hypertable). The
+  migration owns the extension so a restore into a fresh DB (slice 9) does not depend on the
+  image's init scripts. `Base.metadata` carries a constraint naming convention from day one.
+- **Async env.py** (asyncpg only, no second driver). Alembic's machinery is synchronous;
+  `connection.run_sync(fn)` runs it inside the async connection's greenlet so each DB call
+  awaits asyncpg underneath. `asyncio.run` is the single place the event loop is created.
+- **Pins:** alembic 1.20.1, sqlalchemy 2.0.55 (spec says 2.0; 2.1.x exists and was not
+  adopted), asyncpg 0.32.0.
+- **`migrate` is a one-shot compose service**, not a dependency of `api`, so `/health/live`
+  stays up when Postgres is down. Slice 6's `/health/ready` will report "migrations not
+  applied" rather than the API crashing.
+- **Found: `docker compose up -d --wait` fails when a one-shot exits, even with exit 0.**
+  Verified on **Docker Compose 5.6.1**, with `restart: "no"` set: `--wait` printed
+  `container flowdesk-migrate-1 exited (0)` and returned 1. Version-specific behaviour; recheck
+  after Compose upgrades. Decision: `--wait` is test plumbing, not the exit gate, so
+  `docker compose up -d` stays the one command and only the smoke scripts changed. They now
+  share `infra/lib.sh` `wait_ready` (long-running services healthy; one-shots exited 0), and
+  slices 1 and 2 were moved onto it. Checked that it can fail: a wrong password makes migrate
+  exit 1 and `wait_ready` reports it.
+- **Bug caught on first run:** the `alembic` entry point does not put the project root on
+  `sys.path`, so `env.py` could not import `app` (`ModuleNotFoundError`). Fixed with
+  `prepend_sys_path` in `alembic.ini`.
+- **Slice 2 test fixed:** `test_live_does_not_pull_in_db_or_redis_clients` asserted against the
+  shared `sys.modules`, which is order-dependent once any other test imports sqlalchemy. It now
+  checks in a fresh subprocess. (The removed no-op `starlette` import line was dead code.)
+- **Tests:** `backend/tests/test_migrations.py` (scratch DB; upgrade on empty, downgrade/upgrade
+  round trip, single head, `alembic check` drift) is skipped without `DATABASE_URL`; slice 8 CI
+  will supply it. Smoke scripts 1, 2 and 3 pass, slice 3 also from a cold `down -v`.
+
 ## 2026-10-28 — M1 slice 2: FastAPI app, Dockerfile, /health/live
 
 **What shipped**
