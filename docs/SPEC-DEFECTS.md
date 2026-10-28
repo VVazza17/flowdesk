@@ -353,3 +353,104 @@ a one-line note in §16 that §16 governs the API surface it names.
 
 ### Unfreeze triggers
 A spec correction release. Until then, nothing blocks a milestone: the build follows §16.
+
+---
+
+## IDEA-022: §8's ops tables leave types, nullability and constraints unspecified
+
+**Status:** Open — resolved for the build by stopgap (below); the spec text is still silent
+**Raised:** 2026-10-28 (M1 slice 4)
+
+### The proposal
+Not a feature — an under-specification. §8 (lines 778–802) lists columns for `providers_health`,
+`ingestion_runs`, `task_runs` and `backfill_runs`, but types only `INT`, `TEXT` and the primary
+keys. Left open: the `id` type; every timestamp type; nullability and defaults; the `status`
+vocabularies (other §8 tables such as `data_quarantine.state` and
+`notification_deliveries.status` list theirs; these four do not); and the type of
+`task_runs.input_watermark` / `output_watermark`. One question is a real design gap, not a type
+choice: `backfill_runs` has `feed` but no `provider`, and no uniqueness rule, so it is
+undefined whether a feed may have several runs or exactly one active run.
+
+### How it was resolved for the build
+Migration `0002` uses `BIGINT` identity ids, `TIMESTAMPTZ` for every timestamp and both
+watermarks, `TEXT` for `status` with no CHECK, NOT NULL only on `provider`, `feed`,
+`task_name`, `status` and `started_at`, and no indexes beyond the primary keys. No columns were
+added. `backfill_runs` has no uniqueness constraint. Each choice carries a `# DECISION:`
+comment in `backend/app/models/ops.py`.
+
+**Typing the watermarks as TIMESTAMPTZ assumes every feed watermarks temporally.** If a feed
+ever needs a sequence number or a cursor instead, that is where it breaks.
+
+### Why it is parked
+The frozen spec cannot be edited in place. Nothing in M1 reads these columns' semantics.
+
+### The version that would be legitimate
+A spec correction release stating the column types, nullability, `status` vocabularies, the
+watermark type, and whether `backfill_runs` is one-active-run-per-feed (and whether it needs a
+`provider`).
+
+### Unfreeze triggers
+A spec correction release, or before M2 first writes `ingestion_runs` / `backfill_runs` rows,
+whichever comes first — status vocabularies and the backfill uniqueness rule are
+hard to change once rows exist.
+
+---
+
+## IDEA-023: `providers_health` has no quarantine columns, but §6 says quarantine counts feed it
+
+**Status:** Open — spec/schema defect, blocks M2's quarantine work
+**Raised:** 2026-10-28 (M1 slice 4)
+
+### The proposal
+Not a feature — a sentence with nothing to write to. Line 374 (§6, bar validation) says
+quarantined rows "feed providers_health and the ops heartbeat". §8 defines `providers_health`
+as `(provider, feed, last_success_at, last_error_at, last_error TEXT)` — no count, no
+quarantine timestamp, nothing a quarantine count could land in.
+
+### How it was resolved for the build
+It was not. Slice 4 implements the five §8 columns exactly and adds none, because inventing
+quarantine columns is the unrequested schema change the slice was told not to make.
+
+### Why it is parked
+Not parked by choice. Either §8 is missing columns or line 374 means a derived value (e.g. a
+count over `data_quarantine`) rather than stored state; the spec does not say which.
+
+### The version that would be legitimate
+Either add the intended columns to `providers_health` in §8, or reword line 374 to say the
+counts are computed from `data_quarantine` and surfaced through `/health/providers`.
+
+### Unfreeze triggers
+A spec correction release, or a `# DECISION:` comment, before M2's quarantine work begins.
+
+---
+
+## IDEA-024: §10 line 1003 and §16 line 1109 disagree on where first-run progress comes from
+
+**Status:** Open — resolved for the build by judgment (below); the spec text is still stale
+**Raised:** 2026-10-28 (M1 slice 4)
+
+### The proposal
+Not a feature — a contradiction. §10 (line 1003) says the first-run screen shows "backfill
+progress per feed, from providers_health". §16 M2 (line 1109) says "first-run progress API +
+screen from backfill_runs". `providers_health` carries no progress columns;
+`backfill_runs` has `total_units`, `completed_units` and `current_unit`.
+
+### How it was resolved for the build
+The build follows §16: progress comes from `backfill_runs`. **This is a judgment, not a
+mechanical application of a stated rule.** CLAUDE.md's precedence rule is scoped to §3 versus
+§16; extending it to §10 is an inference from §16 being the normative build sequence, and from
+`backfill_runs` being the only table with progress columns. A reader who disagrees should treat
+line 1003 as the authority and reopen this entry.
+
+### Why it is parked
+The frozen spec cannot be edited in place.
+
+### The version that would be legitimate
+A spec correction release changing line 1003 to name `backfill_runs`.
+
+### Unfreeze triggers
+A spec correction release. Nothing blocks a milestone before M2's first-run screen.
+
+### Drift class
+This is the **sixth** instance of the same drift class — a section revised without its
+dependents — alongside IDEA-013, 014, 016, 018 and 021.

@@ -13,7 +13,7 @@ psql_main() { docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POST
 docker compose up -d --build
 wait_ready
 ver=$(psql_main -c "select version_num from alembic_version")
-[ "$ver" = "0001" ] || fail "alembic_version in the main db is '$ver', expected 0001"
+[ -n "$ver" ] || fail "alembic_version in the main db is empty (migrate did not run)"
 
 # 2. An empty database, migrated by the shipped image: nothing from step 1 can mask a problem.
 scratch="flowdesk_smoke_$$"
@@ -26,9 +26,9 @@ docker compose run --rm -T \
   migrate >/dev/null 2>&1 || fail "alembic upgrade head failed on an empty database"
 
 ver=$(docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$scratch" -tA -c "select version_num from alembic_version")
-[ "$ver" = "0001" ] || fail "scratch db alembic_version is '$ver', expected 0001"
+[ -n "$ver" ] || fail "scratch db alembic_version is empty after migration"
 ext=$(docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$scratch" -tA \
   -c "select extname from pg_extension where extname='timescaledb'")
 [ "$ext" = "timescaledb" ] || fail "timescaledb extension missing after migration"
 
-echo "OK: slice 3 smoke passed (up -d ran migrate; empty db -> 0001 + timescaledb)"
+echo "OK: slice 3 smoke passed (up -d ran migrate; empty db -> migrated + timescaledb)"

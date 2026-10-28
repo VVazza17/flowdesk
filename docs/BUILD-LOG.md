@@ -10,6 +10,26 @@ editing history.
 
 ---
 
+## 2026-10-28 — M1 slice 4: ops tables
+
+- **What shipped:** migration `0002` creating `providers_health`, `ingestion_runs`, `task_runs`
+  and `backfill_runs` exactly as §8 lists them (no columns added); SQLAlchemy models in
+  `backend/app/models/ops.py` registered on `Base.metadata`; `backend/tests/test_ops_tables.py`;
+  `infra/smoke-slice4.sh`. The tests check column names, column order and primary keys against
+  §8. The column *types* they assert are the slice-4 decisions below, not spec requirements:
+  §8 does not state them (IDEA-022). Do not read those assertions as spec conformance.
+- **Decided:** `BIGINT` identity ids, `TIMESTAMPTZ` throughout (watermarks included), `TEXT`
+  status with no CHECK, no indexes beyond PKs. Each has a `# DECISION:` comment. §8 types almost
+  nothing for these tables, so these are stopgaps, logged as IDEA-022.
+- **Spec defects logged:** IDEA-022 (types/nullability/constraints, incl. `backfill_runs`
+  uniqueness; notes that TIMESTAMPTZ watermarks assume temporal feeds), IDEA-023
+  (`providers_health` has no quarantine columns though line 374 says counts feed it), IDEA-024
+  (§10 line 1003 vs §16 line 1109 on first-run progress source; sixth instance of the
+  revised-without-dependents drift class).
+- **Changed earlier work:** `infra/smoke-slice3.sh` pinned `alembic_version = 0001`, which would
+  fail as soon as `0002` exists. It now asserts only that a version is recorded; each slice's own
+  script pins its revision.
+
 ## 2026-10-28 — M1 slice 3: Alembic baseline + migration smoke test
 
 - **Baseline `0001`** creates the timescaledb extension and nothing else; downgrade is a
