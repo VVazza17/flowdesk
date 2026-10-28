@@ -10,6 +10,45 @@ editing history.
 
 ---
 
+## 2026-10-28 — M1 slice 2: FastAPI app, Dockerfile, /health/live
+
+**What shipped**
+
+- `backend/`: `app/main.py` (app factory), `app/api/health.py` (`GET /health/live` returns
+  `{"status":"ok"}`, touches nothing else), `tests/test_health_live.py`, `Dockerfile`
+  (`python:3.12-slim`, non-root uid 10001, stdlib healthcheck), pinned `requirements.txt` and
+  `requirements-dev.txt` (fastapi 0.162.0, uvicorn 0.54.0, pytest 9.2.0, httpx 0.28.1).
+- `api` service in `docker-compose.yml`, published on `127.0.0.1:${API_PORT:-8000}`, no
+  `depends_on`. `API_PORT` added to `.env.example`. `infra/smoke-slice2.sh`.
+- IDEA-021 logged in `docs/SPEC-DEFECTS.md`; CLAUDE.md's `/healthz` line corrected.
+
+**Verified:** pytest passes (3 tests) inside `python:3.12-slim`. `infra/smoke-slice2.sh`
+passes: multi-platform build of linux/amd64 and linux/arm64 succeeds, the compose container
+reports healthy, `/health/live` returns 200 with the expected body, and the port is bound to
+127.0.0.1. Container runs as uid 10001. `smoke-slice1.sh` still passes.
+
+**Decisions**
+
+- Route is `/health/live` (§16 M1 scope), not `/healthz` (§9, §5). The precedence rule in
+  CLAUDE.md is literally about §3 vs §16; applying it here is an inference. See IDEA-021.
+- Multi-arch smoke: both platforms are built without `--load` (a manifest list cannot be
+  exported by the docker exporter); the host-platform image is what compose runs. This machine
+  uses the containerd image store, so no extra builder is needed; the script creates a
+  `docker-container` builder `flowdesk-multiarch` only when that store is absent. That fallback
+  branch was not exercised here.
+- Plain pinned requirements files, not uv/poetry; hash-pinned locks wait for slice 8 CI.
+- Tests run in a Python 3.12 container because the host has 3.13.
+
+**Not verified / notes**
+
+- The arm64 half of the build proves it compiles, not that it runs; no arm64 container was
+  started. Only emulated-build success is evidence.
+- pytest warns that Starlette's `TestClient` with `httpx` is deprecated in favour of `httpx2`.
+  Left as is for now; revisit when pinning in slice 8.
+- FastAPI's `/docs` and `/openapi.json` are still on; slice 7 should decide for the public profile.
+
+---
+
 ## 2026-10-28 — M1 slice 1: compose with Postgres/TimescaleDB and Redis
 
 **What shipped**

@@ -35,8 +35,10 @@ M0 spikes actually measured — several findings falsify what the spec originall
 
 - **M0 CLOSED** (2026-08-16). Seven ADRs written; premium oracle fixtures recorded.
 - **Zero application code exists.** Design has been finished since August; nothing has been built.
-- **Now: M1, slice 1.** Repo skeleton + `docker-compose.yml` with Postgres/TimescaleDB and
-  Redis. Nothing else — no FastAPI app, no Celery, no Caddy, no Alembic. Those are later slices.
+- **M1 slice 1 done.** Compose with Postgres/TimescaleDB and Redis.
+- **Now: M1, slice 2 built, awaiting your review.** FastAPI app, `backend/Dockerfile`, and
+  `/health/live`, plus an `api` compose service. No DB/Redis use yet, no Celery, no Caddy, no
+  Alembic. Those are later slices.
 
 M1 is built as ten reviewable slices, in order. Each ends with something I can verify myself:
 
@@ -61,7 +63,7 @@ tier, and finding that mismatch in month four is a bad afternoon.
 
 ## Open decisions that block work
 
-Tracked in `docs/SPEC-DEFECTS.md` (IDEA-013 … IDEA-020). Three block a milestone:
+Tracked in `docs/SPEC-DEFECTS.md` (IDEA-013 … IDEA-021). Three block a milestone:
 
 - **IDEA-019 → blocks M1 slice 7.** §14 gives public mode an authenticated admin surface that
   may mutate; the M1 gate says "read-only routes only". An acceptance test must pick a reading.
@@ -113,7 +115,7 @@ elaboration is the most comfortable way to avoid execution.*
   Charts, Recharts
 - AI: optional, `ENABLE_AI` default false. Deterministic template brief is the default.
 - Deploy: Docker Compose, local machine or free-tier ARM VM. Multi-arch images required.
-- Observability: structlog JSON, Sentry, `/healthz` per service
+- Observability: structlog JSON, Sentry, `/health/*` endpoints per §16 M1 scope
 
 ## How to work on this repo
 
@@ -140,6 +142,7 @@ docker compose up -d --wait       # Postgres/TimescaleDB + Redis
 docker compose exec postgres psql -U flowdesk -d flowdesk
 docker compose exec redis redis-cli ping
 bash infra/smoke-slice1.sh        # slice 1 acceptance check
+bash infra/smoke-slice2.sh        # slice 2: amd64+arm64 build, /health/live 200, loopback bind
 docker compose down               # add -v to wipe the pgdata volume
 ```
 
@@ -150,7 +153,7 @@ docs/
   architecture.md      # v4.9.10 FROZEN spec — grep, never read whole
   adr/                 # ADR-0001 … 0007, binding
   IDEAS.md             # parked features, IDEA-001…012, each with an unfreeze trigger
-  SPEC-DEFECTS.md      # flagged spec defects, IDEA-013…020
+  SPEC-DEFECTS.md      # flagged spec defects, IDEA-013…021
   BUILD-LOG.md         # narrative history: what shipped, what was decided, what broke
 spikes/                # M0 proof scripts + evidence JSON (historical — do not modify)
 tests/

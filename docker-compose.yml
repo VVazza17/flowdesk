@@ -33,5 +33,14 @@ services:
       retries: 10
     restart: unless-stopped
 
+  api:
+    build: ./backend
+    # DECISION: no depends_on yet. The slice-2 app touches neither Postgres nor Redis, and
+    # /health/live must stay up when they are down. Slice 6 adds the dependency checks.
+    # Loopback only, like Postgres (M1 exit gate).
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+    restart: unless-stopped
+
 volumes:
   pgdata:

@@ -316,3 +316,40 @@ Zero-Cost Mode — before `ENABLE_AI=true` is treated as safe to leave on unatte
 A spec correction release, or a `# DECISION:` comment adding the durable backstop, before
 `ENABLE_AI=true` is documented as safe for unattended use. See ADR-0007, Open Questions and
 Consequences.
+
+---
+
+## IDEA-021: Health route names disagree across §5, §9 and §16 (and within CLAUDE.md)
+
+**Status:** Open — resolved for the build by judgment (below); the spec text is still stale
+**Raised:** 2026-10-28 (M1 slice 2)
+
+### The proposal
+Not a feature — a naming contradiction. §9 line 968 lists `GET /healthz · GET /health/providers`
+and §5 line 255 says "/healthz per service". §16's M1 scope (line 1107) names
+`/health/live·ready·data·providers`. §15 names no health route at all, so no acceptance test
+settles it. CLAUDE.md contradicted itself the same way: its slice list used `/health/live`
+while its tech-stack line said `/healthz`.
+
+### How it was resolved for the build
+Slice 2 serves `/health/live`; slice 6 adds `ready`, `data` and `providers` under `/health/`.
+No `/healthz` alias exists. CLAUDE.md's tech-stack line now reads "`/health/*` endpoints per
+§16 M1 scope".
+
+**This is a judgment, not a mechanical application of a stated rule.** CLAUDE.md's precedence
+rule is literally scoped to §3 versus §16 ("Where §3 and §16 disagree, §16 governs"). §9 and §5
+are not §3. Extending the rule to them is an inference from §16 being "the single normative
+sequence" for the build, and from its M1 scope being the only place the full four-route family
+is named. A reader who disagrees with that inference should treat §9 line 968 as the
+authority and reopen this entry.
+
+### Why it is parked
+Not parked by choice. The frozen spec cannot be edited in place, so §9 and §5 stay stale until
+a correction release.
+
+### The version that would be legitimate
+A spec correction release changing §9 line 968 and §5 line 255 to the `/health/*` family, plus
+a one-line note in §16 that §16 governs the API surface it names.
+
+### Unfreeze triggers
+A spec correction release. Until then, nothing blocks a milestone: the build follows §16.
