@@ -40,6 +40,8 @@ services:
     # Loopback only, like Postgres (M1 exit gate).
     ports:
       - "127.0.0.1:${API_PORT:-8000}:8000"
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
     restart: unless-stopped
 
   migrate:

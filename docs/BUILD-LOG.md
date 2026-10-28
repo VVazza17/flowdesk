@@ -10,6 +10,39 @@ editing history.
 
 ---
 
+## 2026-10-28 — M1 slice 5: structlog JSON + correlation-ID middleware
+
+- **What shipped:** `backend/app/logging.py` (`configure_logging`: structlog + stdlib bridge, one
+  JSON object per line on stdout, `LOG_LEVEL` env, default INFO); `backend/app/middleware.py`
+  (`CorrelationIdMiddleware`, pure ASGI); `backend/tests/test_logging.py`;
+  `infra/smoke-slice5.sh`. `structlog==26.1.0` added. Uvicorn runs with `--no-access-log`;
+  compose passes `LOG_LEVEL` through to `api`.
+- **Gate:** one request, one JSON line carrying `request_id`; the response echoes it in
+  `X-Request-ID`. The smoke script also asserts every line the api writes is valid JSON.
+- **Decided:** an inbound `X-Request-ID` is honoured only if it matches
+  `^[A-Za-z0-9._-]{1,64}$`, else a `uuid4().hex` is generated. The regex is not injection
+  defence (JSONRenderer already escapes newlines); it bounds length and keeps ids greppable.
+  Successful `/health/*` requests (status < 400) log at DEBUG so the 10s Docker healthcheck does
+  not flood `docker compose logs api`; any status >= 400 logs at normal level, so a failing probe
+  is never hidden. JSON only, no console renderer. `uvicorn.access` is forced off in code as well
+  as by the flag, because the first smoke run showed it came back when `configure_logging`
+  re-enabled propagation (two lines per request).
+- **Known gap (deferred, `# DECISION:` in `middleware.py`):** an unhandled-exception 500 has no
+  `X-Request-ID` response header. Starlette's outer `ServerErrorMiddleware` builds that response
+  outside our middleware. The log line still carries the id. Fix needs an exception handler.
+- **Extension point, not built:** the contextvar binding (`structlog.contextvars`) is where
+  propagating the id into Celery tasks goes later, so a scheduled job's logs can carry the id of
+  whatever triggered it.
+- **Smoke-script note:** because health probes are DEBUG, `smoke-slice5.sh` recreates `api` with
+  `LOG_LEVEL=DEBUG`. An EXIT trap restores the stack as found on every exit, failures included:
+  the original `LOG_LEVEL` (or none), and api running or stopped as it was. Checked on the pass
+  path, a forced failure, and an api that started out stopped.
+- **Verified:** full suite with `DATABASE_URL` set against the compose Postgres, run in the built
+  `flowdesk-api` image (interpreter and installed deps from the image; `backend/` mounted for
+  `tests/`, which `.dockerignore` keeps out of the image; pytest/httpx installed into the
+  throwaway container only): 28 passed, 0 skipped, including the migration round trip and
+  `alembic check` drift. No scratch databases left behind.
+
 ## 2026-10-28 — M1 slice 4: ops tables
 
 - **What shipped:** migration `0002` creating `providers_health`, `ingestion_runs`, `task_runs`

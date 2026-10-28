@@ -34,9 +34,9 @@ M0 spikes actually measured — several findings falsify what the spec originall
 ## Current state
 
 - **M0 CLOSED** (2026-08-16). Seven ADRs written; premium oracle fixtures recorded.
-- **M1 in progress.** Slices 1–4 done: compose (Postgres/TimescaleDB + Redis), FastAPI +
-  `/health/live`, Alembic baseline, §8 ops tables.
-- **Next: slice 5** — structlog JSON + correlation-ID middleware.
+- **M1 in progress.** Slices 1–5 done: compose (Postgres/TimescaleDB + Redis), FastAPI +
+  `/health/live`, Alembic baseline, §8 ops tables, structlog JSON + correlation-ID middleware.
+- **Next: slice 6** — `/health/ready` · `/health/data` · `/health/providers`.
 
 M1 is built as ten reviewable slices, in order. Each ends with something I can verify myself:
 
@@ -143,6 +143,7 @@ bash infra/smoke-slice1.sh        # slice 1 acceptance check
 bash infra/smoke-slice2.sh        # slice 2: amd64+arm64 build, /health/live 200, loopback bind
 bash infra/smoke-slice3.sh        # slice 3: alembic upgrade head on an empty DB; up -d runs migrate
 bash infra/smoke-slice4.sh        # slice 4: migrate reaches 0002; the four ops tables exist
+bash infra/smoke-slice5.sh        # slice 5: one request -> one JSON log line with the X-Request-ID
 docker compose down               # add -v to wipe the pgdata volume
 # NOTE: smoke scripts use infra/lib.sh wait_ready, not `up --wait` (Compose 5.6.1 fails --wait
 # on the migrate one-shot even when it exits 0). `docker compose up -d` is still the one command.
