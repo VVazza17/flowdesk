@@ -454,3 +454,81 @@ A spec correction release. Nothing blocks a milestone before M2's first-run scre
 ### Drift class
 This is the **sixth** instance of the same drift class — a section revised without its
 dependents — alongside IDEA-013, 014, 016, 018 and 021.
+
+---
+
+## IDEA-025: Health endpoints have no specified response shape; §9's envelope scope is ambiguous
+
+**Status:** Open — resolved for the build by judgment (below); the spec text is still silent
+**Raised:** 2026-10-28 (M1 slice 6)
+
+### The proposal
+Not a feature — an under-specification. §9 line 968 lists `GET /health/providers` as "Liveness +
+feed freshness" with no body, and §16 line 1107 names `/health/ready` and `/health/data` without
+defining them anywhere. §9 also says "Envelope for all responses: `{data, as_of, stale}`" under
+the `/api/v1` prefix; the health routes are served at `/health/*`, outside that prefix. No section
+states the readiness status codes or what "degraded" means, though the M1 gate requires a
+"documented health state".
+
+### How it was resolved for the build
+Bare JSON, no envelope, same as `/health/live` since slice 2. `/health/ready`: 200 `ok`,
+200 `degraded` (Redis down), 503 `not_ready` (Postgres down or migrations behind). `/health/data`
+reports pipeline state from the ops tables, `/health/providers` reports `providers_health`
+freshness. Full state table: `docs/HEALTH.md`.
+
+**This is a judgment, not a mechanical application of a stated rule.** Reading "all responses" in
+§9 as including `/health/*` is also defensible; a reader who prefers that should treat the
+envelope as authoritative and reopen this entry.
+
+### Why it is parked
+The frozen spec cannot be edited in place.
+
+### The version that would be legitimate
+A spec correction release defining the three response shapes and the readiness status codes, and
+stating whether `/health/*` sits inside the envelope.
+
+### Unfreeze triggers
+A spec correction release. Slice 7 (public profile) should read this entry before deciding what
+`/health/providers` may expose publicly; that decision depends on IDEA-019.
+
+---
+
+## IDEA-026: `providers_health` cannot say when a feed was first seen, so "never succeeded" has no age
+
+**Status:** Open — implementation finding, blocks nothing now; bites in M2
+**Raised:** 2026-10-28 (M1 slice 6)
+
+### The proposal
+Not a spec contradiction and not drift: §8 (line 778) is internally consistent. This is a gap found
+by building against it. `providers_health(provider, feed, last_success_at, last_error_at,
+last_error)` records the last success and the last error, but not when the feed was first
+registered. `/health/providers` therefore reports a feed with `last_success_at IS NULL` as
+`never_succeeded` (top-level `pending`), and that state cannot escalate: a feed that has been
+pending for 10 minutes and one pending for 3 days are indistinguishable. Only `last_error_at`
+hints at activity, and only if the feed has failed.
+
+This matters because the three feed situations need different responses (`docs/HEALTH.md`): no
+feeds and never-succeeded are not failures, stale is. Without an age, a feed that never works
+stays "not broken" forever. §6 line 369 and the ops heartbeat (§11 line 1043: "silence must be
+impossible to mistake for health") both want broken feeds to be loud.
+
+### How it is handled for the build
+`never_succeeded` is reported as non-broken with `last_attempt_failed` as the only signal.
+`classify_feed` carries a `# DECISION:` comment saying so. Nothing is invented: no age is guessed
+from other tables.
+
+### Why it is parked
+The frozen spec cannot be edited in place, and nothing reads this before M2: the table is empty
+until the first feed is registered.
+
+### The version that would be legitimate
+Add a first-seen column to `providers_health` in §8 (for example `first_seen_at TIMESTAMPTZ NOT
+NULL`, set on registration), plus a per-feed "grace period before first success" threshold
+alongside the staleness thresholds, so `never_succeeded` can escalate once it is overdue. This is
+a schema decision as much as a threshold one, so it wants the same pass as IDEA-022.
+
+### Unfreeze triggers
+Resolve before M2 registers the first real feed, so the migration adding the column lands before
+any row exists. Related but distinct: IDEA-023 is a contradiction (line 374 sends quarantine
+counts to a table with no columns for them); this entry is a missing field that no section
+contradicts.

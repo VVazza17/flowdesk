@@ -10,6 +10,59 @@ editing history.
 
 ---
 
+## 2026-10-28 — M1 slice 6: /health/ready · /health/data · /health/providers
+
+- **What shipped:** `backend/app/api/health.py` (three routes appended; `live` untouched),
+  `app/services/health.py` (pure logic: checks, feed classification, response assembly),
+  `app/services/health_probes.py` (the real Postgres/Redis/Alembic probes), `app/deps.py`,
+  `app/settings.py`; `tests/test_health_ready.py`, `tests/test_health_db.py`;
+  `infra/smoke-slice6.sh`; `docs/HEALTH.md` (the documented states); IDEA-025. `redis==8.1.0`
+  added. Compose `api` now gets `DATABASE_URL` and `REDIS_URL`, still with no `depends_on`.
+- **Gate:** Redis killed -> `/health/ready` 200 `degraded`; Postgres killed -> 503 `not_ready`;
+  `/health/live` 200 throughout; `/health/data` and `/health/providers` unaffected by Redis and
+  `503 unavailable` (not 500) without Postgres; both recover on restart. The smoke script asserts
+  all of it against the real stack, and treats any 500 or any answer slower than 10 s as failure.
+- **Decided:**
+  - Redis down is `degraded` (200), Postgres down or schema behind is `not_ready` (503).
+    Redis is never the source of truth. Only the exception class is reported, never its message
+    (messages carry DSNs).
+  - **Three feed situations, three states.** No rows -> `no_feeds`. A known feed with
+    `last_success_at IS NULL` -> `never_succeeded` (`stale: false`, top-level `pending`): not
+    stale, just not yet run. A feed that succeeded but is past its threshold -> `stale`. Only
+    `stale` means something broke. `providers_health` has no first-seen column, so
+    `never_succeeded` has no age and cannot escalate by itself; that needs a §8 column (logged as IDEA-026, an implementation finding, separate from IDEA-023).
+    `last_attempt_failed` shows whether a never-succeeded feed has been failing since the start.
+    None of this is reachable until M2 (the table is empty); it is tested with synthetic rows.
+  - A feed with no configured threshold reports `stale: null` / `no_threshold`. There is no
+    global default, because §6.11 ties thresholds to each series' own cadence.
+  - Bare JSON, not the §9 envelope: IDEA-025.
+  - `/health/data` reports the latest ingestion/backfill/task rows and does not judge them: §8
+    has no status vocabulary (IDEA-022), so a verdict would be invented.
+- **Depends on IDEA-024 (unresolved):** `/health/data` reads backfill progress from
+  `backfill_runs`, which is §16's reading (line 1109). §10 line 1003 says it comes from
+  `providers_health`. If IDEA-024 is resolved the other way, the `backfills` key in
+  `/health/data` and its query in `health_probes.py` move. Marked with an `ASSUMPTION` comment in
+  `assemble_data` and in `docs/HEALTH.md`.
+- **Open item with a home now:** the `DATABASE_URL` password-encoding problem from slice 3 (a
+  password with URL-reserved characters breaks the URL compose assembles) is still unfixed and
+  was deliberately left out of this slice. `app/settings.py` is where the fix belongs: build the
+  URL there from `POSTGRES_USER`/`POSTGRES_PASSWORD`/`POSTGRES_DB` with percent-encoding, and let
+  compose pass the parts instead of a pre-assembled string. Until then the caveat comment in
+  `docker-compose.yml` stands for both `migrate` and `api`.
+- **Found:** `TestClient` used without a `with` block gives every request a fresh event loop, so
+  a pooled asyncpg connection from one request breaks on the next (`RuntimeError` from
+  `/health/data` after `/health/providers`). A test artifact, not a product bug (uvicorn has one
+  loop); `test_health_db.py` holds the client open. The imports are also lazy by design:
+  `app.deps` loads sqlalchemy/redis inside `get_probes`, so the existing
+  `test_live_does_not_pull_in_db_or_redis_clients` still passes unchanged.
+- **Verified:** full suite with `DATABASE_URL` against the compose Postgres in a Python 3.12
+  container: 56 passed, 0 skipped. `smoke-slice6.sh` passes; `smoke-slice1` through `5` still
+  pass after the compose and image change (slice 2 includes the amd64+arm64 build with the new
+  dependency).
+- **Not verified / not covered:** killing the worker or a provider (also in the M1 exit gate) is
+  not testable until M2 creates them. The arm64 image compiles but has not been run. Whether the
+  public profile may expose `providers[].last_error` is a slice 7 question, tied to IDEA-019.
+
 ## 2026-10-28 — M1 slice 5: structlog JSON + correlation-ID middleware
 
 - **What shipped:** `backend/app/logging.py` (`configure_logging`: structlog + stdlib bridge, one

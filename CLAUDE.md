@@ -34,9 +34,10 @@ M0 spikes actually measured — several findings falsify what the spec originall
 ## Current state
 
 - **M0 CLOSED** (2026-08-16). Seven ADRs written; premium oracle fixtures recorded.
-- **M1 in progress.** Slices 1–5 done: compose (Postgres/TimescaleDB + Redis), FastAPI +
-  `/health/live`, Alembic baseline, §8 ops tables, structlog JSON + correlation-ID middleware.
-- **Next: slice 6** — `/health/ready` · `/health/data` · `/health/providers`.
+- **M1 in progress.** Slices 1–6 done: compose (Postgres/TimescaleDB + Redis), FastAPI +
+  `/health/live`, Alembic baseline, §8 ops tables, structlog JSON + correlation-ID middleware,
+  `/health/ready` · `/health/data` · `/health/providers` (states documented in `docs/HEALTH.md`).
+- **Next: slice 7** — private/public compose profiles. **Blocked on the IDEA-019 decision.**
 
 M1 is built as ten reviewable slices, in order. Each ends with something I can verify myself:
 
@@ -61,7 +62,7 @@ tier, and finding that mismatch in month four is a bad afternoon.
 
 ## Open decisions that block work
 
-Tracked in `docs/SPEC-DEFECTS.md` (IDEA-013 … IDEA-024). Three block a milestone:
+Tracked in `docs/SPEC-DEFECTS.md` (IDEA-013 … IDEA-026). Three block a milestone:
 
 - **IDEA-019 → blocks M1 slice 7.** §14 gives public mode an authenticated admin surface that
   may mutate; the M1 gate says "read-only routes only". An acceptance test must pick a reading.
@@ -144,6 +145,7 @@ bash infra/smoke-slice2.sh        # slice 2: amd64+arm64 build, /health/live 200
 bash infra/smoke-slice3.sh        # slice 3: alembic upgrade head on an empty DB; up -d runs migrate
 bash infra/smoke-slice4.sh        # slice 4: migrate reaches 0002; the four ops tables exist
 bash infra/smoke-slice5.sh        # slice 5: one request -> one JSON log line with the X-Request-ID
+bash infra/smoke-slice6.sh        # slice 6: kill Redis -> degraded 200; kill Postgres -> 503; never 500
 docker compose down               # add -v to wipe the pgdata volume
 # NOTE: smoke scripts use infra/lib.sh wait_ready, not `up --wait` (Compose 5.6.1 fails --wait
 # on the migrate one-shot even when it exits 0). `docker compose up -d` is still the one command.
@@ -158,8 +160,9 @@ docs/
   architecture.md      # v4.9.10 FROZEN spec — grep, never read whole
   adr/                 # ADR-0001 … 0007, binding
   IDEAS.md             # parked features, IDEA-001…012, each with an unfreeze trigger
-  SPEC-DEFECTS.md      # flagged spec defects, IDEA-013…024
+  SPEC-DEFECTS.md      # flagged spec defects, IDEA-013…026
   BUILD-LOG.md         # narrative history: what shipped, what was decided, what broke
+  HEALTH.md            # /health/* response shapes and the documented degraded states
 spikes/                # M0 proof scripts + evidence JSON (historical — do not modify)
 tests/
   fixtures/            # oracle/golden test data (premium_oracle.json)
