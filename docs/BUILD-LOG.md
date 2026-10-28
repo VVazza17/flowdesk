@@ -10,6 +10,43 @@ editing history.
 
 ---
 
+## 2026-10-28 — M1 slice 1: compose with Postgres/TimescaleDB and Redis
+
+**What shipped**
+
+- `docker-compose.yml` at the repo root: `postgres` and `redis`, nothing else. `.env.example`,
+  `.gitattributes` (LF for `*.sh`), `infra/smoke-slice1.sh`, and a filled-in `Commands`
+  block in CLAUDE.md.
+- Pinned `timescale/timescaledb:2.31.0-pg16` and `redis:7.4-alpine`. Both verified with
+  `docker buildx imagetools inspect` to publish linux/amd64 and linux/arm64. The first
+  candidate, 2.17.2, was rejected as stale (2024 line); 2.31.0 was the newest 2.x pg16 tag
+  on 2026-10-28. `timescale/timescaledb` is still the maintained repo.
+- Postgres published on `127.0.0.1` only; Redis publishes no host port.
+
+**Verified:** `infra/smoke-slice1.sh` passes on a cold start (`down -v`, then up) and on a
+warm one: `select 1`, timescaledb extension present, Redis `PONG`, Redis unpublished,
+Postgres bound to loopback.
+
+**Decisions**
+
+- Healthcheck uses `pg_isready -h 127.0.0.1` plus `start_period: 30s`. The `-h` forces TCP
+  because the entrypoint's temporary init server is believed to listen on the unix socket
+  only. Not tested in isolation: the cold-start pass shows the check does not break init,
+  not that a socket-only check would have failed.
+- Redis has no persistence: it is never the source of truth.
+
+**What broke**
+
+- A native Windows `postgresql-x64-17` service held port 5432, so compose could not bind.
+  Stopped by the user; `POSTGRES_PORT` in `.env` is the escape hatch if it recurs.
+- The smoke test's first Redis check was wrong: `docker compose port` prints `:0` with exit 0
+  for an unpublished port, so any non-empty output tripped it. Fixed in the script.
+
+**Not done:** no image of ours is built yet, so `docker buildx build` for amd64+arm64 starts
+mattering in slice 2 (first Dockerfile). Nothing committed.
+
+---
+
 ## 2026-08-16 — M0 closed: seven ADRs, oracle fixtures, IDEAS registry consolidated to twenty
 
 **What shipped**

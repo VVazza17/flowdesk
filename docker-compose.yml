@@ -1,0 +1,37 @@
+services:
+  postgres:
+    # DECISION: exact tag, not latest-pg16. Verified with `docker buildx imagetools inspect`
+    # to publish linux/amd64 and linux/arm64 (§13 targets an Oracle ARM VM).
+    image: timescale/timescaledb:2.31.0-pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?set in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Loopback only: host psql works, nothing is exposed externally (M1 exit gate).
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      # DECISION: -h 127.0.0.1 forces TCP. The entrypoint's temporary init server listens on
+      # the unix socket only, so a socket check can report healthy before init has finished.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  redis:
+    # DECISION: exact tag; amd64 + arm64/v8 verified. No persistence and no host port:
+    # Redis is never the source of truth (Postgres is). Reach it with `docker compose exec redis`.
+    image: redis:7.4-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  pgdata:

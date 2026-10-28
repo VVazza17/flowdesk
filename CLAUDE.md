@@ -135,7 +135,12 @@ elaboration is the most comfortable way to avoid execution.*
 ## Commands
 
 ```
-# (none yet — fill in as slice 1 lands)
+cp .env.example .env              # first time only; set a real POSTGRES_PASSWORD
+docker compose up -d --wait       # Postgres/TimescaleDB + Redis
+docker compose exec postgres psql -U flowdesk -d flowdesk
+docker compose exec redis redis-cli ping
+bash infra/smoke-slice1.sh        # slice 1 acceptance check
+docker compose down               # add -v to wipe the pgdata volume
 ```
 
 ## Repo layout
