@@ -51,7 +51,10 @@ matches=$(printf '%s\n' "$logs" | grep -cF "\"request_id\": \"$rid\"" || true)
 
 # Every line the api has written must be JSON; a stray plain-text line means some logger
 # (uvicorn, a library) bypassed the structlog handler.
-printf '%s\n' "$logs" | python3 -c '
+# DECISION: validate with the api image's interpreter, not the host's: Git Bash on Windows may have
+# no python3. The failure message is whatever the validator said, so a validator that could not run
+# at all is reported as that rather than as a bad log line.
+validation=$(printf '%s\n' "$logs" | docker compose exec -T api python -c '
 import json, sys
 for n, line in enumerate(sys.stdin, 1):
     line = line.strip()
@@ -61,7 +64,7 @@ for n, line in enumerate(sys.stdin, 1):
         json.loads(line)
     except ValueError:
         sys.exit(f"line {n} is not JSON: {line[:120]}")
-' || fail "non-JSON line in api logs"
+' 2>&1) || fail "api log validation failed: $validation"
 
 line=$(printf '%s\n' "$logs" | grep -F "\"request_id\": \"$rid\"")
 for key in method path status duration_ms timestamp level; do
