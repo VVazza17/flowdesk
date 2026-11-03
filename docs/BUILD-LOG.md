@@ -62,6 +62,7 @@ editing history.
 - **Not verified / not covered:** killing the worker or a provider (also in the M1 exit gate) is
   not testable until M2 creates them. The arm64 image compiles but has not been run. Whether the
   public profile may expose `providers[].last_error` is a slice 7 question, tied to IDEA-019.
+  *(Update 2026-11-02: IDEA-019 resolved; the public profile redacts `last_error`.)*
 
 ## 2026-10-28 — M1 slice 5: structlog JSON + correlation-ID middleware
 
@@ -184,6 +185,7 @@ reports healthy, `/health/live` returns 200 with the expected body, and the port
 - pytest warns that Starlette's `TestClient` with `httpx` is deprecated in favour of `httpx2`.
   Left as is for now; revisit when pinning in slice 8.
 - FastAPI's `/docs` and `/openapi.json` are still on; slice 7 should decide for the public profile.
+  *(Update 2026-11-02: decided in IDEA-019; both are disabled under the public profile.)*
 
 ---
 
@@ -270,7 +272,8 @@ session doesn't have to rediscover them by re-reading §8 line by line.
 7. **IDEA-019** — M1's exit gate ("public profile exposes read-only routes only") conflicts
    with §14's own two-tier design, which allows an authenticated admin surface that mutates.
    Needs a `# DECISION:` before M1's acceptance tests are written, since the two readings
-   produce different implementations.
+   produce different implementations. *(Update 2026-11-02: resolved as B-minimal; see the
+   IDEA-019 entry in `docs/SPEC-DEFECTS.md`.)*
 8. **IDEA-020** — the LLM spend cap's "hard-stop" is enforced by a Redis daily counter, but
    Redis is explicitly never the source of truth (decision 26) and a restart/eviction resets
    it mid-day — a real, if small, gap between what §14 claims and what's actually guaranteed.

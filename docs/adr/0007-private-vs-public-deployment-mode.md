@@ -2,6 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-08-16
+**Update:** IDEA-019 resolved 2026-11-02; see `docs/SPEC-DEFECTS.md`.
 **Source:** No M0 spike. Transcribed from §14 (Security, Compliance, Cost),
 §13 (Deployment), §16 (M1 gate), §19.5 (Regulatory line), and §2 decision 15
 (the Intelligence/Execution plane split, since public mode's exclusion of

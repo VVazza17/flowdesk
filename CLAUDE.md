@@ -37,7 +37,8 @@ M0 spikes actually measured — several findings falsify what the spec originall
 - **M1 in progress.** Slices 1–6 done: compose (Postgres/TimescaleDB + Redis), FastAPI +
   `/health/live`, Alembic baseline, §8 ops tables, structlog JSON + correlation-ID middleware,
   `/health/ready` · `/health/data` · `/health/providers` (states documented in `docs/HEALTH.md`).
-- **Next: slice 7** — private/public compose profiles. **Blocked on the IDEA-019 decision.**
+- **Next: slice 7** — private/public compose profiles. Unblocked: IDEA-019 resolved 2026-11-02
+  (B-minimal; scope and riders in `docs/SPEC-DEFECTS.md`).
 
 M1 is built as ten reviewable slices, in order. Each ends with something I can verify myself:
 
@@ -48,14 +49,16 @@ M1 is built as ten reviewable slices, in order. Each ends with something I can v
 5. structlog JSON + correlation-ID middleware → one request, one JSON line carrying the id
 6. `/health/ready` · `/health/data` · `/health/providers` → killing Redis gives a documented
    degraded state, not a 500
-7. private/public compose profiles → **needs the IDEA-019 decision first**
+7. private/public compose profiles → every public-profile route uses only GET, HEAD or OPTIONS or
+   is admin-guarded, and any route the check can't classify fails it (IDEA-019)
 8. CI: ruff, mypy, pytest, migration smoke, vulnerability scan, license audit
 9. Backup/restore scripts → restore into a fresh DB reproduces the data
 10. External dead-man heartbeat (the monitor must live outside the monitored box)
 
 **M1 exit gate (§16):** fresh clone starts with one command; migrations apply clean; backup
 restores clean; killing Redis/worker/provider produces the documented health state; Postgres and
-Redis never externally exposed; public profile exposes read-only routes only.
+Redis never externally exposed; public profile exposes read-only routes only. (That last clause is
+a lossy restatement of §14; IDEA-019 records the reading the build follows.)
 
 Build `docker buildx` for amd64 + arm64 from slice 1 — §13 targets an Oracle Cloud ARM free
 tier, and finding that mismatch in month four is a bad afternoon.
@@ -64,8 +67,6 @@ tier, and finding that mismatch in month four is a bad afternoon.
 
 Tracked in `docs/SPEC-DEFECTS.md` (IDEA-013 … IDEA-026). Three block a milestone:
 
-- **IDEA-019 → blocks M1 slice 7.** §14 gives public mode an authenticated admin surface that
-  may mutate; the M1 gate says "read-only routes only". An acceptance test must pick a reading.
 - **IDEA-013 → blocks M3.** `natural_key` has no time component, but §7.16's episode example
   requires five daily rows to exist. One of the two sections is wrong.
 - **IDEA-017 → blocks M3 tests.** The M3 gate promises exactly-once delivery to Discord, which

@@ -253,8 +253,9 @@ that entry. Not resolved here.
 
 ## IDEA-019: M1 gate's "public profile exposes read-only routes only" conflicts with §14's admin-route design
 
-**Status:** Open — ambiguous acceptance gate, needs a `# DECISION:` before M1's tests are written
+**Status:** Resolved for the build by owner decision (B-minimal, below); the spec text is still stale
 **Raised:** 2026-08-16 (ADR-0007)
+**Resolved:** 2026-11-02
 
 ### The proposal
 Not a feature — a tension between an exit gate and the section it's testing. §14 gives public
@@ -266,22 +267,67 @@ literal route-level test (no non-`GET` endpoint reachable under the public compo
 authenticated or not), this excludes the very admin routes §14 requires. Read loosely (anonymous
 access is read-only), it's consistent with §14. The gate text doesn't say which.
 
+### How it was resolved for the build
+**Decision (Kyle, 2026-11-02): B-minimal — read-only is judged by HTTP method.** Under the public
+profile, every route either uses only read-only methods or is admin-guarded. GET, HEAD and OPTIONS
+all count as read-only: HEAD is a bodyless GET, and OPTIONS is needed for CORS preflight and changes
+nothing.
+
+**The invariant fails closed.** It fails on any route it cannot classify, WebSockets included. A
+check that ignores what it doesn't understand provides false assurance. When the §9 `WS /ws` route
+arrives in Phase 2a, the test should break and force a decision.
+
+**Reasoning.** §14 (line 1063) already says "anonymous routes read-only" in its own words. §16's
+gate line (line 1107) is a lossy restatement of that sentence that dropped "anonymous". This is
+spec drift, not a design disagreement, and §14 governs on security semantics. CLAUDE.md's
+precedence rule covers only §3 versus §16, so §14 governing here rests on this decision, not on
+that rule.
+
+**Slice 7 scope.**
+- Slice 7 builds no auth stack. It builds only the invariant above. No admin route exists yet, so
+  for now every public-profile route must use only read-only methods.
+- Cookie flags, CSRF and the audit log are deferred, not dropped: they arrive with the first route
+  that needs them.
+
+**What the method check does not cover: a GET handler that writes.** The method check cannot see
+this, and code review isn't a mechanism. The intended enforcement is to run GET requests in a
+read-only database transaction, so a write inside a GET handler fails at Postgres. HEAD gets the
+same treatment, since it is a bodyless GET. **This is not built, and until it is, nothing enforces
+it.**
+
+It belongs to the slice that introduces the request-scoped database session. That slice has no
+number yet: M1's remaining slices (8–10) add no data routes, and M2 has not been cut into slices.
+The first route §16 names that needs it is M2's first-run progress API. The `/health/*` routes
+reach Postgres through the probe engine in `backend/app/deps.py`, not a session, so that slice must
+also decide whether they move onto it. The mechanism only covers Postgres writes made through that
+transaction; it does not cover Redis.
+
+**Riders under the public profile.**
+- `/health/providers` redacts `last_error`.
+- `/docs` and `/openapi.json` are disabled.
+
 ### Why it is appealing
 N/A — flagged spec defect, not a proposed feature.
 
 ### Why it is parked
-Not parked by choice — an acceptance test for M1 has to pick a reading before it can be written,
+It no longer blocks the build. It stays open only because the frozen spec cannot be edited in place.
+Before this decision, an acceptance test for M1 had to pick a reading before it could be written,
 and the two readings produce materially different implementations (no public admin surface at all,
 vs. an authenticated admin surface that mutates).
 
 ### The version that would be legitimate
-Reword the M1 gate to name the scope explicitly, e.g.: "anonymous access under the public profile
-is read-only; the authenticated admin surface may mutate per §14." Leaves the two-tier design
-intact and makes the gate testable.
+**Proposed fix for the next spec release:** correct §16's gate line (line 1107) to restore the word
+§14 uses, replacing "public profile exposes read-only routes only" with "public profile: anonymous
+routes read-only per §14 — every route uses only GET, HEAD or OPTIONS, or is admin-guarded." This
+leaves the two-tier design intact and makes the gate testable.
 
 ### Unfreeze triggers
-A spec correction release or a `# DECISION:` comment before M1's acceptance tests are drafted. See
-ADR-0007, Open Questions and Consequences.
+A spec correction release applying the fix above. Nothing blocks a milestone until then: slice 7
+follows this decision. See ADR-0007, Open Questions and Consequences.
+
+### Drift class
+This is the **seventh** instance of the same drift class, alongside IDEA-013, 014, 016, 018, 021
+and 024. Here the dependent is §16's gate line, which lost a qualifier when restating §14.
 
 ## IDEA-020: LLM budget hard-stop depends on a non-durable Redis counter
 
@@ -488,8 +534,8 @@ A spec correction release defining the three response shapes and the readiness s
 stating whether `/health/*` sits inside the envelope.
 
 ### Unfreeze triggers
-A spec correction release. Slice 7 (public profile) should read this entry before deciding what
-`/health/providers` may expose publicly; that decision depends on IDEA-019.
+A spec correction release. Public exposure of `/health/providers` is settled by IDEA-019 (resolved
+2026-11-02): `last_error` is redacted under the public profile. Slice 7 implements it.
 
 ---
 

@@ -62,5 +62,5 @@ these tables no status vocabulary (IDEA-022).
 ## Not covered yet
 
 - Killing the worker or a provider (also in the M1 exit gate): neither exists until M2.
-- Public-profile exposure of these routes, notably `providers[].last_error` (raw provider text):
-  slice 7, blocked on IDEA-019.
+- Public-profile redaction of `providers[].last_error` (raw provider text): decided in IDEA-019,
+  to be implemented in slice 7. Until then, the response shapes above are not public-profile safe.
