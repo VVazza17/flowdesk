@@ -34,11 +34,14 @@ M0 spikes actually measured — several findings falsify what the spec originall
 ## Current state
 
 - **M0 CLOSED** (2026-08-16). Seven ADRs written; premium oracle fixtures recorded.
-- **M1 in progress.** Slices 1–6 done: compose (Postgres/TimescaleDB + Redis), FastAPI +
+- **M1 in progress.** Slices 1–7 done: compose (Postgres/TimescaleDB + Redis), FastAPI +
   `/health/live`, Alembic baseline, §8 ops tables, structlog JSON + correlation-ID middleware,
-  `/health/ready` · `/health/data` · `/health/providers` (states documented in `docs/HEALTH.md`).
-- **Next: slice 7** — private/public compose profiles. Unblocked: IDEA-019 resolved 2026-11-02
-  (B-minimal; scope and riders in `docs/SPEC-DEFECTS.md`).
+  `/health/ready` · `/health/data` · `/health/providers` (states documented in `docs/HEALTH.md`),
+  private/public compose profiles with the IDEA-019 route invariant.
+- **The public profile is not internet-ready.** `api-public` binds to loopback; strict CORS,
+  request-size limits and rate limits have no owning slice and are required before any internet
+  exposure (IDEA-019 addendum in `docs/SPEC-DEFECTS.md`).
+- **Next: slice 8** — CI: ruff, mypy, pytest, migration smoke, vulnerability scan, license audit.
 
 M1 is built as ten reviewable slices, in order. Each ends with something I can verify myself:
 
@@ -138,7 +141,8 @@ elaboration is the most comfortable way to avoid execution.*
 
 ```
 cp .env.example .env              # first time only; set a real POSTGRES_PASSWORD
-docker compose up -d --wait       # Postgres/TimescaleDB + Redis
+docker compose up -d              # private profile (COMPOSE_PROFILES in .env): stack + migrate + api
+docker compose --profile public up -d   # public instead (replaces, not adds); `docker compose rm -sf api` first
 docker compose exec postgres psql -U flowdesk -d flowdesk
 docker compose exec redis redis-cli ping
 bash infra/smoke-slice1.sh        # slice 1 acceptance check
@@ -147,9 +151,15 @@ bash infra/smoke-slice3.sh        # slice 3: alembic upgrade head on an empty DB
 bash infra/smoke-slice4.sh        # slice 4: migrate reaches 0002; the four ops tables exist
 bash infra/smoke-slice5.sh        # slice 5: one request -> one JSON log line with the X-Request-ID
 bash infra/smoke-slice6.sh        # slice 6: kill Redis -> degraded 200; kill Postgres -> 503; never 500
-docker compose down               # add -v to wipe the pgdata volume
-# NOTE: smoke scripts use infra/lib.sh wait_ready, not `up --wait` (Compose 5.6.1 fails --wait
-# on the migrate one-shot even when it exits 0). `docker compose up -d` is still the one command.
+bash infra/smoke-slice7.sh        # slice 7: public = read-only, redacted, no docs; private = neither
+docker compose down               # add -v to wipe the pgdata volume; inactive profiles are skipped,
+                                  # so a public stack needs `docker compose --profile public down`
+# NOTE: smoke scripts use infra/lib.sh wait_ready, not `up --wait`. Compose v5.6.1 fails --wait on
+# the migrate one-shot even when it exits 0: seen on the other machine (2026-10-28, per Kyle) and on
+# this one (2026-11-03). Other versions untested, including the v2.29.2-desktop.2 Kyle read here
+# before Docker Desktop's 2026-11-03 upgrade. `docker compose up -d` is still the one command.
+# NOTE: a native Windows postgresql-x64-17 service (automatic start) holds 5432 on this machine and
+# stops the stack from starting. Stop it, or set POSTGRES_PORT in .env.
 # Migration tests (skipped without DATABASE_URL), from backend/:
 #   DATABASE_URL=postgresql+asyncpg://flowdesk:<pw>@127.0.0.1:5432/flowdesk pytest
 ```

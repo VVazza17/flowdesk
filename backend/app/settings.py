@@ -5,6 +5,21 @@
 """
 import os
 from datetime import timedelta
+from typing import Literal
+
+DeploymentMode = Literal["private", "public"]
+
+
+def deployment_mode() -> DeploymentMode:
+    # DECISION: unset means private, §14's stated default; compose sets it explicitly per profile
+    # (ADR-0007). Anything else refuses to start, with no case-folding: a typo in the variable that
+    # turns on redaction must not silently produce the unredacted mode.
+    raw = os.environ.get("DEPLOYMENT_MODE", "private")
+    if raw == "private":
+        return "private"
+    if raw == "public":
+        return "public"
+    raise ValueError(f"DEPLOYMENT_MODE must be 'private' or 'public', got {raw!r}")
 
 
 def database_url() -> str | None:

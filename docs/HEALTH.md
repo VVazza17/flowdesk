@@ -59,8 +59,22 @@ these tables no status vocabulary (IDEA-022).
 §10 line 1003 says it comes from `providers_health`. If IDEA-024 resolves that way, the
 `backfills` key and its query move.
 
+## Public profile (`DEPLOYMENT_MODE=public`, slice 7)
+
+Status codes and every state above are the same on both profiles. The bodies differ as follows,
+per IDEA-019 and its addendum:
+
+| Route | Public body |
+|---|---|
+| `/health/providers` | `feeds[].last_error` key removed |
+| `/health/data` | `ingestion[].error` key removed |
+| `/health/live`, `/health/ready` | unchanged (they carry exception class names at most) |
+
+The keys are removed, not nulled: `null` would read as "no error". `last_error_at`,
+`last_attempt_failed` and the run's `status` stay, so a failure is still visible. `/docs`, `/redoc`
+and `/openapi.json` return 404. Verified by `infra/smoke-slice7.sh` and
+`backend/tests/test_public_profile.py`.
+
 ## Not covered yet
 
 - Killing the worker or a provider (also in the M1 exit gate): neither exists until M2.
-- Public-profile redaction of `providers[].last_error` (raw provider text): decided in IDEA-019,
-  to be implemented in slice 7. Until then, the response shapes above are not public-profile safe.

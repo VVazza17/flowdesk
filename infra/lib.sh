@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
 # Shared helpers for infra/smoke-slice*.sh. Source it; do not execute it.
 #
-# Why this exists instead of `docker compose up -d --wait`: as of Compose 5.6.1, --wait
-# treats ANY exited container as a failure, including a one-shot that exited 0 (the
-# `migrate` service). So scripts run plain `up -d` and use wait_ready below, which waits for
-# long-running services to be healthy and requires one-shots to have exited 0. The product
-# gate is unaffected: `docker compose up -d` is still the one command and still runs migrate.
+# Why this exists instead of `docker compose up -d --wait`: on Compose v5.6.1, --wait treats
+# ANY exited container as a failure, including a one-shot that exited 0 (the `migrate` service).
+# So scripts run plain `up -d` and use wait_ready below, which waits for long-running services
+# to be healthy and requires one-shots to have exited 0. The product gate is unaffected:
+# `docker compose up -d` is still the one command and still runs migrate.
+# Observed on v5.6.1 on two machines; never tested on any other version. Details and the
+# version record: the 2026-11-03 correction in docs/BUILD-LOG.md (slice 3 entry).
+
+# Every smoke script sources .env before this file. A .env from before slice 7 has no
+# COMPOSE_PROFILES, which would silently start no API service at all.
+export COMPOSE_PROFILES="${COMPOSE_PROFILES:-private}"
 
 # Services that run to completion by design. Everything else must stay up and healthy.
 ONESHOT_SERVICES="migrate"

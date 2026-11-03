@@ -114,8 +114,7 @@ def classify_feed(row: FeedRow, now: datetime, threshold: timedelta | None) -> d
         "feed": row.feed,
         "last_success_at": _iso(row.last_success_at),
         "last_error_at": _iso(row.last_error_at),
-        # DECISION: last_error is raw provider text. Fine on the private profile; slice 7
-        # must decide (with IDEA-019) whether the public profile may expose it.
+        # Raw provider text: private profile only. redact_providers removes it (IDEA-019).
         "last_error": last_error,
         "threshold_seconds": int(threshold.total_seconds()) if threshold else None,
         "last_attempt_failed": bool(
@@ -172,6 +171,28 @@ def assemble_data(state: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
     """
     empty = not any(state.get(k) for k in ("ingestion", "backfills", "tasks"))
     return {"status": "no_runs" if empty else "reported", **state}
+
+
+def redact_providers(body: dict[str, Any]) -> dict[str, Any]:
+    """Public view of assemble_providers (IDEA-019 rider).
+
+    DECISION: the key is removed, not nulled. `last_error: null` would read as "no error";
+    `last_error_at` and `last_attempt_failed` stay, so the failure itself is still visible.
+    """
+    return {**body, "feeds": [_without(f, "last_error") for f in body["feeds"]]}
+
+
+def redact_data(body: dict[str, Any]) -> dict[str, Any]:
+    """Public view of assemble_data (IDEA-019 addendum); same removal as redact_providers.
+
+    `tasks[].error_class` stays: it is a class name, the detail every /health/* body already
+    reports. task_runs.error_message is raw text but is not selected into this body at all.
+    """
+    return {**body, "ingestion": [_without(r, "error") for r in body["ingestion"]]}
+
+
+def _without(row: dict[str, Any], key: str) -> dict[str, Any]:
+    return {k: v for k, v in row.items() if k != key}
 
 
 def _iso(ts: datetime | None) -> str | None:

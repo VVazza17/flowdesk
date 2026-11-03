@@ -6,7 +6,7 @@ import structlog
 from fastapi import APIRouter, Depends, Response
 
 from app import settings
-from app.deps import get_now, get_probes
+from app.deps import get_deployment_mode, get_now, get_probes
 from app.services import health as svc
 
 log = structlog.get_logger(__name__)
@@ -24,6 +24,7 @@ def live() -> dict[str, str]:
 
 
 Probes = Annotated[svc.HealthProbes, Depends(get_probes)]
+Mode = Annotated[settings.DeploymentMode, Depends(get_deployment_mode)]
 
 
 @router.get("/ready")
@@ -53,19 +54,25 @@ async def _from_postgres(
 
 @router.get("/providers")
 async def providers(
-    response: Response, probes: Probes, now: Annotated[datetime, Depends(get_now)]
+    response: Response,
+    probes: Probes,
+    now: Annotated[datetime, Depends(get_now)],
+    mode: Mode,
 ) -> dict[str, Any]:
     # Reads Postgres only, so a Redis outage does not touch this endpoint. A stale feed is
     # reported in the body with HTTP 200: it is data about the feed, not an outage of the API.
     rows, failure = await _from_postgres(response, "providers", probes.provider_rows)
     if failure is not None or rows is None:
         return failure or {"status": "unavailable", "error": "NoResult"}
-    return svc.assemble_providers(rows, now, settings.FEED_STALE_AFTER)
+    body = svc.assemble_providers(rows, now, settings.FEED_STALE_AFTER)
+    # `!= "private"`, not `== "public"`: anything but the known-private mode gets the redacted body.
+    return body if mode == "private" else svc.redact_providers(body)
 
 
 @router.get("/data")
-async def data(response: Response, probes: Probes) -> dict[str, Any]:
+async def data(response: Response, probes: Probes, mode: Mode) -> dict[str, Any]:
     state, failure = await _from_postgres(response, "data", probes.data_state)
     if failure is not None or state is None:
         return failure or {"status": "unavailable", "error": "NoResult"}
-    return svc.assemble_data(state)
+    body = svc.assemble_data(state)
+    return body if mode == "private" else svc.redact_data(body)

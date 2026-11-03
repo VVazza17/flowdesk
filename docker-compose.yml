@@ -1,3 +1,21 @@
+# x- keys are ignored by Compose; the anchors let api and api-public share one definition, so the
+# two profiles cannot drift apart. `environment` is a separate anchor because `<<` merges only one
+# level deep: each service's own `environment` would otherwise replace the shared one outright.
+x-api-env: &api-env
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  # Same URL-encoding caveat as migrate below; settings.py is where that gets fixed.
+  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:?set in .env}:${POSTGRES_PASSWORD:?set in .env}@postgres:5432/${POSTGRES_DB:?set in .env}
+  REDIS_URL: redis://redis:6379/0
+
+x-api-base: &api-base
+  build: ./backend
+  # DECISION: no depends_on, on purpose. /health/live must stay up when Postgres or Redis
+  # are down, and /health/ready reports their state (slice 6) rather than the API refusing
+  # to start. Loopback only, like Postgres (M1 exit gate).
+  ports:
+    - "127.0.0.1:${API_PORT:-8000}:8000"
+  restart: unless-stopped
+
 services:
   postgres:
     # DECISION: exact tag, not latest-pg16. Verified with `docker buildx imagetools inspect`
@@ -33,19 +51,24 @@ services:
       retries: 10
     restart: unless-stopped
 
+  # Exactly one of the two API services runs (§14: "choose one; set by compose profile").
+  # COMPOSE_PROFILES=private in .env keeps `docker compose up -d` the one command. Both publish
+  # the same host port on purpose: enabling both profiles fails on the bind, not silently.
   api:
-    build: ./backend
-    # DECISION: no depends_on, on purpose. /health/live must stay up when Postgres or Redis
-    # are down, and /health/ready reports their state (slice 6) rather than the API refusing
-    # to start. Loopback only, like Postgres (M1 exit gate).
-    ports:
-      - "127.0.0.1:${API_PORT:-8000}:8000"
+    <<: *api-base
+    profiles: [private]
     environment:
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      # Same URL-encoding caveat as migrate below; settings.py is where that gets fixed.
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:?set in .env}:${POSTGRES_PASSWORD:?set in .env}@postgres:5432/${POSTGRES_DB:?set in .env}
-      REDIS_URL: redis://redis:6379/0
-    restart: unless-stopped
+      <<: *api-env
+      DEPLOYMENT_MODE: private
+
+  api-public:
+    <<: *api-base
+    # DECISION: loopback like everything else. The public profile is NOT internet-ready after
+    # slice 7: strict CORS, request-size limits and rate limits do not exist yet (IDEA-019 addendum).
+    profiles: [public]
+    environment:
+      <<: *api-env
+      DEPLOYMENT_MODE: public
 
   migrate:
     # DECISION: a one-shot service, not a dependency of `api`. /health/live must stay up when

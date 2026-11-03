@@ -306,6 +306,19 @@ transaction; it does not cover Redis.
 - `/health/providers` redacts `last_error`.
 - `/docs` and `/openapi.json` are disabled.
 
+**Addendum (Kyle, 2026-11-03, recorded with slice 7).**
+- **`/health/data` also redacts `ingestion[].error`.** It is the same kind of raw provider text as
+  `last_error`. As built, both keys are removed rather than nulled, because null would read as "no
+  error"; `last_error_at`, `last_attempt_failed` and the run's `status` still show that a failure
+  happened. `tasks[].error_class` stays: it is a class name, the detail every `/health/*` body
+  already reports.
+- **`api-public` binds to loopback, so the public profile is not internet-ready after slice 7.**
+  Slice 7 delivers the route invariant and the redaction riders, not a deployable public site.
+- **Strict CORS, request-size limits and rate limits have no owning slice, and all three are
+  required before any internet exposure** (§14 line 1063 lists them). M1's remaining slices (8–10)
+  do not add them and M2 has not been cut into slices. ADR-0007's open question about which layer
+  enforces them (Caddy or FastAPI) is also still open.
+
 ### Why it is appealing
 N/A — flagged spec defect, not a proposed feature.
 

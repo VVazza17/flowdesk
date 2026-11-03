@@ -3,6 +3,8 @@ level: /health/live must work (and import) without sqlalchemy or redis."""
 from datetime import UTC, datetime
 from functools import lru_cache
 
+from fastapi import Request
+
 from app import settings
 from app.services.health import HealthProbes
 
@@ -33,3 +35,9 @@ def get_probes() -> HealthProbes:
 
 def get_now() -> datetime:
     return datetime.now(UTC)
+
+
+def get_deployment_mode(request: Request) -> settings.DeploymentMode:
+    # Read from the app, not the environment: create_app fixed it once (ADR-0007).
+    mode: settings.DeploymentMode = request.app.state.deployment_mode
+    return mode

@@ -10,6 +10,56 @@ editing history.
 
 ---
 
+## 2026-11-03 — M1 slice 7: private/public compose profiles
+
+- **What shipped:** `api` (`profiles: [private]`) and `api-public` (`profiles: [public]`) from one
+  shared compose definition, on the same loopback port; `COMPOSE_PROFILES=private` in `.env.example`;
+  `DEPLOYMENT_MODE` in `app/settings.py`; `app/route_policy.py`; `create_app(mode)`;
+  `redact_providers` / `redact_data`; `tests/test_public_profile.py`; `infra/smoke-slice7.sh`.
+- **Gate (IDEA-019):** every public-profile route uses only GET, HEAD or OPTIONS, and anything the
+  check cannot classify fails it. There is no admin-guarded branch, because no admin route exists; the
+  first one defines what "guarded" means. Not internet-ready: `api-public` is on loopback, and strict
+  CORS, request-size limits and rate limits have no owning slice (IDEA-019 addendum).
+- **Decided:**
+  - The invariant is also enforced at startup: a public app with a violating route refuses to boot,
+    so it holds before slice 8 CI exists.
+  - Redaction removes the key rather than nulling it, since null reads as "no error".
+    `last_error_at`, `last_attempt_failed` and `status` stay.
+  - `/redoc` is off too. The rider names `/docs` and `/openapi.json`; `/redoc` serves the same schema.
+  - An unrecognised `DEPLOYMENT_MODE` refuses to start, with no case-folding. Unset means private (§14).
+  - The shared host port is the "choose one" enforcement: enabling both profiles fails on the bind.
+- **Measured on Compose v5.6.1:** `--profile public` replaces `COMPOSE_PROFILES=private` from `.env`
+  rather than adding to it; `COMPOSE_PROFILES=private,public` enables both. Switching needs the other
+  API removed first (`docker compose rm -sf api`), or the port is still held.
+- **Found: `iter_route_contexts` silently drops unknown route types nested in an included router**
+  (FastAPI 0.162.0, `_IncludedRouter._build_effective_context` returns None), which looked like a hole
+  in the fail-closed check. It is not one today: dispatch drops them too, so a live request gets 404.
+  Top-level unknown types, Mounts, Hosts and WebSockets are all walked and fail. A test pins the
+  walk-matches-dispatch behaviour against a future upgrade. `app.routes` being opaque is pinned too.
+- **Corrected:** the plan said the local `.env` lacked `COMPOSE_PROFILES`. It already had it.
+  `infra/lib.sh` still defaults it, for any older `.env`.
+- **Verified:** full suite in the built image (slice 4/5 pattern, `DATABASE_URL` set against compose
+  Postgres): 114 passed, 0 skipped. The first run had 4 failures from a real bug in a violation-message
+  f-string, fixed in the code. Smoke 1, 3, 4, 6 and 7 pass. Smoke 7 can fail: a POST route added to the
+  health router stops the public app from starting (`/health/mutate: not read-only (POST)`), and
+  disabling redaction is reported as a leak. Fresh-clone check on a wiped volume: `up -d` starts `api`
+  in private mode, `/health/ready` ok, schema at 0002. All of this ran from a scratch copy of the
+  working tree on port 55432, because of the Postgres service below.
+- **Not verified / broken on this machine:**
+  - **The arm64 build fails here, and slice 2's smoke with it.** This Docker lists only amd64
+    platforms; `exec format error` at `pip install`. Not caused by this slice: untouched `HEAD` fails
+    identically, and the Dockerfile and requirements did not change. Emulation is not installed since
+    the 2026-11-03 Docker Desktop upgrade or was never installed on this machine; which one is unknown.
+    Slice 2's remaining steps pass on amd64 only, so **this slice's image has not been built for
+    arm64.** Slice 7 adds only Python source and no dependency.
+  - **Smoke 5 fails here as committed**: this machine's Git Bash has no `python3`, and the script
+    reports that as "non-JSON line in api logs". It passes with a `python3` shim on PATH. Not fixed:
+    pre-existing and out of this slice.
+  - **The native `postgresql-x64-17` service holds 5432** (automatic start, as in slice 1), so
+    `docker compose up -d` in the repo fails here until it is stopped or `POSTGRES_PORT` is changed.
+  - A GET handler that writes is still unenforced (IDEA-019), and the invariant reads routes, so
+    it does not see anything answered from ASGI middleware.
+
 ## 2026-10-28 — M1 slice 6: /health/ready · /health/data · /health/providers
 
 - **What shipped:** `backend/app/api/health.py` (three routes appended; `live` untouched),
@@ -139,6 +189,14 @@ editing history.
   share `infra/lib.sh` `wait_ready` (long-running services healthy; one-shots exited 0), and
   slices 1 and 2 were moved onto it. Checked that it can fail: a wrong password makes migrate
   exit 1 and `wait_ready` reports it.
+  *(Correction 2026-11-03: this entry does not say which machine. Per Kyle, this observation was on
+  the other machine. This machine, Wazza, reports Compose v5.6.1 / Docker Desktop 4.98.0 as of
+  2026-11-03. It was upgraded from Docker Desktop 4.34.2 at about 14:12 local that day: the backend
+  log has the last 4.34.2 client at 20:11:51Z and the first 4.98.0 client at 20:12:59Z, and the
+  install log is stamped 14:12. v2.29.2-desktop.2 is Kyle's reading of this machine; it matches the
+  time before the upgrade and is no longer installed here. `--wait` was tested here on v5.6.1 on
+  2026-11-03 and reproduces: `container fdverify-migrate-1 exited (0)`, exit 1, every other service
+  healthy. Whether it reproduces on v2.29.2-desktop.2 is untested.)*
 - **Bug caught on first run:** the `alembic` entry point does not put the project root on
   `sys.path`, so `env.py` could not import `app` (`ModuleNotFoundError`). Fixed with
   `prepend_sys_path` in `alembic.ini`.
