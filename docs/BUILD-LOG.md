@@ -40,21 +40,21 @@ editing history.
   `infra/lib.sh` still defaults it, for any older `.env`.
 - **Verified:** full suite in the built image (slice 4/5 pattern, `DATABASE_URL` set against compose
   Postgres): 114 passed, 0 skipped. The first run had 4 failures from a real bug in a violation-message
-  f-string, fixed in the code. Smoke 1, 3, 4, 6 and 7 pass. Smoke 7 can fail: a POST route added to the
+  f-string, fixed in the code. Smoke 1 through 7 pass (2 and 5 after the fixes below). Smoke 7 can fail: a POST route added to the
   health router stops the public app from starting (`/health/mutate: not read-only (POST)`), and
   disabling redaction is reported as a leak. Fresh-clone check on a wiped volume: `up -d` starts `api`
   in private mode, `/health/ready` ok, schema at 0002. All of this ran from a scratch copy of the
   working tree on port 55432, because of the Postgres service below.
-- **Not verified / broken on this machine:**
-  - **The arm64 build fails here, and slice 2's smoke with it.** This Docker lists only amd64
-    platforms; `exec format error` at `pip install`. Not caused by this slice: untouched `HEAD` fails
-    identically, and the Dockerfile and requirements did not change. Emulation is not installed since
-    the 2026-11-03 Docker Desktop upgrade or was never installed on this machine; which one is unknown.
-    Slice 2's remaining steps pass on amd64 only, so **this slice's image has not been built for
-    arm64.** Slice 7 adds only Python source and no dependency.
-  - **Smoke 5 fails here as committed**: this machine's Git Bash has no `python3`, and the script
-    reports that as "non-JSON line in api logs". It passes with a `python3` shim on PATH. Not fixed:
-    pre-existing and out of this slice.
+- **Environment problems found during verification:**
+  - **arm64 emulation was missing, now installed by Kyle.** The arm64 build first failed with `exec
+    format error` at `pip install`, and untouched `HEAD` failed identically, so it was not this slice.
+    With emulation installed, `smoke-slice2.sh` passes from the repo with this slice's code: all 8
+    arm64 build steps complete, and a throwaway arm64 `python:3.12-slim` container runs. The arm64
+    image of FlowDesk itself has still only been built, not started.
+  - **Smoke 5 needed a host `python3`**, which this machine's Git Bash lacks, and reported that as
+    "non-JSON line in api logs". Fixed in its own commit: validation now runs inside the api
+    container, and the failure message is the validator's own. Passes with no host `python3`; a
+    non-JSON line and a validator that cannot run each fail with an accurate message.
   - **The native `postgresql-x64-17` service holds 5432** (automatic start, as in slice 1), so
     `docker compose up -d` in the repo fails here until it is stopped or `POSTGRES_PORT` is changed.
   - A GET handler that writes is still unenforced (IDEA-019), and the invariant reads routes, so
