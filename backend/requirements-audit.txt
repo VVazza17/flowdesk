@@ -1,0 +1,4 @@
+# Audit tools get their own venv: installed next to the project, their dependencies would be
+# audited as ours and could conflict with our pins.
+pip-audit==2.10.1
+pip-licenses==5.5.5

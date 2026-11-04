@@ -8,9 +8,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /srv
 
-# Dependencies first: this layer is cached until requirements.txt changes.
-COPY requirements.txt .
-RUN pip install -r requirements.txt
+# Dependencies first: this layer is cached until the lock changes. --require-hashes means the image
+# gets exactly the set CI audited, or the build fails. Edit requirements.txt, then infra/lock-deps.sh.
+COPY requirements.lock .
+RUN pip install --require-hashes -r requirements.lock
 
 COPY app ./app
 COPY alembic.ini ./
