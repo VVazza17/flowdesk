@@ -1,5 +1,6 @@
 """Slice 6: the real SQL behind /health/* against a migrated scratch database.
 Needs DATABASE_URL (see test_migrations.py)."""
+
 import asyncio
 import os
 import uuid
@@ -85,13 +86,25 @@ def test_migrated_database_empty_tables(scratch_url) -> None:
 def test_real_rows_come_back(scratch_url) -> None:
     with _client(scratch_url) as c:
         command.upgrade(Config(str(ALEMBIC_INI)), "head")
-        asyncio.run(_exec(scratch_url, "INSERT INTO providers_health (provider, feed) VALUES ('p','f')"))
-        asyncio.run(_exec(scratch_url, "INSERT INTO backfill_runs (feed, status, started_at, "
-                                       "total_units, completed_units) VALUES ('f','running',now(),10,4)"))
+        asyncio.run(
+            _exec(scratch_url, "INSERT INTO providers_health (provider, feed) VALUES ('p','f')")
+        )
+        asyncio.run(
+            _exec(
+                scratch_url,
+                "INSERT INTO backfill_runs (feed, status, started_at, "
+                "total_units, completed_units) VALUES ('f','running',now(),10,4)",
+            )
+        )
         # Two ingestion runs for one feed: only the latest is reported.
-        asyncio.run(_exec(scratch_url, "INSERT INTO ingestion_runs (provider, feed, started_at, status)"
-                                       " VALUES ('p','f', now() - interval '1 day', 'old'),"
-                                       " ('p','f', now(), 'new')"))
+        asyncio.run(
+            _exec(
+                scratch_url,
+                "INSERT INTO ingestion_runs (provider, feed, started_at, status)"
+                " VALUES ('p','f', now() - interval '1 day', 'old'),"
+                " ('p','f', now(), 'new')",
+            )
+        )
 
         prov = c.get("/health/providers").json()
         assert prov["status"] == "pending"

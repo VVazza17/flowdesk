@@ -3,6 +3,7 @@
 No infrastructure needed: probes are faked via dependency_overrides. TestClient re-raises
 server exceptions, so any path that would be a 500 fails these tests loudly.
 """
+
 import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -133,9 +134,7 @@ def test_real_clients_pointed_at_nothing_report_down_not_500() -> None:
     from app.services.health_probes import SqlRedisProbes
 
     probes = SqlRedisProbes(
-        create_async_engine(
-            "postgresql+asyncpg://u:p@127.0.0.1:1/x", connect_args={"timeout": 1}
-        ),
+        create_async_engine("postgresql+asyncpg://u:p@127.0.0.1:1/x", connect_args={"timeout": 1}),
         Redis.from_url("redis://127.0.0.1:1", socket_connect_timeout=1),
     )
     c = client_for(probes)  # type: ignore[arg-type]
@@ -194,18 +193,14 @@ def test_never_succeeded_but_erroring_is_visible_yet_still_pending() -> None:
 
 
 def test_succeeded_too_long_ago_is_stale() -> None:
-    out = svc.assemble_providers(
-        [row(last_success_at=NOW - 2 * HOUR)], NOW, {("p", "f"): HOUR}
-    )
+    out = svc.assemble_providers([row(last_success_at=NOW - 2 * HOUR)], NOW, {("p", "f"): HOUR})
     assert out["status"] == "stale"
     assert out["feeds"][0]["status"] == "stale"
     assert out["feeds"][0]["stale"] is True
 
 
 def test_fresh_feed() -> None:
-    out = svc.assemble_providers(
-        [row(last_success_at=NOW - HOUR / 2)], NOW, {("p", "f"): HOUR}
-    )
+    out = svc.assemble_providers([row(last_success_at=NOW - HOUR / 2)], NOW, {("p", "f"): HOUR})
     assert out["status"] == "ok"
     assert out["feeds"][0]["stale"] is False
 
@@ -239,9 +234,7 @@ def test_error_after_success_inside_threshold_is_fresh_but_flagged() -> None:
 
 
 def test_long_last_error_is_truncated() -> None:
-    out = svc.assemble_providers(
-        [row(last_error_at=NOW, last_error="x" * 5000)], NOW, {}
-    )
+    out = svc.assemble_providers([row(last_error_at=NOW, last_error="x" * 5000)], NOW, {})
     assert len(out["feeds"][0]["last_error"]) == svc.LAST_ERROR_MAX_CHARS
 
 
@@ -268,9 +261,17 @@ def test_data_empty_is_no_runs() -> None:
 def test_data_reports_without_judging() -> None:
     state = {
         "ingestion": [],
-        "backfills": [{"feed": "f", "status": "running", "total_units": 10,
-                       "completed_units": 3, "current_unit": "2020", "started_at": None,
-                       "updated_at": None}],
+        "backfills": [
+            {
+                "feed": "f",
+                "status": "running",
+                "total_units": 10,
+                "completed_units": 3,
+                "current_unit": "2020",
+                "started_at": None,
+                "updated_at": None,
+            }
+        ],
         "tasks": [],
     }
     body = client_for(FakeProbes(state=state)).get("/health/data").json()

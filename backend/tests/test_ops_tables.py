@@ -1,5 +1,6 @@
 """Slice 4: the §8 ops tables exist with the specified columns. Needs DATABASE_URL (see
 test_migrations.py); a scratch database is created and dropped."""
+
 import asyncio
 import os
 import uuid
@@ -22,34 +23,57 @@ ALEMBIC_INI = Path(__file__).resolve().parent.parent / "alembic.ini"
 # requirements — §8 does not state them, so a pass here is not spec conformance on types.
 SPEC = {
     "providers_health": (
-        [("provider", "text"), ("feed", "text"),
-         ("last_success_at", "timestamp with time zone"),
-         ("last_error_at", "timestamp with time zone"), ("last_error", "text")],
+        [
+            ("provider", "text"),
+            ("feed", "text"),
+            ("last_success_at", "timestamp with time zone"),
+            ("last_error_at", "timestamp with time zone"),
+            ("last_error", "text"),
+        ],
         ["provider", "feed"],
     ),
     "ingestion_runs": (
-        [("id", "bigint"), ("provider", "text"), ("feed", "text"),
-         ("started_at", "timestamp with time zone"),
-         ("finished_at", "timestamp with time zone"), ("status", "text"),
-         ("rows_read", "integer"), ("rows_written", "integer"), ("error", "text")],
+        [
+            ("id", "bigint"),
+            ("provider", "text"),
+            ("feed", "text"),
+            ("started_at", "timestamp with time zone"),
+            ("finished_at", "timestamp with time zone"),
+            ("status", "text"),
+            ("rows_read", "integer"),
+            ("rows_written", "integer"),
+            ("error", "text"),
+        ],
         ["id"],
     ),
     "task_runs": (
-        [("id", "bigint"), ("task_name", "text"),
-         ("scheduled_for", "timestamp with time zone"),
-         ("started_at", "timestamp with time zone"),
-         ("heartbeat_at", "timestamp with time zone"),
-         ("completed_at", "timestamp with time zone"), ("status", "text"),
-         ("attempt", "integer"), ("error_class", "text"), ("error_message", "text"),
-         ("input_watermark", "timestamp with time zone"),
-         ("output_watermark", "timestamp with time zone")],
+        [
+            ("id", "bigint"),
+            ("task_name", "text"),
+            ("scheduled_for", "timestamp with time zone"),
+            ("started_at", "timestamp with time zone"),
+            ("heartbeat_at", "timestamp with time zone"),
+            ("completed_at", "timestamp with time zone"),
+            ("status", "text"),
+            ("attempt", "integer"),
+            ("error_class", "text"),
+            ("error_message", "text"),
+            ("input_watermark", "timestamp with time zone"),
+            ("output_watermark", "timestamp with time zone"),
+        ],
         ["id"],
     ),
     "backfill_runs": (
-        [("id", "bigint"), ("feed", "text"), ("total_units", "integer"),
-         ("completed_units", "integer"), ("current_unit", "text"), ("status", "text"),
-         ("started_at", "timestamp with time zone"),
-         ("updated_at", "timestamp with time zone")],
+        [
+            ("id", "bigint"),
+            ("feed", "text"),
+            ("total_units", "integer"),
+            ("completed_units", "integer"),
+            ("current_unit", "text"),
+            ("status", "text"),
+            ("started_at", "timestamp with time zone"),
+            ("updated_at", "timestamp with time zone"),
+        ],
         ["id"],
     ),
 }
@@ -57,10 +81,10 @@ SPEC = {
 INSERTS = {
     "providers_health": "INSERT INTO providers_health (provider, feed) VALUES ('p', 'f')",
     "ingestion_runs": "INSERT INTO ingestion_runs (provider, feed, started_at, status) "
-                      "VALUES ('p', 'f', now(), 'x')",
+    "VALUES ('p', 'f', now(), 'x')",
     "task_runs": "INSERT INTO task_runs (task_name, started_at, status) VALUES ('t', now(), 'x')",
     "backfill_runs": "INSERT INTO backfill_runs (feed, status, started_at) "
-                     "VALUES ('f', 'x', now())",
+    "VALUES ('f', 'x', now())",
 }
 
 
@@ -94,17 +118,25 @@ def migrated_url(monkeypatch):
 @pytest.mark.parametrize("table", SPEC)
 def test_columns_and_primary_key_match_spec(migrated_url, table):
     columns, pk = SPEC[table]
-    got = asyncio.run(_rows(
-        migrated_url,
-        "SELECT column_name, data_type FROM information_schema.columns "
-        "WHERE table_name = :t ORDER BY ordinal_position", t=table))
+    got = asyncio.run(
+        _rows(
+            migrated_url,
+            "SELECT column_name, data_type FROM information_schema.columns "
+            "WHERE table_name = :t ORDER BY ordinal_position",
+            t=table,
+        )
+    )
     assert [tuple(r) for r in got] == columns
-    pk_got = asyncio.run(_rows(
-        migrated_url,
-        "SELECT a.attname FROM pg_index i JOIN pg_attribute a "
-        "ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) "
-        "WHERE i.indrelid = CAST(:t AS regclass) AND i.indisprimary "
-        "ORDER BY array_position(i.indkey, a.attnum)", t=table))
+    pk_got = asyncio.run(
+        _rows(
+            migrated_url,
+            "SELECT a.attname FROM pg_index i JOIN pg_attribute a "
+            "ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) "
+            "WHERE i.indrelid = CAST(:t AS regclass) AND i.indisprimary "
+            "ORDER BY array_position(i.indkey, a.attnum)",
+            t=table,
+        )
+    )
     assert [r[0] for r in pk_got] == pk
 
 
@@ -117,13 +149,24 @@ def test_minimal_row_inserts(migrated_url, table):
 def test_downgrade_removes_tables_and_reupgrade_restores_them(migrated_url):
     cfg = Config(str(ALEMBIC_INI))
     command.downgrade(cfg, "0001")
-    left = asyncio.run(_rows(
-        migrated_url,
-        "SELECT table_name FROM information_schema.tables WHERE table_name = ANY(:names)",
-        names=list(SPEC)))
+    left = asyncio.run(
+        _rows(
+            migrated_url,
+            "SELECT table_name FROM information_schema.tables WHERE table_name = ANY(:names)",
+            names=list(SPEC),
+        )
+    )
     assert left == []
     command.upgrade(cfg, "head")
-    assert len(asyncio.run(_rows(
-        migrated_url,
-        "SELECT table_name FROM information_schema.tables WHERE table_name = ANY(:names)",
-        names=list(SPEC)))) == 4
+    assert (
+        len(
+            asyncio.run(
+                _rows(
+                    migrated_url,
+                    "SELECT table_name FROM information_schema.tables WHERE table_name = ANY(:names)",
+                    names=list(SPEC),
+                )
+            )
+        )
+        == 4
+    )

@@ -3,6 +3,7 @@
 # DECISION: plain os.environ, not pydantic-settings. Slice 6 needs two URLs and an (empty)
 # threshold map; a settings library is a dependency for no gain yet. Revisit when config grows.
 """
+
 import os
 from datetime import timedelta
 from typing import Literal

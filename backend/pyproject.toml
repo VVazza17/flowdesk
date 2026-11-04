@@ -1,0 +1,21 @@
+# Ruff and mypy config only: this is not a packaged project, and pytest keeps its own pytest.ini.
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+# DECISION: named rules, not ruff's default set. pyflakes and pycodestyle catch errors, I sorts
+# imports, B catches likely bugs, UP keeps syntax current. The default set includes EXE002, which
+# fires on every file under a Windows bind mount, where everything looks executable.
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.ruff.lint.isort]
+# backend/alembic/ exists, so ruff would otherwise take the alembic package for first-party code.
+known-third-party = ["alembic"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+# Every directory of Python we own, with no ignores or per-module relaxations (slice 8).
+files = ["app", "tests", "alembic", "tools"]

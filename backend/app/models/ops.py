@@ -3,6 +3,7 @@
 Columns are exactly the §8 lists. Everything §8 leaves open (types, nullability, status
 vocabularies) is a stopgap logged as IDEA-022/023/024 in docs/SPEC-DEFECTS.md.
 """
+
 from datetime import datetime
 
 from sqlalchemy import BigInteger, Identity, Integer, Text

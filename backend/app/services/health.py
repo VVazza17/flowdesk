@@ -7,6 +7,7 @@ app.services.health_probes and are loaded lazily by app.deps; everything here ta
 
 Documented states: docs/HEALTH.md.
 """
+
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -40,6 +41,7 @@ class HealthProbes(Protocol):
     async def migration_revisions(self) -> tuple[str | None, str]:
         """(revision recorded in the database or None, revision the code expects)."""
         ...
+
     async def provider_rows(self) -> list[FeedRow]: ...
     async def data_state(self) -> dict[str, list[dict[str, Any]]]: ...
 

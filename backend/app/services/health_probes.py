@@ -1,5 +1,6 @@
 """Real Postgres/Redis probes for the health endpoints. Imported lazily (see app.deps) so the
 /health/live path never pulls in sqlalchemy or redis."""
+
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -84,26 +85,37 @@ class SqlRedisProbes:
             return {
                 "ingestion": [
                     {
-                        "provider": r.provider, "feed": r.feed, "status": r.status,
-                        "started_at": _iso(r.started_at), "finished_at": _iso(r.finished_at),
-                        "rows_read": r.rows_read, "rows_written": r.rows_written,
+                        "provider": r.provider,
+                        "feed": r.feed,
+                        "status": r.status,
+                        "started_at": _iso(r.started_at),
+                        "finished_at": _iso(r.finished_at),
+                        "rows_read": r.rows_read,
+                        "rows_written": r.rows_written,
                         "error": r.error,
                     }
                     for r in ing
                 ],
                 "backfills": [
                     {
-                        "feed": r.feed, "status": r.status, "total_units": r.total_units,
-                        "completed_units": r.completed_units, "current_unit": r.current_unit,
-                        "started_at": _iso(r.started_at), "updated_at": _iso(r.updated_at),
+                        "feed": r.feed,
+                        "status": r.status,
+                        "total_units": r.total_units,
+                        "completed_units": r.completed_units,
+                        "current_unit": r.current_unit,
+                        "started_at": _iso(r.started_at),
+                        "updated_at": _iso(r.updated_at),
                     }
                     for r in bf
                 ],
                 "tasks": [
                     {
-                        "task_name": r.task_name, "status": r.status,
-                        "started_at": _iso(r.started_at), "heartbeat_at": _iso(r.heartbeat_at),
-                        "completed_at": _iso(r.completed_at), "attempt": r.attempt,
+                        "task_name": r.task_name,
+                        "status": r.status,
+                        "started_at": _iso(r.started_at),
+                        "heartbeat_at": _iso(r.heartbeat_at),
+                        "completed_at": _iso(r.completed_at),
+                        "attempt": r.attempt,
                         "error_class": r.error_class,
                     }
                     for r in tk

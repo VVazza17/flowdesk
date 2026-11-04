@@ -4,6 +4,7 @@ Run against the compose database (a scratch database is created and dropped, the
 is never touched):
     DATABASE_URL=postgresql+asyncpg://flowdesk:<pw>@127.0.0.1:5432/flowdesk pytest tests/test_migrations.py
 """
+
 import asyncio
 import os
 import uuid
@@ -53,9 +54,12 @@ def test_upgrade_head_on_empty_db(scratch_url):
     command.upgrade(cfg, "head")
     head = ScriptDirectory.from_config(cfg).get_current_head()
     assert asyncio.run(_scalar(scratch_url, "SELECT version_num FROM alembic_version")) == head
-    assert asyncio.run(
-        _scalar(scratch_url, "SELECT extname FROM pg_extension WHERE extname='timescaledb'")
-    ) == "timescaledb"
+    assert (
+        asyncio.run(
+            _scalar(scratch_url, "SELECT extname FROM pg_extension WHERE extname='timescaledb'")
+        )
+        == "timescaledb"
+    )
 
 
 def test_downgrade_then_upgrade_round_trips(scratch_url):

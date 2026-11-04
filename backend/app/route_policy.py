@@ -11,6 +11,7 @@ has to define what "guarded" means, here.
 What this does not see: a GET handler that writes (IDEA-019 assigns that to the slice introducing
 the request-scoped DB session) and anything answering from ASGI middleware rather than a route.
 """
+
 from collections.abc import Sequence
 
 from fastapi.routing import iter_route_contexts

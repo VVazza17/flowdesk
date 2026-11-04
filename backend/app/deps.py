@@ -1,5 +1,6 @@
 """FastAPI dependencies. Heavy clients are imported inside the function, never at module
 level: /health/live must work (and import) without sqlalchemy or redis."""
+
 from datetime import UTC, datetime
 from functools import lru_cache
 

@@ -2,6 +2,7 @@
 
 No infrastructure needed: probes are faked via dependency_overrides.
 """
+
 from datetime import UTC, datetime
 from typing import Any
 
@@ -11,7 +12,7 @@ from fastapi.routing import iter_route_contexts
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse, Response
-from starlette.routing import BaseRoute, Host, Match, Mount, Route, WebSocketRoute
+from starlette.routing import BaseRoute, Host, Match, Route, WebSocketRoute
 from starlette.types import Receive, Scope, Send
 
 from app import main, settings
