@@ -136,6 +136,7 @@ elaboration is the most comfortable way to avoid execution.*
    section; say so explicitly.
 7. **Never shorten to hit a length target.** If something doesn't fit, say so — don't cut
    content to fit a line budget.
+8. **Commit directly to main.** Solo build, no review workflow, no feature branches.
 
 ## Commands
 
