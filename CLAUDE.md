@@ -152,7 +152,7 @@ docker compose --profile public up -d   # public instead (replaces, not adds); `
 docker compose exec postgres psql -U flowdesk -d flowdesk
 docker compose exec redis redis-cli ping
 bash infra/smoke-slice1.sh        # slice 1 acceptance check
-bash infra/smoke-slice2.sh        # slice 2: amd64+arm64 build, /health/live 200, loopback bind
+bash infra/smoke-slice2.sh        # slice 2: amd64+arm64 build (arm64 skips without emulation), /health/live 200, loopback bind
 bash infra/smoke-slice3.sh        # slice 3: alembic upgrade head on an empty DB; up -d runs migrate
 bash infra/smoke-slice4.sh        # slice 4: migrate reaches 0002; the four ops tables exist
 bash infra/smoke-slice5.sh        # slice 5: one request -> one JSON log line with the X-Request-ID
@@ -169,9 +169,8 @@ docker compose down               # add -v to wipe the pgdata volume; inactive p
 # before Docker Desktop's 2026-11-03 upgrade. `docker compose up -d` is still the one command.
 # NOTE: a native Windows postgresql-x64-17 service (automatic start) holds 5432 on this machine and
 # stops the stack from starting. Stop it, or set POSTGRES_PORT in .env.
-# NOTE: arm64 emulation has gone missing from Docker Desktop here more than once. smoke-slice2.sh and
-# `ci-checks.sh arm64` then fail with `exec format error`. It's this machine, not the code; CI installs
-# its own QEMU. Reinstalling needs a privileged third-party image, so that stays Kyle's call.
+# NOTE: this machine has no arm64 emulation, by Kyle's choice. smoke-slice2.sh skips arm64 with a notice;
+# `ci-checks.sh arm64` fails with `exec format error`. CI's arm64 job installs its own QEMU and is the gate.
 # Migration tests (skipped without DATABASE_URL), from backend/:
 #   DATABASE_URL=postgresql+asyncpg://flowdesk:<pw>@127.0.0.1:5432/flowdesk pytest
 ```

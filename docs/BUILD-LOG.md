@@ -12,6 +12,18 @@ editing history.
 
 ## 2026-11-04 — M1 slice 8: CI
 
+- **Follow-up, same day (supersedes the matching points below):**
+  - The `certifi` licence entry is removed by owner decision. `pathspec` is now the only MPL-2.0 entry.
+  - `smoke-slice2.sh` now skips the arm64 half with a notice when the probe reports `exec format error`,
+    pointing at CI's arm64 job. Any other probe failure still fails. Reinstalling emulation locally was
+    declined. CI's `arm64` job is the only arm64 gate.
+  - **The 180 ignored Grype matches, now reviewed: 0 Critical**, 60 High, 63 Medium, 11 Low, 46
+    Negligible. All 180 are Debian 13.7 base-image packages, none from our Python dependencies. The 60
+    High rows are 18 unique CVEs: 59 rows Debian marks `wont-fix` and 1 `not-fixed` (zlib,
+    CVE-2026-85091, a heap buffer overflow). None is on the known-exploited list, and EPSS tops out at
+    0.6%. Scanned amd64 only, with the 2026-11-04 Grype DB, on a floating base tag, so this is a
+    snapshot. Nothing fixed: it is an input to the base-image choice before deploy.
+
 - **What shipped:** `.github/workflows/ci.yml` with six jobs (lint, test, migration-smoke, arm64,
   security, license); `infra/ci-checks.sh`, the same code for CI and a local shell;
   `infra/lock-deps.sh` and three hash-pinned locks; `backend/pyproject.toml`;

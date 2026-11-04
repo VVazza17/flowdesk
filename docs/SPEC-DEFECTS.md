@@ -608,6 +608,7 @@ Real dependencies fall outside its list:
 - `pathspec` is MPL-2.0. mypy depends on it, so it is dev-only.
 - `certifi` is MPL-2.0. It came in through `httpx`. It left the audited set when slice 8 replaced
   `httpx` with `httpx2`, and it remains in the audit tools' own lock, which is not audited.
+  If an HTTP client brings it back (likely M2), the gate fails and it stops for review.
 
 Read literally, "fails on AGPL or unknown" would pass all of these and also anything else that merely
 has a name. `backend/tools/license_audit.py` is stricter: it is an allow-list, so anything not
@@ -615,12 +616,11 @@ reviewed fails.
 
 ### How it is handled for the build
 - PSF-2.0 is allowed for any package.
-- MPL-2.0 is allowed per package, currently `certifi` and `pathspec`, on the basis that they are
-  unmodified and never vendored. Any other MPL dependency fails until someone reviews it.
+- MPL-2.0 is allowed per package, currently only `pathspec`, on the basis that it is unmodified and
+  never vendored. Any other MPL dependency fails until someone reviews it.
 
 The `pathspec` entry exists because the gate caught it during slice 8, after the original decision
-named only `certifi`. The `certifi` entry currently matches nothing. It is kept as the owner's
-recorded decision.
+named only `certifi`. The `certifi` entry was then removed by the owner, because it matched nothing.
 
 ### A known property of the gate
 The gate treats shipped and dev-only dependencies identically: it audits the dev lock, which includes

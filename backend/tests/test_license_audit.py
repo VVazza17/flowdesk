@@ -53,13 +53,14 @@ def test_everything_else_fails(license_text: str) -> None:
 
 @pytest.mark.parametrize("license_text", ["MPL-2.0", "Mozilla Public License 2.0 (MPL 2.0)"])
 def test_mpl_is_allowed_only_for_named_packages(license_text: str) -> None:
-    assert violations([_package(license_text, name="certifi")]) == []
     assert violations([_package(license_text, name="pathspec")]) == []
     assert len(violations([_package(license_text, name="otherpkg")])) == 1
+    # Removed on 2026-11-04 (IDEA-027). If it returns with an HTTP client, it stops for a review.
+    assert len(violations([_package(license_text, name="certifi")])) == 1
 
 
-def test_certifi_exception_does_not_cover_other_licences() -> None:
-    assert len(violations([_package("AGPL-3.0", name="certifi")])) == 1
+def test_package_exception_does_not_cover_other_licences() -> None:
+    assert len(violations([_package("AGPL-3.0", name="pathspec")])) == 1
 
 
 def test_a_violation_names_the_package_and_its_licence() -> None:

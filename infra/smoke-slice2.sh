@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# M1 slice 2 smoke test: the API image builds for amd64 AND arm64, the host-platform image
-# runs, /health/live answers 200, and the API is bound to loopback only.
+# M1 slice 2 smoke test: the API image builds for amd64 AND arm64 (arm64 is skipped with a notice
+# if this machine has no emulation), the host-platform image runs, /health/live answers 200, and the
+# API is bound to loopback only.
 # Run from the repo root (needs a .env; see .env.example).
 set -euo pipefail
 
@@ -17,10 +18,25 @@ if ! docker info --format '{{.DriverStatus}}' | grep -q 'io.containerd.snapshott
   builder=(--builder flowdesk-multiarch)
 fi
 
-# 1. Both platforms must compile. No --load: the docker exporter cannot export a manifest
+# A red that always means "this laptop has no emulation" is a red people learn to ignore, so that one
+# case skips the arm64 half with a notice. Only that case: any other probe failure is a real failure.
+platforms=linux/amd64,linux/arm64
+built="amd64+arm64 build"
+if ! probe=$(docker run --rm --platform linux/arm64 python:3.12-slim true 2>&1); then
+  case "$probe" in
+    *"exec format error"*)
+      platforms=linux/amd64
+      built="amd64 build, arm64 SKIPPED"
+      echo "NOTICE: arm64 SKIPPED, no emulation on this machine. CI's arm64 job is the gate (.github/workflows/ci.yml)."
+      ;;
+    *) fail "could not probe arm64 emulation: $probe" ;;
+  esac
+fi
+
+# 1. Every available platform must compile. No --load: the docker exporter cannot export a manifest
 #    list. The result stays in the build cache, which is all this step needs to prove.
-docker buildx build "${builder[@]}" --platform linux/amd64,linux/arm64 ./backend \
-  || fail "multi-arch build (amd64 + arm64) failed"
+docker buildx build "${builder[@]}" --platform "$platforms" ./backend \
+  || fail "build for $platforms failed"
 
 # 2. Run the host-platform image through compose.
 docker compose up -d --build api
@@ -36,4 +52,4 @@ case "$api_bind" in
   *) fail "api bound to '$api_bind', expected 127.0.0.1" ;;
 esac
 
-echo "OK: slice 2 smoke passed (api $api_bind, amd64+arm64 build, /health/live 200)"
+echo "OK: slice 2 smoke passed (api $api_bind, $built, /health/live 200)"

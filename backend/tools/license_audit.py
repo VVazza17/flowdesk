@@ -41,11 +41,9 @@ ALLOWED = frozenset(
 # MPL dependency still stops for a review. Parentheses are stripped before comparing.
 _MPL = frozenset({"MPL-2.0", "Mozilla Public License 2.0 MPL 2.0"})
 
-# certifi is not in any audited lock since the move to httpx2; its entry stands as the owner's
-# recorded decision. pathspec comes in through mypy, so it is dev-only. This gate treats shipped and
-# dev-only packages alike (IDEA-027).
+# pathspec comes in through mypy, so it is dev-only. This gate treats shipped and dev-only packages
+# alike (IDEA-027).
 PACKAGE_EXCEPTIONS: Mapping[str, frozenset[str]] = {
-    "certifi": _MPL,
     "pathspec": _MPL,
 }
 
