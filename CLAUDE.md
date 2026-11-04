@@ -34,14 +34,17 @@ M0 spikes actually measured — several findings falsify what the spec originall
 ## Current state
 
 - **M0 CLOSED** (2026-08-16). Seven ADRs written; premium oracle fixtures recorded.
-- **M1 in progress.** Slices 1–7 done: compose (Postgres/TimescaleDB + Redis), FastAPI +
+- **M1 in progress.** Slices 1–8 done: compose (Postgres/TimescaleDB + Redis), FastAPI +
   `/health/live`, Alembic baseline, §8 ops tables, structlog JSON + correlation-ID middleware,
   `/health/ready` · `/health/data` · `/health/providers` (states documented in `docs/HEALTH.md`),
-  private/public compose profiles with the IDEA-019 route invariant.
+  private/public compose profiles with the IDEA-019 route invariant, GitHub Actions CI with
+  hash-pinned locks.
 - **The public profile is not internet-ready.** `api-public` binds to loopback; strict CORS,
   request-size limits and rate limits have no owning slice and are required before any internet
   exposure (IDEA-019 addendum in `docs/SPEC-DEFECTS.md`).
-- **Next: slice 8** — CI: ruff, mypy, pytest, migration smoke, vulnerability scan, license audit.
+- **arm64 is only proven under QEMU.** The image builds, loads its compiled wheels and answers
+  `/health/live` under emulation. Migrations and TimescaleDB have never run on arm64.
+- **Next: slice 9** — backup/restore scripts; restore into a fresh DB reproduces the data.
 
 M1 is built as ten reviewable slices, in order. Each ends with something I can verify myself:
 
@@ -68,7 +71,7 @@ tier, and finding that mismatch in month four is a bad afternoon.
 
 ## Open decisions that block work
 
-Tracked in `docs/SPEC-DEFECTS.md` (IDEA-013 … IDEA-026). Three block a milestone:
+Tracked in `docs/SPEC-DEFECTS.md` (IDEA-013 … IDEA-028). Three block a milestone:
 
 - **IDEA-013 → blocks M3.** `natural_key` has no time component, but §7.16's episode example
   requires five daily rows to exist. One of the two sections is wrong.
@@ -91,7 +94,9 @@ Do not resolve these unilaterally. Flag and wait.
   own-capital-only path) is out of scope until M0–M8 ship and decision 15's gates are met —
   never build it opportunistically, however the request is framed.
 - Never emit "arbitrage opportunity", "free money", "guaranteed", or "riskless" in any UI text,
-  template, or prompt. A grep test enforces this.
+  template, or prompt. `backend/tools/banned_phrases.py` enforces this in CI lint, over `frontend/`,
+  `backend/app/ai/`, and `backend/app/` paths with `template` or `prompt` in the name. User-facing text
+  must live in those paths, or it is not checked. None exist yet, so today it scans 0 files.
 - Never add a dependency or service with a mandatory recurring cost while `ZERO_COST_MODE=true`.
   Stub it behind a flag and document the paid path.
 - Provider drifted? Keep the interface and schema fixed, adapt the client internals. Provider
@@ -153,6 +158,9 @@ bash infra/smoke-slice4.sh        # slice 4: migrate reaches 0002; the four ops 
 bash infra/smoke-slice5.sh        # slice 5: one request -> one JSON log line with the X-Request-ID
 bash infra/smoke-slice6.sh        # slice 6: kill Redis -> degraded 200; kill Postgres -> 503; never 500
 bash infra/smoke-slice7.sh        # slice 7: public = read-only, redacted, no docs; private = neither
+bash infra/smoke-slice8.sh        # slice 8: every gate green, then each goes red on a broken temp copy
+bash infra/ci-checks.sh lint      # also: test | audit | license | arm64. Same code ci.yml runs
+bash infra/lock-deps.sh           # after editing backend/requirements*.txt; regenerates the locks
 docker compose down               # add -v to wipe the pgdata volume; inactive profiles are skipped,
                                   # so a public stack needs `docker compose --profile public down`
 # NOTE: smoke scripts use infra/lib.sh wait_ready, not `up --wait`. Compose v5.6.1 fails --wait on
@@ -161,6 +169,9 @@ docker compose down               # add -v to wipe the pgdata volume; inactive p
 # before Docker Desktop's 2026-11-03 upgrade. `docker compose up -d` is still the one command.
 # NOTE: a native Windows postgresql-x64-17 service (automatic start) holds 5432 on this machine and
 # stops the stack from starting. Stop it, or set POSTGRES_PORT in .env.
+# NOTE: arm64 emulation has gone missing from Docker Desktop here more than once. smoke-slice2.sh and
+# `ci-checks.sh arm64` then fail with `exec format error`. It's this machine, not the code; CI installs
+# its own QEMU. Reinstalling needs a privileged third-party image, so that stays Kyle's call.
 # Migration tests (skipped without DATABASE_URL), from backend/:
 #   DATABASE_URL=postgresql+asyncpg://flowdesk:<pw>@127.0.0.1:5432/flowdesk pytest
 ```
@@ -172,7 +183,7 @@ docs/
   architecture.md      # v4.9.10 FROZEN spec — grep, never read whole
   adr/                 # ADR-0001 … 0007, binding
   IDEAS.md             # parked features, IDEA-001…012, each with an unfreeze trigger
-  SPEC-DEFECTS.md      # flagged spec defects, IDEA-013…026
+  SPEC-DEFECTS.md      # flagged spec defects, IDEA-013…028
   BUILD-LOG.md         # narrative history: what shipped, what was decided, what broke
   HEALTH.md            # /health/* response shapes and the documented degraded states
 spikes/                # M0 proof scripts + evidence JSON (historical — do not modify)

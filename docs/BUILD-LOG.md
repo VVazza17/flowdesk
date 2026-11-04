@@ -10,6 +10,68 @@ editing history.
 
 ---
 
+## 2026-11-04 — M1 slice 8: CI
+
+- **What shipped:** `.github/workflows/ci.yml` with six jobs (lint, test, migration-smoke, arm64,
+  security, license); `infra/ci-checks.sh`, the same code for CI and a local shell;
+  `infra/lock-deps.sh` and three hash-pinned locks; `backend/pyproject.toml`;
+  `backend/tools/license_audit.py` and `banned_phrases.py`; `infra/smoke-slice8.sh`. The Dockerfile
+  now installs with `--require-hashes`. Actions are pinned to full SHAs, with `contents: read` and no
+  secrets. Runs on push to main and manually; only `security` runs nightly. Docs-only pushes skip CI.
+- **Repo visibility:** found public during planning, though it was meant to be private. Kyle made it
+  private on 2026-11-04. It had been public since 2026-10-22, with 0 forks. `.env` was never committed;
+  the rest of the history was not audited for secrets.
+- **mypy:** first-ever `--strict` run reported 27 errors, against a stop threshold of 50 set by Kyle
+  (25 in tests, 1 in app, 1 in alembic). All fixed with annotations. Pre-existing `# type: ignore` and
+  `# noqa` comments were removed too, so none remain. No runtime behaviour changed. `0002_ops_tables.py`
+  changed only in an annotation (`sa.Column[int]`).
+- **Decided:**
+  - Licences: IDEA-027. PSF-2.0 allowed, MPL-2.0 per package. Note the gate caught `pathspec` (MPL-2.0,
+    via mypy) after the original decision named only `certifi`, and the `certifi` entry now matches
+    nothing because the `httpx2` swap removed it from the audited set.
+  - `httpx` -> `httpx2`: clears the Starlette deprecation warning deferred at slice 2.
+  - QEMU on amd64 for arm64, because native arm64 runners aren't free on private repos.
+  - Grype, not Trivy, for the image scan: Trivy's action tags were hijacked in March 2026
+    (CVE-2026-33634).
+  - pip-tools is pinned in `lock-deps.sh`, not in the dev requirements as first planned, so that its
+    dependencies stay out of the licence audit. `actions/setup-python` and `setup-buildx-action` were
+    dropped from the plan: the checks run in containers and don't need them.
+  - The LICENSE file is on hold by owner decision, tied to whether the repo stays private and any later
+    commercialisation. So this slice does not complete decision 24, which also requires FlowDesk's own
+    repo to carry MIT or Apache-2.0.
+- **Banned-phrase check, built earlier than the spec places it.** §16 gives a forbidden-vocabulary test
+  to M5.5, and §7.5/§15 have one for premium templates. Kyle moved it here as a lint rule. CLAUDE.md
+  claimed "a grep test enforces this" when none had ever existed; that line is corrected. The check
+  scans 0 files today because no UI, template or prompt paths exist yet, so it guards nothing real until
+  they do. Its tests plant files to prove it fires. M5.5's recommendation vocabulary is a different list
+  and is still M5.5's job. Decision 14 and §17 word the "arbitrage" ban differently: IDEA-028, open.
+- **Known future friction (not a defect):** the rule is literal with no suppression, so "not guaranteed"
+  fails it. That's correct per §17 as written, but it collides with standard disclaimer language, and
+  M5.5 is where disclaimers get written.
+- **Verified:**
+  - CI run 41910297474 on `dbe1dd6`: all six jobs passed, confirmed from the logs. 169 tests passed with
+    none skipped, 36 packages licence-audited, slice 3 smoke passed, arm64 answered `/health/live` 200
+    under emulation.
+  - `smoke-slice8.sh` locally: four gates green; ruff, type error, banned phrase, stale lock, failing
+    test, skip guard, raising migration, known advisory, unknown licence and empty licence report each
+    go red for the expected reason; phrases in docs don't fire.
+  - Smoke 1 and 3 to 7 pass locally against the locked image after the type fixes.
+- **Not verified / not covered:**
+  - **arm64 is proven only under QEMU.** Nothing has run on arm64 hardware, and migrations and
+    TimescaleDB have never run on arm64 at all. This stays open until a deploy to the §13 ARM VM.
+  - **The Grype gate has only ever passed.** It has not been shown to go red, because the local smoke
+    doesn't run it. The first run reported 193 matches: 180 with no fix (ignored by `only-fixed`, and
+    their severities were not reviewed), 13 fixable at Medium or below, in the base image's `pip` 25.0.1
+    and Python 3.12.16.
+  - The licence gate's red path was tested at tool level, not end to end through a real package.
+  - **`smoke-slice2.sh` fails on this machine** at the arm64 half with `exec format error`, because
+    emulation went missing from Docker Desktop again. The amd64 build and smoke 3 pass. CI covers the
+    arm64 build.
+  - `python:3.12-slim` in the Dockerfile is a floating tag, so the base image isn't pinned the way the
+    Python dependencies are. §13 names lock files and Actions, not base images, so it's left as is.
+- **Actions minutes:** the first run took about 3 minutes end to end. Rounding each job up, that's about
+  11 billed minutes per push, well under the plan's 25-minute guess, plus about 3 per night for `security`.
+
 ## 2026-11-03 — M1 slice 7: private/public compose profiles
 
 - **What shipped:** `api` (`profiles: [private]`) and `api-public` (`profiles: [public]`) from one

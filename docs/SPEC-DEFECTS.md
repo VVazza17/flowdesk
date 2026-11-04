@@ -591,3 +591,72 @@ Resolve before M2 registers the first real feed, so the migration adding the col
 any row exists. Related but distinct: IDEA-023 is a contradiction (line 374 sends quarantine
 counts to a table with no columns for them); this entry is a missing field that no section
 contradicts.
+
+---
+
+## IDEA-027: Decision 24 doesn't cover PSF-2.0 or MPL-2.0, and the gate doesn't separate shipped from dev-only
+
+**Status:** Resolved for the build by owner decision, 2026-11-04 (M1 slice 8). A spec correction release should record it.
+**Raised:** 2026-11-04 (M1 slice 8)
+
+### The proposal
+Decision 24 (§2) names MIT/BSD/Apache as permissive, puts LGPL in the companion repo, bans AGPL, and
+says CI fails the build on "AGPL or unknown licenses". It says nothing about other known licences.
+Real dependencies fall outside its list:
+
+- `typing-extensions` is PSF-2.0, in the runtime lock. `greenlet` is `MIT AND PSF-2.0`, also runtime.
+- `pathspec` is MPL-2.0. mypy depends on it, so it is dev-only.
+- `certifi` is MPL-2.0. It came in through `httpx`. It left the audited set when slice 8 replaced
+  `httpx` with `httpx2`, and it remains in the audit tools' own lock, which is not audited.
+
+Read literally, "fails on AGPL or unknown" would pass all of these and also anything else that merely
+has a name. `backend/tools/license_audit.py` is stricter: it is an allow-list, so anything not
+reviewed fails.
+
+### How it is handled for the build
+- PSF-2.0 is allowed for any package.
+- MPL-2.0 is allowed per package, currently `certifi` and `pathspec`, on the basis that they are
+  unmodified and never vendored. Any other MPL dependency fails until someone reviews it.
+
+The `pathspec` entry exists because the gate caught it during slice 8, after the original decision
+named only `certifi`. The `certifi` entry currently matches nothing. It is kept as the owner's
+recorded decision.
+
+### A known property of the gate
+The gate treats shipped and dev-only dependencies identically: it audits the dev lock, which includes
+the runtime lock, as one set. Licence obligations attach only to what is distributed, and `pathspec`
+never ships in the image. So the gate is stricter than the obligations it exists to protect.
+
+### The version that would be legitimate
+If per-package MPL review gets tedious, the fix is to split the allow-list by lock file, with one list
+for `requirements.lock` (shipped) and a wider one for `requirements-dev.lock` (not distributed), rather
+than loosening the list globally.
+
+### Unfreeze triggers
+Revisit when per-package MPL review becomes tedious, or before any distribution or commercial use,
+when the shipped set should get a proper legal read (decision 24 says as much). The repo's own LICENSE
+file is a separate question, held by the owner.
+
+---
+
+## IDEA-028: Decision 14 bans bare "arbitrage"; §7.5, §15 and §17 ban only "arbitrage opportunity"
+
+**Status:** Open. Blocks nothing now; matters when the first premium template is written.
+**Raised:** 2026-11-04 (M1 slice 8)
+
+### The proposal
+Decision 14 (§2) says the Premium Monitor "never calls them 'arbitrage,' 'free money,' 'guaranteed,' or
+'riskless.'" §7.5, §15 and §17 list the phrase as "arbitrage opportunity". The two differ: a template
+saying "this is an arbitrage" breaks decision 14 and passes the other three.
+
+### How it is handled for the build
+`backend/tools/banned_phrases.py` follows §17's list, because §17 is the hard-rules section and §15
+states the test. A `# DECISION:` comment there points here. Not resolved.
+
+### The version that would be legitimate
+Pick one wording in a correction release. Moving to the stricter word is a one-line change to
+`PHRASES`. It would also catch legitimate explanatory text, so it is not automatically the better
+choice.
+
+### Unfreeze triggers
+Resolve before the first premium-module template is written (§7.5).
