@@ -1,0 +1,85 @@
+# §13 and §16 M1 CI. The checks live in infra/ci-checks.sh so a local shell runs the same code; this
+# file only decides when and where. Third-party actions are pinned to full commit SHAs (§13).
+name: CI
+
+on:
+  push:
+    branches: [main]
+    # DECISION: the repo is private, so Actions minutes are a budget. Docs can't break these gates.
+    paths-ignore:
+      - "docs/**"
+      - "CLAUDE.md"
+  workflow_dispatch:
+  schedule:
+    # New advisories appear without any commit. 09:17 UTC, off the hour when runners are busiest.
+    - cron: "17 9 * * *"
+
+# Nothing here needs to write to the repo, and no job is given a secret.
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: bash infra/ci-checks.sh lint
+
+  test:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: cp .env.example .env
+      - run: bash infra/ci-checks.sh test
+
+  migration-smoke:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: cp .env.example .env
+      - run: bash infra/smoke-slice3.sh
+
+  # DECISION: QEMU, because native arm64 runners aren't free on private repos. See check_arm64 in
+  # ci-checks.sh for what this does and does not prove.
+  arm64:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
+      - run: bash infra/ci-checks.sh arm64
+
+  security:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: bash infra/ci-checks.sh audit
+      - run: docker build -t flowdesk-api:scan ./backend
+      # DECISION: Grype rather than Trivy, whose action tags were hijacked in March 2026
+      # (CVE-2026-33634). Fixable HIGH and above only: a base-image CVE with no fix available
+      # would keep the build red with nothing to act on.
+      - uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        with:
+          image: flowdesk-api:scan
+          fail-build: true
+          severity-cutoff: high
+          only-fixed: true
+          output-format: table
+
+  license:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: bash infra/ci-checks.sh license
