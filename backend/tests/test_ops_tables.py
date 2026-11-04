@@ -4,16 +4,18 @@ test_migrations.py); a scratch database is created and dropped."""
 import asyncio
 import os
 import uuid
+from collections.abc import Iterator, Sequence
 from pathlib import Path
+from typing import Any
 
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import text
+from sqlalchemy import Row, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
-ADMIN_URL = os.environ.get("DATABASE_URL")
+ADMIN_URL = os.environ.get("DATABASE_URL", "")
 pytestmark = pytest.mark.skipif(not ADMIN_URL, reason="DATABASE_URL not set")
 
 ALEMBIC_INI = Path(__file__).resolve().parent.parent / "alembic.ini"
@@ -95,7 +97,7 @@ async def _admin(sql: str) -> None:
     await engine.dispose()
 
 
-async def _rows(url: str, sql: str, **params):
+async def _rows(url: str, sql: str, **params: Any) -> Sequence[Row[Any]]:
     engine = create_async_engine(url)
     async with engine.begin() as conn:
         result = await conn.execute(text(sql), params)
@@ -105,7 +107,7 @@ async def _rows(url: str, sql: str, **params):
 
 
 @pytest.fixture
-def migrated_url(monkeypatch):
+def migrated_url(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     name = f"flowdesk_ops_{uuid.uuid4().hex[:8]}"
     asyncio.run(_admin(f'CREATE DATABASE "{name}"'))
     url = make_url(ADMIN_URL).set(database=name).render_as_string(hide_password=False)
@@ -116,7 +118,7 @@ def migrated_url(monkeypatch):
 
 
 @pytest.mark.parametrize("table", SPEC)
-def test_columns_and_primary_key_match_spec(migrated_url, table):
+def test_columns_and_primary_key_match_spec(migrated_url: str, table: str) -> None:
     columns, pk = SPEC[table]
     got = asyncio.run(
         _rows(
@@ -141,12 +143,12 @@ def test_columns_and_primary_key_match_spec(migrated_url, table):
 
 
 @pytest.mark.parametrize("table", INSERTS)
-def test_minimal_row_inserts(migrated_url, table):
+def test_minimal_row_inserts(migrated_url: str, table: str) -> None:
     asyncio.run(_rows(migrated_url, INSERTS[table]))
     assert asyncio.run(_rows(migrated_url, f"SELECT count(*) FROM {table}"))[0][0] == 1
 
 
-def test_downgrade_removes_tables_and_reupgrade_restores_them(migrated_url):
+def test_downgrade_removes_tables_and_reupgrade_restores_them(migrated_url: str) -> None:
     cfg = Config(str(ALEMBIC_INI))
     command.downgrade(cfg, "0001")
     left = asyncio.run(
@@ -163,7 +165,8 @@ def test_downgrade_removes_tables_and_reupgrade_restores_them(migrated_url):
             asyncio.run(
                 _rows(
                     migrated_url,
-                    "SELECT table_name FROM information_schema.tables WHERE table_name = ANY(:names)",
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_name = ANY(:names)",
                     names=list(SPEC),
                 )
             )

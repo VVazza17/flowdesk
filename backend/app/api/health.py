@@ -1,6 +1,6 @@
 from collections.abc import Awaitable, Callable
 from datetime import datetime
-from typing import Annotated, Any, TypeVar
+from typing import Annotated, Any
 
 import structlog
 from fastapi import APIRouter, Depends, Response
@@ -10,7 +10,6 @@ from app.deps import get_deployment_mode, get_now, get_probes
 from app.services import health as svc
 
 log = structlog.get_logger(__name__)
-T = TypeVar("T")
 
 router = APIRouter(prefix="/health", tags=["health"])
 
@@ -38,14 +37,14 @@ async def ready(response: Response, probes: Probes) -> dict[str, Any]:
     return body
 
 
-async def _from_postgres(
+async def _from_postgres[T](
     response: Response, name: str, load: Callable[[], Awaitable[T]]
 ) -> tuple[T | None, dict[str, Any] | None]:
     """Run a Postgres-only read. On any failure (down, timeout, table missing because
     migrations have not run) set 503 and return an 'unavailable' body instead of raising."""
     try:
         return await load(), None
-    except Exception as exc:  # noqa: BLE001 - must never surface as a 500
+    except Exception as exc:  # must never surface as a 500
         err = type(exc).__name__
         log.warning("health_read_failed", endpoint=name, error=err)
         response.status_code = 503

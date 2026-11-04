@@ -54,7 +54,7 @@ async def run_check(name: str, probe: Callable[[], Awaitable[Any]]) -> dict[str,
     """
     try:
         await asyncio.wait_for(probe(), timeout=CHECK_TIMEOUT_S)
-    except Exception as exc:  # noqa: BLE001 - the whole point is that nothing escapes
+    except Exception as exc:  # the whole point is that nothing escapes
         err = type(exc).__name__
         log.warning("health_check_failed", check=name, error=err)
         return {"status": "down", "error": err}

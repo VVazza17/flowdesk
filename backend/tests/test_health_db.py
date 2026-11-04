@@ -4,6 +4,7 @@ Needs DATABASE_URL (see test_migrations.py)."""
 import asyncio
 import os
 import uuid
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -19,7 +20,7 @@ from app.deps import get_probes
 from app.main import create_app
 from app.services.health_probes import SqlRedisProbes
 
-ADMIN_URL = os.environ.get("DATABASE_URL")
+ADMIN_URL = os.environ.get("DATABASE_URL", "")
 pytestmark = pytest.mark.skipif(not ADMIN_URL, reason="DATABASE_URL not set")
 
 ALEMBIC_INI = Path(__file__).resolve().parent.parent / "alembic.ini"
@@ -40,7 +41,7 @@ async def _exec(url: str, sql: str) -> None:
 
 
 @pytest.fixture
-def scratch_url(monkeypatch):
+def scratch_url(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     name = f"flowdesk_health_{uuid.uuid4().hex[:8]}"
     asyncio.run(_admin(f'CREATE DATABASE "{name}"'))
     url = make_url(ADMIN_URL).set(database=name).render_as_string(hide_password=False)
@@ -61,7 +62,7 @@ def _client(url: str) -> TestClient:
     return TestClient(app)
 
 
-def test_never_migrated_database_is_not_ready_and_data_is_unavailable(scratch_url) -> None:
+def test_never_migrated_database_is_not_ready_and_data_is_unavailable(scratch_url: str) -> None:
     with _client(scratch_url) as c:
         ready = c.get("/health/ready")
         assert ready.status_code == 503
@@ -72,7 +73,7 @@ def test_never_migrated_database_is_not_ready_and_data_is_unavailable(scratch_ur
         assert c.get("/health/data").status_code == 503
 
 
-def test_migrated_database_empty_tables(scratch_url) -> None:
+def test_migrated_database_empty_tables(scratch_url: str) -> None:
     with _client(scratch_url) as c:
         command.upgrade(Config(str(ALEMBIC_INI)), "head")
         ready = c.get("/health/ready")
@@ -83,7 +84,7 @@ def test_migrated_database_empty_tables(scratch_url) -> None:
         assert c.get("/health/data").json()["status"] == "no_runs"
 
 
-def test_real_rows_come_back(scratch_url) -> None:
+def test_real_rows_come_back(scratch_url: str) -> None:
     with _client(scratch_url) as c:
         command.upgrade(Config(str(ALEMBIC_INI)), "head")
         asyncio.run(

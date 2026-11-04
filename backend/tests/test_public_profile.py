@@ -15,7 +15,7 @@ from starlette.responses import PlainTextResponse, Response
 from starlette.routing import BaseRoute, Host, Match, Route, WebSocketRoute
 from starlette.types import Receive, Scope, Send
 
-from app import main, settings
+from app import settings
 from app.deps import get_now, get_probes
 from app.main import create_app
 from app.route_policy import public_route_violations
@@ -187,7 +187,7 @@ def test_empty_walk_fails() -> None:
 def router_with_write(monkeypatch: pytest.MonkeyPatch) -> None:
     bad = APIRouter()
     bad.add_api_route("/write", _handler, methods=["POST"])
-    monkeypatch.setattr(main.health, "router", bad)
+    monkeypatch.setattr("app.api.health.router", bad)
 
 
 @pytest.mark.usefixtures("router_with_write")

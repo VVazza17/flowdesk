@@ -17,7 +17,7 @@ depends_on = None
 TZ = TIMESTAMP(timezone=True)
 
 
-def _id() -> sa.Column:
+def _id() -> sa.Column[int]:
     return sa.Column("id", sa.BigInteger(), sa.Identity(always=True), nullable=False)
 
 

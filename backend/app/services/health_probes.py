@@ -41,7 +41,7 @@ class SqlRedisProbes:
     async def ping_redis(self) -> None:
         if self._redis is None:
             raise RuntimeError("NotConfigured")
-        await self._redis.ping()  # type: ignore[misc]
+        await self._redis.ping()
 
     async def migration_revisions(self) -> tuple[str | None, str]:
         head = ScriptDirectory.from_config(Config(str(ALEMBIC_INI))).get_current_head()

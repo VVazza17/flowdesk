@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Regenerates the hash-pinned locks from backend/requirements*.txt. Run from the repo root after
-# editing any of those files. CI re-runs this and fails if a lock is out of date.
+# editing any of those files. CI checks that every direct pin is in its lock (ci-checks.sh lint).
 #
 # Why a container: pip-compile resolves for the interpreter and OS it runs on, and the locks must
 # describe the image (Linux, Python 3.12), not a Windows or 3.13 host. Hashes cover every published

@@ -2,13 +2,16 @@
 
 Run against the compose database (a scratch database is created and dropped, the real one
 is never touched):
-    DATABASE_URL=postgresql+asyncpg://flowdesk:<pw>@127.0.0.1:5432/flowdesk pytest tests/test_migrations.py
+    DATABASE_URL=postgresql+asyncpg://flowdesk:<pw>@127.0.0.1:5432/flowdesk \
+        pytest tests/test_migrations.py
 """
 
 import asyncio
 import os
 import uuid
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from alembic import command
@@ -18,7 +21,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
-ADMIN_URL = os.environ.get("DATABASE_URL")
+ADMIN_URL = os.environ.get("DATABASE_URL", "")
 pytestmark = pytest.mark.skipif(not ADMIN_URL, reason="DATABASE_URL not set")
 
 ALEMBIC_INI = Path(__file__).resolve().parent.parent / "alembic.ini"
@@ -31,7 +34,7 @@ async def _admin(sql: str) -> None:
     await engine.dispose()
 
 
-async def _scalar(url: str, sql: str):
+async def _scalar(url: str, sql: str) -> Any:
     engine = create_async_engine(url)
     async with engine.connect() as conn:
         value = (await conn.execute(text(sql))).scalar()
@@ -40,7 +43,7 @@ async def _scalar(url: str, sql: str):
 
 
 @pytest.fixture
-def scratch_url(monkeypatch):
+def scratch_url(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     name = f"flowdesk_mig_{uuid.uuid4().hex[:8]}"
     asyncio.run(_admin(f'CREATE DATABASE "{name}"'))
     url = make_url(ADMIN_URL).set(database=name).render_as_string(hide_password=False)
@@ -49,7 +52,7 @@ def scratch_url(monkeypatch):
     asyncio.run(_admin(f'DROP DATABASE "{name}" WITH (FORCE)'))
 
 
-def test_upgrade_head_on_empty_db(scratch_url):
+def test_upgrade_head_on_empty_db(scratch_url: str) -> None:
     cfg = Config(str(ALEMBIC_INI))
     command.upgrade(cfg, "head")
     head = ScriptDirectory.from_config(cfg).get_current_head()
@@ -62,19 +65,19 @@ def test_upgrade_head_on_empty_db(scratch_url):
     )
 
 
-def test_downgrade_then_upgrade_round_trips(scratch_url):
+def test_downgrade_then_upgrade_round_trips(scratch_url: str) -> None:
     cfg = Config(str(ALEMBIC_INI))
     command.upgrade(cfg, "head")
     command.downgrade(cfg, "base")
     command.upgrade(cfg, "head")
 
 
-def test_single_head():
+def test_single_head() -> None:
     cfg = Config(str(ALEMBIC_INI))
     assert len(ScriptDirectory.from_config(cfg).get_heads()) == 1
 
 
-def test_models_match_migrations(scratch_url):
+def test_models_match_migrations(scratch_url: str) -> None:
     # Fails once a model changes without a migration (meaningful from slice 4 on).
     cfg = Config(str(ALEMBIC_INI))
     command.upgrade(cfg, "head")

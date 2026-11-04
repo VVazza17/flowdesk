@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from app.deps import get_now, get_probes
 from app.main import create_app
 from app.services import health as svc
-from app.services.health import FeedRow
+from app.services.health import FeedRow, HealthProbes
 
 NOW = datetime(2026, 10, 28, 12, 0, tzinfo=UTC)
 
@@ -58,7 +58,7 @@ class FakeProbes:
         return self.state
 
 
-def client_for(probes: FakeProbes) -> TestClient:
+def client_for(probes: HealthProbes) -> TestClient:
     app = create_app()
     app.dependency_overrides[get_probes] = lambda: probes
     app.dependency_overrides[get_now] = lambda: NOW
@@ -137,7 +137,7 @@ def test_real_clients_pointed_at_nothing_report_down_not_500() -> None:
         create_async_engine("postgresql+asyncpg://u:p@127.0.0.1:1/x", connect_args={"timeout": 1}),
         Redis.from_url("redis://127.0.0.1:1", socket_connect_timeout=1),
     )
-    c = client_for(probes)  # type: ignore[arg-type]
+    c = client_for(probes)
     ready = c.get("/health/ready")
     assert ready.status_code == 503
     assert ready.json()["checks"]["redis"]["status"] == "down"
@@ -150,7 +150,7 @@ def test_real_clients_pointed_at_nothing_report_down_not_500() -> None:
 def test_unconfigured_probes_report_down() -> None:
     from app.services.health_probes import SqlRedisProbes
 
-    r = client_for(SqlRedisProbes(None, None)).get("/health/ready")  # type: ignore[arg-type]
+    r = client_for(SqlRedisProbes(None, None)).get("/health/ready")
     assert r.status_code == 503
     assert r.json()["checks"]["postgres"] == {"status": "down", "error": "RuntimeError"}
 

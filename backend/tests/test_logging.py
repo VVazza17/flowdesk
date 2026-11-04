@@ -1,8 +1,10 @@
 import io
 import json
 import logging
+from typing import Any
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.logging import configure_logging
@@ -23,14 +25,14 @@ def _client(level: str = "DEBUG") -> tuple[TestClient, io.StringIO]:
     # create_app() logs to stdout; point it at a buffer after the fact.
     buf = io.StringIO()
     configure_logging(level=level, stream=buf)
-    # The test client (httpx) logs its own "HTTP Request:" line, and asyncio logs "Using
+    # The test client (httpx2) logs its own "HTTP Request:" line, and asyncio logs "Using
     # proactor" at DEBUG, both to the root handler. Harness noise, not app output.
-    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpx2").setLevel(logging.WARNING)
     logging.getLogger("asyncio").setLevel(logging.WARNING)
     return TestClient(app, raise_server_exceptions=False), buf
 
 
-def _lines(buf: io.StringIO) -> list[dict]:
+def _lines(buf: io.StringIO) -> list[dict[str, Any]]:
     return [json.loads(line) for line in buf.getvalue().splitlines() if line.strip()]
 
 
@@ -117,8 +119,9 @@ def test_unhandled_exception_logs_once_with_traceback_and_id() -> None:
 def test_stdlib_loggers_come_out_as_json_with_the_request_id() -> None:
     client, buf = _client()
     app = client.app
+    assert isinstance(app, FastAPI)
 
-    @app.get("/stdlib")  # type: ignore[attr-defined]
+    @app.get("/stdlib")
     def stdlib() -> None:
         logging.getLogger("uvicorn.error").warning("from stdlib")
 
