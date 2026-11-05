@@ -73,7 +73,7 @@ tier, and finding that mismatch in month four is a bad afternoon.
 
 ## Open decisions that block work
 
-Tracked in `docs/SPEC-DEFECTS.md` (IDEA-013 … IDEA-029). Four block a milestone:
+Tracked in `docs/SPEC-DEFECTS.md` (IDEA-013 … IDEA-030). Four block a milestone:
 
 - **IDEA-013 → blocks M3.** `natural_key` has no time component, but §7.16's episode example
   requires five daily rows to exist. One of the two sections is wrong.
@@ -189,7 +189,7 @@ docs/
   architecture.md      # v4.9.10 FROZEN spec — grep, never read whole
   adr/                 # ADR-0001 … 0007, binding
   IDEAS.md             # parked features, IDEA-001…012, each with an unfreeze trigger
-  SPEC-DEFECTS.md      # flagged spec defects, IDEA-013…029
+  SPEC-DEFECTS.md      # flagged spec defects, IDEA-013…030
   BUILD-LOG.md         # narrative history: what shipped, what was decided, what broke
   HEALTH.md            # /health/* response shapes and the documented degraded states
   BACKUP.md            # restore runbook, the version trap, why plain pg_restore is forbidden

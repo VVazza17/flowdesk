@@ -53,11 +53,13 @@ editing history.
 - **Found, not fixed: slices 3 and 4's "empty" databases aren't extension-free.** The image pre-installs
   timescaledb in `template1`, so `CREATE DATABASE` inherits it, and migration 0001's `CREATE EXTENSION` has only
   ever been a no-op in those smokes. Confirmed on a fresh container. Their passing says less than their comments
-  claim. `restore.sh` uses `template0` so that it doesn't depend on this. Out of scope for this slice.
-- **Found, not fixed: `smoke-slice8.sh` leaks 9 scratch databases per run.** `migrated_url` in
-  `test_ops_tables.py` runs `command.upgrade` before its `yield`, so slice 8's deliberately raising migration
-  skips the `DROP`. 18 `flowdesk_ops_*` databases were on this machine's Postgres after two runs. Harmless (test
-  data, and `backup.sh` dumps one database), but they accumulate. CI is unaffected: its database is discarded.
+  claim. `restore.sh` uses `template0` so that it doesn't depend on this. Tracked as IDEA-030, which also records
+  a one-off manual run: on a `template0` database, 0001 does create the extension on this image.
+- **Found and fixed in the follow-up: `smoke-slice8.sh` leaked 9 scratch databases per run.** `migrated_url` in
+  `test_ops_tables.py` ran `command.upgrade` before its `yield`, so slice 8's deliberately raising migration
+  skipped the `DROP`. It now uses `try/finally`, and `smoke-slice8.sh` fails if any scratch database survives a
+  raising migration. The 18 left on this machine were dropped by Kyle's decision: 0 tables each, background
+  workers only. CI was never affected: its database is discarded.
 - **Not proven:** arm64 (nothing here has run on it), restore time at real volumes, and a dump taken under live
   writes. The CI job has not run yet: it proves itself on the first push. All of this ran on Windows / Git Bash.
 - **Git Bash bit again:** it rewrote the `/health/ready` argument into a Windows path on its way to `docker.exe`,

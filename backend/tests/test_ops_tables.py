@@ -112,9 +112,13 @@ def migrated_url(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     asyncio.run(_admin(f'CREATE DATABASE "{name}"'))
     url = make_url(ADMIN_URL).set(database=name).render_as_string(hide_password=False)
     monkeypatch.setenv("DATABASE_URL", url)  # env.py reads this
-    command.upgrade(Config(str(ALEMBIC_INI)), "head")
-    yield url
-    asyncio.run(_admin(f'DROP DATABASE "{name}" WITH (FORCE)'))
+    # try covers the upgrade too: a raising migration never reaches the yield, and pytest only runs
+    # teardown for a fixture that got there, so code after the yield alone would leak the database.
+    try:
+        command.upgrade(Config(str(ALEMBIC_INI)), "head")
+        yield url
+    finally:
+        asyncio.run(_admin(f'DROP DATABASE "{name}" WITH (FORCE)'))
 
 
 @pytest.mark.parametrize("table", SPEC)

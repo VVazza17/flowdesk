@@ -82,6 +82,11 @@ repo=$(copy_repo)
 sed -i 's/^def upgrade() -> None:$/def upgrade() -> None:\n    raise RuntimeError("smoke8 broken migration")/' \
   "$repo"/backend/alembic/versions/0002_ops_tables.py
 expect_red "test: a migration that raises" 'smoke8 broken migration' bash "$repo/$CHECKS" test
+# A migration that raises must not strand its scratch databases: fixtures clean up on failure too.
+leaked=$(docker compose exec -T postgres sh -c \
+  'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tA -c "select count(*) from pg_database where datname ~ '"'"'^flowdesk_(ops|mig|health)_[0-9a-f]{8}$'"'"'"')
+[ "$leaked" = "0" ] || fail "test fixtures left $leaked scratch databases behind"
+echo "ok (green): no scratch databases left after a raising migration"
 
 repo=$(copy_repo)
 # Hashes aren't checked with --disable-pip: nothing is installed, the pin is only looked up.

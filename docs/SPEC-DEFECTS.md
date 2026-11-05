@@ -697,3 +697,44 @@ signal when a run is missed. Dumps are unencrypted, so an off-box copy also need
 
 ### Unfreeze triggers
 Resolve before M2 writes its first persistent observation.
+
+---
+
+## IDEA-030: Migration 0001's `CREATE EXTENSION` is never exercised by the smokes or tests
+
+**Status:** Open. Blocks nothing on the current image.
+**Raised:** 2026-11-04 (M1 slice 9)
+
+### The proposal
+Not a spec defect: slices 3 and 4 test less than they claim. The Timescale image pre-installs the extension in
+`template1` and in the init-created `POSTGRES_DB`, confirmed on a fresh container of `2.31.0-pg16`. So every
+plain `CREATE DATABASE` inherits it, and migration 0001's `CREATE EXTENSION IF NOT EXISTS timescaledb` has been
+a no-op in every run of `smoke-slice3.sh`, `smoke-slice4.sh`, the migration tests and `docker compose up -d`.
+
+`smoke-slice3.sh` says "applies cleanly to an EMPTY database" and checks that the extension exists afterwards.
+That check would pass even if 0001 did nothing.
+
+### What has been measured
+Run by hand once, on 2026-11-04: on a database created from `template0`, with no extension, `alembic upgrade
+head` exited 0 and left the extension at 2.31.0 and the revision at 0002. So on this image, with this
+superuser, **the code works and the gap is coverage**. Nothing repeats that check, so a later change could break
+it unseen.
+
+### Where it would hurt
+On any environment whose base image might differ, a no-op that was never exercised can become a failed
+migration. On this image and role it can't, but that doesn't carry over. Not tested, and each could differ:
+
+- an image that doesn't ship the extension or doesn't preload it, such as plain Postgres
+- a role that isn't a superuser, such as a managed Postgres, which §13 documents as an upgrade path
+- the arm64 variant of the pinned tag, on which migrations have never run
+
+### How it is handled for the build
+`infra/restore.sh` creates its databases from `template0` so it doesn't depend on `template1`, and
+`smoke-slice9.sh` restores into one. That covers the restore path, not migration 0001. Not resolved.
+
+### The version that would be legitimate
+Have `smoke-slice3.sh` and `smoke-slice4.sh` create their scratch databases with `TEMPLATE template0`, and assert
+the extension is absent before migrating, so 0001 really runs. Then run the same check on the target environment.
+
+### Unfreeze triggers
+Resolve before deploying to any environment whose base image might differ.
