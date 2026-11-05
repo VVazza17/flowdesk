@@ -61,7 +61,8 @@ editing history.
   raising migration. The 18 left on this machine were dropped by Kyle's decision: 0 tables each, background
   workers only. CI was never affected: its database is discarded.
 - **Not proven:** arm64 (nothing here has run on it), restore time at real volumes, and a dump taken under live
-  writes. The CI job has not run yet: it proves itself on the first push. All of this ran on Windows / Git Bash.
+  writes. The hand-run checks ran on Windows / Git Bash only. The smoke itself also passed on Linux: the
+  `backup-restore` CI job was green on its first run, at `de72da8` (corrected from "has not run yet").
 - **Git Bash bit again:** it rewrote the `/health/ready` argument into a Windows path on its way to `docker.exe`,
   which read as the API failing against the restored database. `MSYS_NO_PATHCONV=1` on that call.
 
