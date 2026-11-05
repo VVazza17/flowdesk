@@ -660,3 +660,40 @@ choice.
 
 ### Unfreeze triggers
 Resolve before the first premium-module template is written (§7.5).
+
+---
+
+## IDEA-029: Nightly backups have no owner, no retention rule and no off-box copy
+
+**Status:** Open. Must be resolved before M2 writes its first persistent observation.
+**Raised:** 2026-11-04 (M1 slice 9)
+
+### The proposal
+§13 says "Nightly `pg_dump` to a local disk path or free-tier object storage". No slice or milestone owns
+making that happen, and the M1 gate requires only that a backup "restores clean". Slice 9 built the scripts,
+so M1 can pass with no backup ever being taken automatically. §13 also leaves three things open:
+
+- **What runs it.** Celery Beat doesn't exist yet. Host cron works for a VM, but not on a Windows machine that
+  may be asleep, and a container job needs Docker socket access. A missed run also needs to be visible, which
+  is close to what slice 10's dead-man heartbeat does.
+- **How many dumps to keep.** Nothing prunes `dumps/`, so a nightly job eventually fills the disk it shares
+  with the database.
+- **Where they go (the off-box question).** A dump on the same disk protects against a bad `DROP`, not against
+  losing the machine. §13 allows a local disk path, which is enough for the first and not for the second.
+
+### Why the trigger is the first observation rather than a date
+FlowDesk's data is partly irreplaceable. Prices can be re-fetched. The point-in-time record of what a provider
+said before revision cannot be reconstructed for any provider without a vintage API. That record is the whole
+premise of the system, and it starts accumulating on the first ingestion run. From then on, every day without
+a working off-box backup is a day of record that a lost machine would erase permanently.
+
+### How it is handled for the build
+`docs/BACKUP.md` documents the scripts and says plainly that nothing runs them automatically. No scheduler was
+added. Not resolved.
+
+### The version that would be legitimate
+A scheduled `backup.sh`, a retention rule, a copy that leaves the machine at zero recurring cost, and a visible
+signal when a run is missed. Dumps are unencrypted, so an off-box copy also needs a decision on encryption.
+
+### Unfreeze triggers
+Resolve before M2 writes its first persistent observation.

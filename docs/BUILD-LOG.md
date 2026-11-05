@@ -10,6 +10,61 @@ editing history.
 
 ---
 
+## 2026-11-04 — M1 slice 9: backup/restore
+
+- **What shipped:** `infra/backup.sh`, `infra/restore.sh`, `infra/smoke-slice9.sh`, `docs/BACKUP.md`, a
+  `backup-restore` CI job. No application code, migrations or dependencies changed.
+- **Why the smoke uses a throwaway hypertable (Kyle's call at planning):** the four ops tables are plain, so a
+  round trip of them proves nothing about what every later time series will be. The fixture also has a
+  continuous aggregate and two policies, because §8 line 941 requires them and Timescale's backup pages don't
+  mention them. It lives in a scratch database, inline in the smoke, with no Alembic revision.
+- **Spike result, plain `pg_dump -Fc` + `pg_restore` on 2.31.0-pg16.** Source: 480 rows, 10 chunks.
+  - Lost 48 rows, all of `_hyper_1_10_chunk`: `could not find hypertable with id 1`.
+  - Lost the parent's primary key: `ONLY option not supported on hypertable operations`.
+  - **So a duplicate key in a chunk created after the restore was accepted** (2 rows for one key). A duplicate
+    in an old chunk was still rejected, because old chunks kept their own constraint.
+  - Still showed 10 chunks, both jobs, `restoring=off`, and an identical aggregate, because the aggregate is
+    materialized and its rows were restored separately. Exit code 1, `errors ignored on restore: 2`.
+  - The plain restore did not fail outright: on a script that ignored pg_restore's exit code, or a check that
+    looked at chunks and jobs, it would have passed. Only a row-level comparison caught the data loss.
+- **Spike result, Timescale's documented procedure:** identical in every check, zero messages under
+  `--exit-on-error`, so no error allowlist was needed. Works both into a database with the extension
+  pre-installed and into a `template0` database without it. The aggregate and both policies survive; the
+  retention job runs and deletes nothing.
+- **The spike changed the plan.** The planned primary-key test passed on the plain restore, because it inserted
+  into an old chunk. Added: index and constraint definitions in the structure comparison, a duplicate-key test
+  in a chunk created after the restore, and a "primary key lost" red check.
+- **Decided (Kyle):**
+  - Nightly scheduling is not built. IDEA-029 holds scheduling, retention and off-box copies, and must be
+    resolved before M2 writes its first persistent observation. M1 can therefore pass with no automatic backup.
+  - Compressed chunks aren't in the fixture. The spec doesn't use them.
+  - CI runs this smoke on every code push.
+  - `docs/BACKUP.md` states the version trap explicitly: an old dump needs the old image tag.
+- **Built to §15 item 7b, the strictest of three bars:** a fresh *container* and the app serves from it. CLAUDE.md
+  says fresh DB, the §16 gate says restores clean. `/health/data` must return a feed name that exists only in
+  the source, so the answer can't come from the real database.
+- **Also verified by hand, not in the smoke:**
+  - Version trap on a real older image (2.30.0-pg16), both directions: refused, naming the right image, nothing
+    created. The upgrade path works: restore on the old image, swap the image on the same volume, `ALTER
+    EXTENSION timescaledb UPDATE`. Rows, aggregate, chunks and job unchanged. One minor version only.
+  - The `docs/BACKUP.md` disaster sequence, literally, on a separate compose project: plain `up -d` first is
+    refused (`not empty`), and the documented order ends with `/health/ready` ok. That database had no
+    hypertables, since the real schema has none yet.
+- **Found, not fixed: slices 3 and 4's "empty" databases aren't extension-free.** The image pre-installs
+  timescaledb in `template1`, so `CREATE DATABASE` inherits it, and migration 0001's `CREATE EXTENSION` has only
+  ever been a no-op in those smokes. Confirmed on a fresh container. Their passing says less than their comments
+  claim. `restore.sh` uses `template0` so that it doesn't depend on this. Out of scope for this slice.
+- **Found, not fixed: `smoke-slice8.sh` leaks 9 scratch databases per run.** `migrated_url` in
+  `test_ops_tables.py` runs `command.upgrade` before its `yield`, so slice 8's deliberately raising migration
+  skips the `DROP`. 18 `flowdesk_ops_*` databases were on this machine's Postgres after two runs. Harmless (test
+  data, and `backup.sh` dumps one database), but they accumulate. CI is unaffected: its database is discarded.
+- **Not proven:** arm64 (nothing here has run on it), restore time at real volumes, and a dump taken under live
+  writes. The CI job has not run yet: it proves itself on the first push. All of this ran on Windows / Git Bash.
+- **Git Bash bit again:** it rewrote the `/health/ready` argument into a Windows path on its way to `docker.exe`,
+  which read as the API failing against the restored database. `MSYS_NO_PATHCONV=1` on that call.
+
+---
+
 ## 2026-11-04 — M1 slice 8: CI
 
 - **Follow-up, same day (supersedes the matching points below):**

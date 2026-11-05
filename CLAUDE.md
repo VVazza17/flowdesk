@@ -34,17 +34,19 @@ M0 spikes actually measured — several findings falsify what the spec originall
 ## Current state
 
 - **M0 CLOSED** (2026-08-16). Seven ADRs written; premium oracle fixtures recorded.
-- **M1 in progress.** Slices 1–8 done: compose (Postgres/TimescaleDB + Redis), FastAPI +
+- **M1 in progress.** Slices 1–9 done: compose (Postgres/TimescaleDB + Redis), FastAPI +
   `/health/live`, Alembic baseline, §8 ops tables, structlog JSON + correlation-ID middleware,
   `/health/ready` · `/health/data` · `/health/providers` (states documented in `docs/HEALTH.md`),
   private/public compose profiles with the IDEA-019 route invariant, GitHub Actions CI with
-  hash-pinned locks.
+  hash-pinned locks, backup/restore scripts proven on a throwaway hypertable (`docs/BACKUP.md`).
+- **Nothing takes backups automatically yet** (IDEA-029). The scripts exist; no scheduler, retention or
+  off-box copy does. A plain `pg_restore` silently damages hypertables: use `infra/restore.sh`.
 - **The public profile is not internet-ready.** `api-public` binds to loopback; strict CORS,
   request-size limits and rate limits have no owning slice and are required before any internet
   exposure (IDEA-019 addendum in `docs/SPEC-DEFECTS.md`).
 - **arm64 is only proven under QEMU.** The image builds, loads its compiled wheels and answers
   `/health/live` under emulation. Migrations and TimescaleDB have never run on arm64.
-- **Next: slice 9** — backup/restore scripts; restore into a fresh DB reproduces the data.
+- **Next: slice 10** — external dead-man heartbeat; the monitor must live outside the monitored box.
 
 M1 is built as ten reviewable slices, in order. Each ends with something I can verify myself:
 
@@ -71,13 +73,15 @@ tier, and finding that mismatch in month four is a bad afternoon.
 
 ## Open decisions that block work
 
-Tracked in `docs/SPEC-DEFECTS.md` (IDEA-013 … IDEA-028). Three block a milestone:
+Tracked in `docs/SPEC-DEFECTS.md` (IDEA-013 … IDEA-029). Four block a milestone:
 
 - **IDEA-013 → blocks M3.** `natural_key` has no time component, but §7.16's episode example
   requires five daily rows to exist. One of the two sections is wrong.
 - **IDEA-017 → blocks M3 tests.** The M3 gate promises exactly-once delivery to Discord, which
   no implementation can achieve — webhooks expose no idempotency key.
 - **IDEA-016 → blocks M4/M8.** `alerts` has no FK back to `events`; the M4 gate requires that join.
+- **IDEA-029 → blocks M2's first persistent observation.** Backups have no scheduler, retention or off-box
+  copy, and the point-in-time record can't be re-fetched once it starts accumulating.
 
 Do not resolve these unilaterally. Flag and wait.
 
@@ -159,6 +163,9 @@ bash infra/smoke-slice5.sh        # slice 5: one request -> one JSON log line wi
 bash infra/smoke-slice6.sh        # slice 6: kill Redis -> degraded 200; kill Postgres -> 503; never 500
 bash infra/smoke-slice7.sh        # slice 7: public = read-only, redacted, no docs; private = neither
 bash infra/smoke-slice8.sh        # slice 8: every gate green, then each goes red on a broken temp copy
+bash infra/smoke-slice9.sh        # slice 9: hypertable + aggregate + policies survive a restore; 15 breaks go red
+bash infra/backup.sh              # dump + manifest into dumps/. Restoring and the version trap: docs/BACKUP.md
+bash infra/restore.sh dumps/<name>.dump --db <new-or-empty-db>   # refuses a non-empty target
 bash infra/ci-checks.sh lint      # also: test | audit | license | arm64. Same code ci.yml runs
 bash infra/lock-deps.sh           # after editing backend/requirements*.txt; regenerates the locks
 docker compose down               # add -v to wipe the pgdata volume; inactive profiles are skipped,
@@ -182,9 +189,10 @@ docs/
   architecture.md      # v4.9.10 FROZEN spec — grep, never read whole
   adr/                 # ADR-0001 … 0007, binding
   IDEAS.md             # parked features, IDEA-001…012, each with an unfreeze trigger
-  SPEC-DEFECTS.md      # flagged spec defects, IDEA-013…028
+  SPEC-DEFECTS.md      # flagged spec defects, IDEA-013…029
   BUILD-LOG.md         # narrative history: what shipped, what was decided, what broke
   HEALTH.md            # /health/* response shapes and the documented degraded states
+  BACKUP.md            # restore runbook, the version trap, why plain pg_restore is forbidden
 spikes/                # M0 proof scripts + evidence JSON (historical — do not modify)
 tests/
   fixtures/            # oracle/golden test data (premium_oracle.json)
