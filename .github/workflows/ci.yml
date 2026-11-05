@@ -45,6 +45,16 @@ jobs:
       - run: cp .env.example .env
       - run: bash infra/smoke-slice3.sh
 
+  # An M1 gate, and the guard on a TimescaleDB image bump: a plain restore loses data while looking fine.
+  backup-restore:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: cp .env.example .env
+      - run: bash infra/smoke-slice9.sh
+
   # DECISION: QEMU, because native arm64 runners aren't free on private repos. See check_arm64 in
   # ci-checks.sh for what this does and does not prove.
   arm64:
