@@ -10,6 +10,48 @@ editing history.
 
 ---
 
+## 2026-11-04 — M1 slice 10: external dead-man heartbeat
+
+- **What shipped:** `backend/app/heartbeat.py` (a stdlib-only sender), a `heartbeat` compose service,
+  `infra/smoke-slice10.sh`, `backend/tests/test_heartbeat.py`, ADR-0008, `docs/HEARTBEAT.md`, IDEA-031. No new
+  dependency, migration or CI job. pytest covers the sender's logic in CI; the smoke isn't in CI, to save minutes.
+- **Status: built and smoke-tested, not yet proven end to end.** The drill in `docs/HEARTBEAT.md` needs a provider
+  account, which only Kyle can create. Until it passes, nothing has shown that an alert reaches anyone: the real
+  provider has never been called and the 45-minute timing has never run.
+- **Push, not pull.** A pull monitor would have to reach the API from the internet, and the API is loopback-only.
+- **Decided (Kyle):**
+  - A ping means `/health/ready` is exactly `ok`, so `degraded` stops pings too. From M2 a dead Redis also stops
+    Beat and the internal heartbeat, so nothing else would report it. The planning question offered "any 200" and
+    `/health/live` as the alternatives.
+  - 45 minutes of silence before an alert (period 5, grace 40), deliberately rather than a default. The downtime
+    estimates behind it aren't measured.
+  - The consequence is recorded in ADR-0008, not left to be found later: any new `degraded` condition also pages.
+    The warning is also in `services/health.py` and `docs/HEALTH.md`.
+  - `HEARTBEAT_URL` stays blank on development machines and is set only on a deployed instance. Alerts from a
+    sleeping laptop would teach you to ignore them. The drill arms it temporarily.
+  - The flapping blind spot goes in the ADR: a stack broken most of the time that lands one `ok` ping per 40 minutes
+    reads as healthy.
+  - The provider's fallback goes in the ADR as well, including the bad case: a provider that vanishes fails silently.
+- **Found while building:**
+  - **Healthchecks answers a mistyped UUID with 200 `OK (not found)`**, per its docs, so checking the status code
+    alone would report a typo as success. The sender reads the body.
+  - The image's `HEALTHCHECK` is inherited by anything built from it. It probes port 8000, so the sender would be
+    unhealthy forever and hang `wait_ready`. Disabled for this service.
+  - Python as PID 1 ignores SIGTERM unless it installs a handler, which would make every `docker compose stop` wait
+    the full 10 seconds. The sender installs one.
+- **Verified on Windows / Git Bash, Compose v5.6.1:** `ci-checks.sh lint` and `test` (193 passed, 24 of them new);
+  `smoke-slice10.sh`; smokes 1, 6 and 7 for regressions. Smokes 2, 3, 4, 5, 8 and 9 were not re-run. None of this has
+  run on arm64. The smoke hasn't run on Linux.
+- **Known limits, in ADR-0008:** outages under 40 minutes never page; flapping reads as healthy; a provider that dies
+  fails silently; a deployed instance that loses its URL is unmonitored with only a log line; the dashboard's values
+  can't be enforced from the repo.
+- **Open for the M1 gate review, not decided here:** this is the last slice, but the gate says "killing
+  Redis/worker/provider produces the documented health state", and no worker or provider exists until M2
+  (`docs/HEALTH.md`). The gate can't pass literally. IDEA-029 (no automatic backups) doesn't block M1, but does block
+  M2's first observation.
+
+---
+
 ## 2026-11-04 — M1 slice 9: backup/restore
 
 - **What shipped:** `infra/backup.sh`, `infra/restore.sh`, `infra/smoke-slice9.sh`, `docs/BACKUP.md`, a

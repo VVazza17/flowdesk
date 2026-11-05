@@ -28,17 +28,24 @@ session. `grep` for the section header you need, then read that section only.
 
 Where §3 and §16 disagree, **§16 governs**.
 
-The seven ADRs in `docs/adr/` are binding where they interpret the spec. They record what the
-M0 spikes actually measured — several findings falsify what the spec originally assumed.
+The eight ADRs in `docs/adr/` are binding where they interpret the spec. ADR-0001 … 0007 record what
+the M0 spikes actually measured — several findings falsify what the spec originally assumed. ADR-0008
+records M1 slice 10's heartbeat decisions.
 
 ## Current state
 
 - **M0 CLOSED** (2026-08-16). Seven ADRs written; premium oracle fixtures recorded.
-- **M1 in progress.** Slices 1–9 done: compose (Postgres/TimescaleDB + Redis), FastAPI +
+- **M1 in progress.** Slices 1–10 built; slice 10's alert drill is still open: compose (Postgres/TimescaleDB + Redis), FastAPI +
   `/health/live`, Alembic baseline, §8 ops tables, structlog JSON + correlation-ID middleware,
   `/health/ready` · `/health/data` · `/health/providers` (states documented in `docs/HEALTH.md`),
   private/public compose profiles with the IDEA-019 route invariant, GitHub Actions CI with
-  hash-pinned locks, backup/restore scripts proven on a throwaway hypertable (`docs/BACKUP.md`).
+  hash-pinned locks, backup/restore scripts proven on a throwaway hypertable (`docs/BACKUP.md`),
+  external heartbeat sender (ADR-0008, `docs/HEARTBEAT.md`).
+- **The external heartbeat is not proven end to end.** The sender passes its smoke against a fake monitor.
+  The real provider has never been called and no alert has ever fired: Kyle's drill in `docs/HEARTBEAT.md`
+  closes this. `HEARTBEAT_URL` stays blank on development machines; a sleeping laptop would page constantly.
+- **Any new `degraded` condition on `/health/ready` also pages the owner** (ADR-0008 section 4). The sender
+  pings only on exactly `ok`.
 - **Nothing takes backups automatically yet** (IDEA-029). The scripts exist; no scheduler, retention or
   off-box copy does. A plain `pg_restore` silently damages hypertables: use `infra/restore.sh`.
 - **The public profile is not internet-ready.** `api-public` binds to loopback; strict CORS,
@@ -46,7 +53,8 @@ M0 spikes actually measured — several findings falsify what the spec originall
   exposure (IDEA-019 addendum in `docs/SPEC-DEFECTS.md`).
 - **arm64 is only proven under QEMU.** The image builds, loads its compiled wheels and answers
   `/health/live` under emulation. Migrations and TimescaleDB have never run on arm64.
-- **Next: slice 10** — external dead-man heartbeat; the monitor must live outside the monitored box.
+- **Next: Kyle's heartbeat drill, then the M1 gate review.** The gate says "killing Redis/worker/provider", and
+  no worker or provider exists until M2, so it can't pass literally. That's Kyle's call; do not decide it.
 
 M1 is built as ten reviewable slices, in order. Each ends with something I can verify myself:
 
@@ -73,7 +81,7 @@ tier, and finding that mismatch in month four is a bad afternoon.
 
 ## Open decisions that block work
 
-Tracked in `docs/SPEC-DEFECTS.md` (IDEA-013 … IDEA-030). Four block a milestone:
+Tracked in `docs/SPEC-DEFECTS.md` (IDEA-013 … IDEA-031). Four block a milestone:
 
 - **IDEA-013 → blocks M3.** `natural_key` has no time component, but §7.16's episode example
   requires five daily rows to exist. One of the two sections is wrong.
@@ -164,6 +172,7 @@ bash infra/smoke-slice6.sh        # slice 6: kill Redis -> degraded 200; kill Po
 bash infra/smoke-slice7.sh        # slice 7: public = read-only, redacted, no docs; private = neither
 bash infra/smoke-slice8.sh        # slice 8: every gate green, then each goes red on a broken temp copy
 bash infra/smoke-slice9.sh        # slice 9: hypertable + aggregate + policies survive a restore; 15 breaks go red
+bash infra/smoke-slice10.sh       # slice 10: pings only on ready=ok, each outage silences them; uses a fake monitor
 bash infra/backup.sh              # dump + manifest into dumps/. Restoring and the version trap: docs/BACKUP.md
 bash infra/restore.sh dumps/<name>.dump --db <new-or-empty-db>   # refuses a non-empty target
 bash infra/ci-checks.sh lint      # also: test | audit | license | arm64. Same code ci.yml runs
@@ -187,12 +196,13 @@ docker compose down               # add -v to wipe the pgdata volume; inactive p
 ```
 docs/
   architecture.md      # v4.9.10 FROZEN spec — grep, never read whole
-  adr/                 # ADR-0001 … 0007, binding
+  adr/                 # ADR-0001 … 0008, binding
   IDEAS.md             # parked features, IDEA-001…012, each with an unfreeze trigger
-  SPEC-DEFECTS.md      # flagged spec defects, IDEA-013…030
+  SPEC-DEFECTS.md      # flagged spec defects, IDEA-013…031
   BUILD-LOG.md         # narrative history: what shipped, what was decided, what broke
   HEALTH.md            # /health/* response shapes and the documented degraded states
   BACKUP.md            # restore runbook, the version trap, why plain pg_restore is forbidden
+  HEARTBEAT.md         # external monitor setup, the alert drill, where it is armed, swapping provider
 spikes/                # M0 proof scripts + evidence JSON (historical — do not modify)
 tests/
   fixtures/            # oracle/golden test data (premium_oracle.json)

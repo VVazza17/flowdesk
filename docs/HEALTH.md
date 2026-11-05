@@ -23,6 +23,11 @@ Always `200 {"status":"ok"}`. Touches no database, Redis or clock. Docker's heal
 
 Each check has a 2 s timeout; a hung dependency reports `down` / `TimeoutError`.
 
+**This route drives the external heartbeat.** Only `ok` sends a ping (ADR-0008, `docs/HEARTBEAT.md`), so on a
+monitored instance **`degraded` is not a quiet state: it pages the owner after 45 minutes**, even though it is a
+200. Adding a new `degraded` condition here means adding a new reason to page. If it shouldn't page, it doesn't
+belong in `degraded`, or the gate in `app/heartbeat.py` changes in the same commit.
+
 ## `GET /health/providers` — feed freshness (`providers_health`)
 
 Postgres only: a Redis outage does not affect it. Postgres unreachable, or tables missing →

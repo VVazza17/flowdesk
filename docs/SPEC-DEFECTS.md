@@ -738,3 +738,36 @@ the extension is absent before migrating, so 0001 really runs. Then run the same
 
 ### Unfreeze triggers
 Resolve before deploying to any environment whose base image might differ.
+
+---
+
+## IDEA-031: §16 names an external heartbeat but no section says what it attests, what runs it, or how it's configured
+
+**Status:** Handled for the build by ADR-0008. A spec correction release should record it. Blocks nothing.
+**Raised:** 2026-11-04 (M1 slice 10)
+
+### The proposal
+§16 M1 requires an "external dead-man heartbeat (free ping-monitor service...)" and decision 26 says the monitor
+lives outside the monitored host. That leaves gaps:
+
+- **What a ping attests.** ADR-0006 decision 6 calls the check content-blind and says it detects total outage. No
+  section says whether that means the process answering, or the app being able to serve data.
+- **The alert window.** No section gives a period or grace time.
+- **What sends the pings.** §13's compose service list (`frontend, api, worker, beat, postgres, redis, caddy`) has
+  no sender, and §11's Celery `heartbeat` is the separate internal mechanism. M1 has no Celery anyway.
+- **The configuration.** §12's list of settings has no ping URL.
+
+### How it is handled for the build
+ADR-0008 decides all four: a `heartbeat` compose service, a ping only when `/health/ready` is exactly `ok` (Kyle's
+decision), a 5-minute period with 40-minute grace, and `HEARTBEAT_URL`, blank except on a deployed instance.
+
+Under this gate, every `degraded` condition added to `/health/ready` also pages, which ADR-0006's "total outage"
+wording alone wouldn't suggest. ADR-0008 section 4 records it.
+
+### The version that would be legitimate
+Add the service to §13, the setting to §12, and a sentence in §16 saying what a ping attests, in the next
+correction release.
+
+### Unfreeze triggers
+The next spec correction release. Revisit the gate if `/health/ready` gains a `degraded` condition that shouldn't
+page.
