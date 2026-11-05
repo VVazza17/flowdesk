@@ -31,6 +31,30 @@ def redis_url() -> str | None:
     return os.environ.get("REDIS_URL") or None
 
 
+def heartbeat_url() -> str | None:
+    """The external monitor's ping URL (ADR-0008). Unset means this instance is not monitored.
+
+    The URL is a credential: anyone holding it can fake this box being alive. So the error below
+    deliberately does not echo the value, unlike DEPLOYMENT_MODE's.
+    """
+    raw = os.environ.get("HEARTBEAT_URL", "").strip()
+    if not raw:
+        return None
+    if not raw.startswith(("https://", "http://")):
+        raise ValueError("HEARTBEAT_URL must start with https:// or http://")
+    return raw
+
+
+def heartbeat_interval_seconds() -> int:
+    # The monitor's period is set to 5 minutes (ADR-0008). Overridable because the smoke test can't
+    # wait that long, not as a tuning knob: Healthchecks asks for at most 5 pings a minute.
+    raw = os.environ.get("HEARTBEAT_INTERVAL_SECONDS", "").strip() or "300"
+    value = int(raw)
+    if value <= 0:
+        raise ValueError(f"HEARTBEAT_INTERVAL_SECONDS must be positive, got {raw!r}")
+    return value
+
+
 # Per-feed freshness thresholds (§6 line 369: "per-feed thresholds in config"), keyed by
 # (provider, feed). Empty until M2 registers real feeds. §6.11 requires thresholds to follow
 # each series' own publication cadence, so there is deliberately no global default: a feed

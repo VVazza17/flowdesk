@@ -14,6 +14,10 @@ x-api-base: &api-base
   # to start. Loopback only, like Postgres (M1 exit gate).
   ports:
     - "127.0.0.1:${API_PORT:-8000}:8000"
+  # One name for whichever of api / api-public is running, so the heartbeat sender needn't know.
+  networks:
+    default:
+      aliases: [api-upstream]
   restart: unless-stopped
 
 services:
@@ -83,6 +87,23 @@ services:
       postgres:
         condition: service_healthy
     restart: "no"
+
+  heartbeat:
+    # External dead-man sender (ADR-0008). No profile: it runs under private and public alike. Not
+    # in §13's service list (IDEA-031). No ports: it only makes outbound calls, which is the point
+    # of push over pull. No depends_on: an absent API must mean no pings, not a sender that waits.
+    build: ./backend
+    command: ["python", "-m", "app.heartbeat"]
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # Blank on development machines, set only on a deployed instance (docs/HEARTBEAT.md).
+      HEARTBEAT_URL: ${HEARTBEAT_URL:-}
+      HEARTBEAT_INTERVAL_SECONDS: ${HEARTBEAT_INTERVAL_SECONDS:-300}
+    # The image's HEALTHCHECK probes port 8000, which nothing serves here. Inherited, it would
+    # report unhealthy forever and hang infra/lib.sh's wait_ready.
+    healthcheck:
+      disable: true
+    restart: unless-stopped
 
 volumes:
   pgdata:

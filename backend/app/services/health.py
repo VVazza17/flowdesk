@@ -76,6 +76,9 @@ async def assemble_ready(probes: HealthProbes) -> tuple[int, dict[str, Any]]:
 
     if pg["status"] != "ok" or migrations["status"] != "ok":
         return 503, {"status": "not_ready", "checks": checks}
+    # WARNING: anything that returns `degraded` here also stops the external heartbeat, which pages
+    # the owner after 45 minutes. A new condition that shouldn't page doesn't belong here, or the
+    # gate in app/heartbeat.py changes in the same commit. See ADR-0008.
     if redis["status"] != "ok":
         return 200, {"status": "degraded", "checks": checks}
     return 200, {"status": "ok", "checks": checks}
