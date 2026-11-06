@@ -28,9 +28,9 @@ The drill's calendar date wasn't given and isn't recorded here.
   the box, and the recovery notice. This closes the first two items under "What has been proven" in ADR-0008.
 - **Still not proven:** the sender on arm64 as a compose service (third item in that ADR section); the drill has
   been run on one outage shape only (full stack down), not on `degraded`; the smoke hasn't run on Linux.
-- **Loose end, not recorded as done:** runbook step 6 says to pause or delete the check once `HEARTBEAT_URL` is
-  blank. Kyle's report doesn't say that happened. If `flowdesk-desktop` is still active, it will go down about 45
-  minutes after the last ping and keep alerting.
+- **Check paused:** per runbook step 6, Kyle paused `flowdesk-desktop` in the dashboard (reported after the first
+  version of this entry). It is paused, not deleted, so it won't alert while `HEARTBEAT_URL` is blank. Pings
+  resume it, so re-arming this machine later needs no new check.
 - **Slice 10 is closed.** That makes M1 slices 1 to 10 all built. The M1 gate review is next, and its open question
   stands: the gate says "killing Redis/worker/provider", and no worker or provider exists until M2. That's Kyle's
   call; it is not decided here.
