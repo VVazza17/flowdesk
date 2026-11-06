@@ -35,15 +35,16 @@ records M1 slice 10's heartbeat decisions.
 ## Current state
 
 - **M0 CLOSED** (2026-08-16). Seven ADRs written; premium oracle fixtures recorded.
-- **M1 in progress.** Slices 1–10 built; slice 10's alert drill is still open: compose (Postgres/TimescaleDB + Redis), FastAPI +
+- **M1 in progress.** Slices 1–10 built and closed: compose (Postgres/TimescaleDB + Redis), FastAPI +
   `/health/live`, Alembic baseline, §8 ops tables, structlog JSON + correlation-ID middleware,
   `/health/ready` · `/health/data` · `/health/providers` (states documented in `docs/HEALTH.md`),
   private/public compose profiles with the IDEA-019 route invariant, GitHub Actions CI with
   hash-pinned locks, backup/restore scripts proven on a throwaway hypertable (`docs/BACKUP.md`),
   external heartbeat sender (ADR-0008, `docs/HEARTBEAT.md`).
-- **The external heartbeat is not proven end to end.** The sender passes its smoke against a fake monitor.
-  The real provider has never been called and no alert has ever fired: Kyle's drill in `docs/HEARTBEAT.md`
-  closes this. `HEARTBEAT_URL` stays blank on development machines; a sleeping laptop would page constantly.
+- **The external heartbeat is proven end to end** (drill passed, recorded 2026-11-05 in `docs/BUILD-LOG.md`): the real
+  provider took the pings, the DOWN alert arrived 44 minutes after the stack stopped, and the UP notice followed.
+  `HEARTBEAT_URL` stays blank on development machines; a sleeping laptop would page constantly. Re-run the drill
+  on any deployed instance (quarterly, and after a provider notice).
 - **Any new `degraded` condition on `/health/ready` also pages the owner** (ADR-0008 section 4). The sender
   pings only on exactly `ok`.
 - **Nothing takes backups automatically yet** (IDEA-029). The scripts exist; no scheduler, retention or
@@ -53,7 +54,7 @@ records M1 slice 10's heartbeat decisions.
   exposure (IDEA-019 addendum in `docs/SPEC-DEFECTS.md`).
 - **arm64 is only proven under QEMU.** The image builds, loads its compiled wheels and answers
   `/health/live` under emulation. Migrations and TimescaleDB have never run on arm64.
-- **Next: Kyle's heartbeat drill, then the M1 gate review.** The gate says "killing Redis/worker/provider", and
+- **Next: the M1 gate review.** The gate says "killing Redis/worker/provider", and
   no worker or provider exists until M2, so it can't pass literally. That's Kyle's call; do not decide it.
 
 M1 is built as ten reviewable slices, in order. Each ends with something I can verify myself:

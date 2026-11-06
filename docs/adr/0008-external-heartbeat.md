@@ -1,7 +1,7 @@
 # ADR-0008: External Dead-Man Heartbeat
 
-**Status:** Accepted. The sender is built and smoke-tested; the end-to-end alert drill has not yet run
-(see "What has been proven").
+**Status:** Accepted. The sender is built and smoke-tested, and the end-to-end alert drill passed (recorded 2026-11-05;
+see "What has been proven").
 **Date:** 2026-11-04
 **Source:** M1 slice 10. Interprets §16 M1 ("external dead-man heartbeat, free ping-monitor service, the
 monitor must live outside the monitored box"), §2 decision 26, and ADR-0006 decision 6. None of them says
@@ -127,6 +127,11 @@ don't state limits on period or grace.
 - The sender has never run on arm64 as a compose service, though it is stdlib-only in the same image.
 
 The drill in `docs/HEARTBEAT.md` closes the first two. Its result belongs in `docs/BUILD-LOG.md`.
+
+**Update, recorded 2026-11-05:** the drill passed against the real provider. The first two items above are now proven:
+pings were accepted, and with the stack down at 11:57 the DOWN alert arrived at 12:41:10 (period 5, grace 40), then
+an UP notice on recovery. Details are in the 2026-11-05 BUILD-LOG entry. The arm64 item remains open. The list above
+is kept as written, as the state at the time of this ADR.
 
 ## Consequences
 

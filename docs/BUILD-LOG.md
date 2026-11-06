@@ -10,6 +10,33 @@ editing history.
 
 ---
 
+## 2026-11-05 — M1 slice 10 closed: the heartbeat drill passed
+
+Result of the drill in `docs/HEARTBEAT.md`, run by Kyle against the real provider (Healthchecks, check
+`flowdesk-desktop`, simple schedule, period 5 / grace 40, alert by email). Times are as Kyle reported them, EST.
+The drill's calendar date wasn't given and isn't recorded here.
+
+- **Arming:** pings showed on the dashboard within 5 minutes. The real provider accepted the URL and the 5/40
+  timing, which closes the "confirm the dashboard accepts them" caveat in the runbook.
+- **Outage:** `docker compose down` at 11:57. The DOWN alert arrived at 12:41:10, 44 minutes after the stack went
+  down and inside the 45-minute design (period 5 + grace 40).
+- **Recovery:** the UP notice arrived at 17:40:05. After that the stack pinged on schedule for about two hours with
+  no gaps.
+- **Disarmed:** `HEARTBEAT_URL` is blank again on this machine. The sender's logs show `armed: false` and
+  `heartbeat_disabled`, as the runbook says to expect.
+- **Now proven:** the real provider accepts the sender's pings, the 45-minute timing, an alert reaching someone off
+  the box, and the recovery notice. This closes the first two items under "What has been proven" in ADR-0008.
+- **Still not proven:** the sender on arm64 as a compose service (third item in that ADR section); the drill has
+  been run on one outage shape only (full stack down), not on `degraded`; the smoke hasn't run on Linux.
+- **Loose end, not recorded as done:** runbook step 6 says to pause or delete the check once `HEARTBEAT_URL` is
+  blank. Kyle's report doesn't say that happened. If `flowdesk-desktop` is still active, it will go down about 45
+  minutes after the last ping and keep alerting.
+- **Slice 10 is closed.** That makes M1 slices 1 to 10 all built. The M1 gate review is next, and its open question
+  stands: the gate says "killing Redis/worker/provider", and no worker or provider exists until M2. That's Kyle's
+  call; it is not decided here.
+
+---
+
 ## 2026-11-04 — M1 slice 10: external dead-man heartbeat
 
 - **What shipped:** `backend/app/heartbeat.py` (a stdlib-only sender), a `heartbeat` compose service,
@@ -18,6 +45,7 @@ editing history.
 - **Status: built and smoke-tested, not yet proven end to end.** The drill in `docs/HEARTBEAT.md` needs a provider
   account, which only Kyle can create. Until it passes, nothing has shown that an alert reaches anyone: the real
   provider has never been called and the 45-minute timing has never run.
+  *(Superseded, recorded 2026-11-05: the drill passed. See the entry above.)*
 - **Push, not pull.** A pull monitor would have to reach the API from the internet, and the API is loopback-only.
 - **Decided (Kyle):**
   - A ping means `/health/ready` is exactly `ok`, so `degraded` stops pings too. From M2 a dead Redis also stops
