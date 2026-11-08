@@ -49,7 +49,19 @@ records M1 slice 10's heartbeat decisions.
 - **Any new `degraded` condition on `/health/ready` also pages the owner** (ADR-0008 section 4). The sender
   pings only on exactly `ok`.
 - **Nothing takes backups automatically yet** (IDEA-029). The scripts exist; no scheduler, retention or
-  off-box copy does. A plain `pg_restore` silently damages hypertables: use `infra/restore.sh`.
+  off-box copy does. A plain `pg_restore` silently damages hypertables: use `infra/restore.sh`. Settled for
+  M2 slice 2 (2026-11-08): a local dump first, then an encrypted rsync-over-SSH copy to Kyle's desktop as a
+  separate step, so a sleeping desktop is a failed copy and not a failed backup, with catch-up on wake; the
+  key lives in Kyle's password manager and never only on the laptop (the key and the backups never share a
+  single point of failure); 14 dailies plus 8 weeklies, to be revisited when the data volume is real. A stale
+  backup shows on `/health/data` and fires the missed-run signal. It never degrades `/health/ready`, because
+  it can wait until morning and would page.
+- **The base image is pinned by digest** (M2 slice 0, 2026-11-08). The `FROM` line in `backend/Dockerfile` is
+  the one definition. The CI tooling container, `lock-deps.sh` and the smokes read it through
+  `infra/base-image.sh`, and lint fails on a second definition. The base no longer updates itself: the daily
+  image scan is the tripwire and `docs/RUNBOOK-IMAGE-CVE.md` is the bump procedure. Postgres and Redis stay on
+  exact version tags by decision; a tag like `2.31.0-pg16` is already a version pin, and the drift was in
+  `python:3.12-slim`, which floated.
 - **The public profile is not internet-ready.** `api-public` binds to loopback; strict CORS,
   request-size limits and rate limits have no owning slice and are required before any internet
   exposure (IDEA-019 addendum in `docs/SPEC-DEFECTS.md`).
@@ -60,7 +72,9 @@ records M1 slice 10's heartbeat decisions.
 - **The worker and provider half of the M1 gate moves to M2's gate** (IDEA-032, a relocation and not a waiver). The gate says "killing Redis/worker/provider", and
   no worker or provider exists until M2, so it can't pass at M1. Only Redis was killed and verified. M2's gate
   must not pass until killing the worker and a provider each produce a documented health state (add them to
-  `docs/HEALTH.md`). The frozen §16 still says the old thing until a correction release. M2 has not been started.
+  `docs/HEALTH.md`). The frozen §16 still says the old thing until a correction release. M2 is in progress (slice 0, the base-image pin, done 2026-11-08; the slice plan
+  and the decisions behind it are in `docs/BUILD-LOG.md`). M2 builds yfinance, FRED and a fake provider only
+  (IDEA-037); the slice 9 number is vacant.
 
 M1 is built as ten reviewable slices, in order. Each ends with something I can verify myself:
 
@@ -87,15 +101,28 @@ tier, and finding that mismatch in month four is a bad afternoon.
 
 ## Open decisions that block work
 
-Tracked in `docs/SPEC-DEFECTS.md` (IDEA-013 … IDEA-032). Four block a milestone:
+Tracked in `docs/SPEC-DEFECTS.md` (IDEA-013 … IDEA-038). Eight block a milestone or a slice:
 
 - **IDEA-013 → blocks M3.** `natural_key` has no time component, but §7.16's episode example
   requires five daily rows to exist. One of the two sections is wrong.
 - **IDEA-017 → blocks M3 tests.** The M3 gate promises exactly-once delivery to Discord, which
   no implementation can achieve — webhooks expose no idempotency key.
 - **IDEA-016 → blocks M4/M8.** `alerts` has no FK back to `events`; the M4 gate requires that join.
-- **IDEA-029 → blocks M2's first persistent observation.** Backups have no scheduler, retention or off-box
-  copy, and the point-in-time record can't be re-fetched once it starts accumulating.
+- **IDEA-029 → blocks M2 slice 6, the first irrecoverable observation.** Backups have no scheduler, retention
+  or off-box copy. What a lost machine would erase for good is what only a live run captures: bars as traded
+  at the time, and `c_total_return` as it stood on a given day. FRED vintages are not at risk; they can be
+  re-fetched with `output_type=4` (ADR-0003). Slice 2 builds the backups and must close, with a restore drill
+  from the off-box copy, before slice 6 persists its first scheduled bar.
+- **IDEA-023 → blocks M2 slice 7.** `providers_health` has no quarantine columns, but §6 says quarantine
+  counts feed it.
+- **IDEA-034 → blocks M2 slice 6.** `bars` has no `provider/feed/venue_scope` and no provenance or revision
+  columns. Split: the shared provenance vocabulary (`effective_at`, `available_at`, `ingested_at`, `revision`,
+  `source`) is settled at slice 5 planning and binds every observation table; the `bars`-specific parts
+  (where `c_total_return` revisions live) wait for slice 6 planning, with IDEA-035.
+- **IDEA-038 → blocks M2 slice 5.** §8 calls the observation timestamp `effective_ts`; the ADRs and §16 call
+  it `effective_at`. Settled by the vocabulary decision at slice 5 planning.
+- **IDEA-035 → blocks M2 slice 8.** The gate's "new data version" has nowhere to live in §8. Decided at
+  slice 6 planning, with IDEA-034.
 
 Do not resolve these unilaterally. Flag and wait.
 
@@ -193,9 +220,9 @@ docker compose down               # add -v to wipe the pgdata volume; inactive p
 # stops the stack from starting. Stop it, or set POSTGRES_PORT in .env.
 # NOTE: this machine does run arm64 under emulation (`docker run --platform linux/arm64 alpine uname -m` prints
 # aarch64, checked 2026-11-08); the earlier "no emulation" note was wrong. Kyle's choice stands that local
-# emulation is not the arm64 gate: CI's arm64 job installs its own QEMU and is. The old claims that
-# smoke-slice2.sh skips arm64 here and that `ci-checks.sh arm64` fails with `exec format error` were not
-# re-run and may be stale.
+# emulation is not the arm64 gate: CI's arm64 job installs its own QEMU and is. Re-run 2026-11-08:
+# smoke-slice2.sh builds both architectures here and `ci-checks.sh arm64` passes (via smoke-slice8.sh), so
+# the old claims that either skips or fails with `exec format error` no longer hold.
 # Migration tests (skipped without DATABASE_URL), from backend/:
 #   DATABASE_URL=postgresql+asyncpg://flowdesk:<pw>@127.0.0.1:5432/flowdesk pytest
 ```
@@ -207,7 +234,7 @@ docs/
   architecture.md      # v4.9.10 FROZEN spec — grep, never read whole
   adr/                 # ADR-0001 … 0008, binding
   IDEAS.md             # parked features, IDEA-001…012, each with an unfreeze trigger
-  SPEC-DEFECTS.md      # flagged spec defects, IDEA-013…032
+  SPEC-DEFECTS.md      # flagged spec defects, IDEA-013…038
   BUILD-LOG.md         # narrative history: what shipped, what was decided, what broke
   HEALTH.md            # /health/* response shapes and the documented degraded states
   BACKUP.md            # restore runbook, the version trap, why plain pg_restore is forbidden

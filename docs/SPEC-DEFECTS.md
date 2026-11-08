@@ -31,6 +31,9 @@ written up, not the order of the IDEA ids.
 | 7 | IDEA-024 | §16 M2 scope | §10 line 1003 first-run progress source |
 | 8 | IDEA-019 | §14 two-tier design | §16 gate line lost the "anonymous" qualifier |
 | 9 | IDEA-032 | later milestones' components | §16 M1 gate names a worker and a provider |
+| 10 | IDEA-034 | v4.9.10 provenance line (§16, line 1111) | §8 `bars` has no `provider`/`feed`/`venue_scope` and no revision columns |
+| 11 | IDEA-035 | v4.9 versioned canonical rewrite (§6.12, §16 M2 gate) | §8 `bars` key `(symbol_id, interval, ts)` has no place for a data version |
+| 12 | IDEA-036 | M0 spike 4 findings (§6.5) | §8 `insider_trades` columns need the Form 4 XML that §6.5 assigns to M10 |
 
 Not a row: the stale "enters §7.16 when the simulator is built" line (architecture.md line 1418, quoted in
 IDEA-006; the simulator is §7.17). IDEA-015's note counts it as its own instance, but it is the same v4.7
@@ -698,7 +701,7 @@ Resolve before the first premium-module template is written (§7.5).
 
 ## IDEA-029: Nightly backups have no owner, no retention rule and no off-box copy
 
-**Status:** Open. Must be resolved before M2 writes its first persistent observation.
+**Status:** Open. Design settled 2026-11-08, built in M2 slice 2. Must be closed before M2 slice 6 persists its first scheduled bar (corrected 2026-11-08: this line said "before M2 writes its first persistent observation"; see the section below).
 **Raised:** 2026-11-04 (M1 slice 9)
 
 ### The proposal
@@ -714,22 +717,43 @@ so M1 can pass with no backup ever being taken automatically. §13 also leaves t
 - **Where they go (the off-box question).** A dump on the same disk protects against a bad `DROP`, not against
   losing the machine. §13 allows a local disk path, which is enough for the first and not for the second.
 
-### Why the trigger is the first observation rather than a date
-FlowDesk's data is partly irreplaceable. Prices can be re-fetched. The point-in-time record of what a provider
-said before revision cannot be reconstructed for any provider without a vintage API. That record is the whole
-premise of the system, and it starts accumulating on the first ingestion run. From then on, every day without
-a working off-box backup is a day of record that a lost machine would erase permanently.
+### Why the trigger is the first irrecoverable observation rather than a date
+Some of FlowDesk's data is irreplaceable, but less than this entry first said. Prices can be re-fetched. So can
+FRED: M0 spike 3 showed that `output_type=4` with a widened real-time window returns every observation's
+first-published value and its publication date for any past date (ADR-0003, §6.4). What cannot be recovered is
+what only a live run captures: a bar captured live is as-traded on its own date (§6.12), and `c_total_return` as
+it stood on a given day cannot be re-derived, because `Adj Close` is rewritten by every later dividend
+(ADR-0002). That record starts at the first scheduled yfinance run, which is M2 slice 6, not at the first FRED
+run in slice 5. From then on, every day without a working off-box backup is a day of record that a lost machine
+would erase permanently.
+
+Correction, 2026-11-08: this section previously named the point-in-time macro record as the irreplaceable part,
+and said it "cannot be reconstructed for any provider without a vintage API". FRED has one. The ordering of the
+build is unchanged, because slice 2 (the backups) precedes both slice 5 and slice 6.
 
 ### How it is handled for the build
-`docs/BACKUP.md` documents the scripts and says plainly that nothing runs them automatically. No scheduler was
-added. Not resolved.
+`docs/BACKUP.md` documents the scripts and says plainly that nothing runs them automatically. No scheduler has
+been added yet. Not resolved yet.
+
+Design settled by Kyle at M2 planning (2026-11-08), built in M2 slice 2:
+1. **Local first, then off-box as a separate step.** The dump is taken and kept locally. The off-box copy is
+   attempted afterwards, so a sleeping desktop reads as a failed copy and not as a failed backup. The copy is
+   rsync over SSH, with catch-up on wake.
+2. **Encrypted, to Kyle's desktop.** The key lives in Kyle's password manager and never only on the laptop. The
+   rule: the key and the backups never share a single point of failure. Development runs count as data worth
+   protecting.
+3. **A stale backup does not degrade `/health/ready`.** It would page for something that can wait until
+   morning, and the warning in `health.py` says conditions that shouldn't page don't belong there. It shows on
+   `/health/data`, and the missed-run signal notifies.
+4. **Retention: 14 dailies plus 8 weeklies**, to be revisited when the data volume is real.
 
 ### The version that would be legitimate
 A scheduled `backup.sh`, a retention rule, a copy that leaves the machine at zero recurring cost, and a visible
 signal when a run is missed. Dumps are unencrypted, so an off-box copy also needs a decision on encryption.
 
 ### Unfreeze triggers
-Resolve before M2 writes its first persistent observation.
+M2 slice 2 closed, including a restore drill from the off-box copy, before M2 slice 6 persists its first
+scheduled bar.
 
 ---
 
@@ -842,3 +866,246 @@ it out, are each one low. They were not edited; the list supersedes them.
 
 ### Unfreeze triggers
 The next spec correction release.
+
+---
+
+## IDEA-033: §16 M2 lists five reference tables; §8 designs one of them
+
+**Status:** Open. Resolved for the build by judgment at M2 slice 3 (each choice will carry a `# DECISION:` comment); the spec text is silent.
+**Raised:** 2026-11-08 (M2 planning)
+
+### The proposal
+§16's M2 scope begins "Reference tables (symbols, exchanges, currencies, provider mappings, trading calendars)".
+§8 gives DDL for `symbols` only: `symbols(id PK, ticker UNIQUE, name, asset_class, sector, role, active BOOL, meta JSONB)`.
+Exchanges, currencies, provider mappings and trading calendars have no columns, keys or types anywhere.
+`universe_membership` appears only as a signature in prose (line 1111), also without types.
+
+`symbols` itself conflicts with other sections. §6.12 says a delisting is recorded with a "delist date", and there
+is no such column. §6.5 says CIK is the durable identity and ticker "a mutable label", but `ticker` is `UNIQUE`,
+so a reassigned ticker cannot have two rows. There is no column for exchange or currency. §6.12 says to use an
+exchange-calendar library, so it is not stated whether "trading calendars" is a table at all.
+
+### Why it is appealing
+N/A. Flagged spec gap, not a proposed feature.
+
+### Why it is parked
+The frozen spec cannot be edited in place. Not drift: no revision left a stale dependent. The spec never designed
+these tables. Same family as IDEA-022.
+
+### The version that would be legitimate
+A correction release adding §8 DDL for the four tables and `universe_membership`, and settling where the CIK and
+the delist date live (columns on `symbols`, or the provider-mappings table).
+
+### Unfreeze triggers
+A spec correction release. Nothing blocks M2 before slice 3.
+
+---
+
+## IDEA-034: `bars` has no provider/feed/venue_scope and no provenance or revision columns
+
+**Status:** Open. Blocks M2 slice 6 (`bars` migration) until a `# DECISION:` or a correction release.
+**Raised:** 2026-11-08 (M2 planning)
+
+### The proposal
+§16 line 1111 (added v4.9.10) says: "every market observation also records `provider / feed / venue_scope`
+(e.g. consolidated vs single-venue), so a strategy evaluated on one market view can never be silently compared
+against another." It is "same milestone", meaning M2. §8's `bars` has
+`(symbol_id, interval, ts, o_raw..c_raw, v_raw, c_split_adj, c_total_return, v_split_adj, adjustment_factor,
+dollar_volume)` and no such columns.
+
+§8 also gives `bars` none of the provenance that M2's scope lists (`effective_at, available_at, ingested_at,
+revision, source, ingestion_run_id`). The scope applies that list to "revision-prone feeds (macro, disclosures)",
+which on its face excludes prices. ADR-0002 consequence 3 says `c_total_return` is revision-prone and "needs its
+own revision-tracking treatment ... the same machinery already required for revision-prone macro series". So one
+column of `bars` is in the revision-prone class while §8 and the M2 scope sentence treat prices as outside it.
+
+### Why it is appealing
+N/A. Flagged spec defect, not a proposed feature.
+
+### Why it is parked
+The frozen spec cannot be edited in place.
+
+### The version that would be legitimate
+A correction release adding the three provenance columns to §8 `bars`, and stating how `c_total_return` revisions
+are kept (revision columns on `bars`, or a separate revision table keyed like `macro_metrics`).
+
+### Unfreeze triggers
+A spec correction release, or a `# DECISION:` in the slice 6 migration. Kyle's call (2026-11-08), recorded as a
+split so that it is written down and not remembered. The provenance columns and ADR-0003's vintage rules are one
+design problem, and `macro_metrics` (slice 5) is built before `bars` (slice 6), so the two must not be allowed to
+disagree.
+- **Settled at slice 5 planning, and binding on every table that stores an observation:** the shared provenance
+  vocabulary. That means the names and meanings of `effective_at`, `available_at`, `ingested_at`, `revision` and
+  `source`. IDEA-038 (the `effective_ts` / `effective_at` contradiction) is the first input. `macro_metrics` is the
+  first table built to it. `bars` must conform to it at slice 6 and does not re-decide it. If planning extends the
+  list (for instance `ingestion_run_id` or `provider/feed/venue_scope`), this entry is updated to say so.
+- **Waits for slice 6 planning:** the `bars`-specific decisions. These are where `c_total_return` revisions live
+  (revision columns on `bars`, or a separate revision table), how `provider/feed/venue_scope` is stored, and
+  IDEA-035's version home. These are decided together, since the version home and the revision storage both
+  decide how a second value for the same bar is kept.
+
+### Drift class
+Row 10 of the canonical list. The revision is v4.9.10's line 1111. The stale dependent is §8 `bars`.
+
+---
+
+## IDEA-035: The "new data version" in the M2 gate has nowhere to live in §8
+
+**Status:** Open. **Blocks M2 slice 8** (corporate actions workflow).
+**Raised:** 2026-11-08 (M2 planning)
+
+### The proposal
+§16's M2 gate says "confirmed split creates a new data version without deleting raw". §6.12 says canonical
+history is rewritten only on a confirmed `corporate_actions` entry, "raw history is immutable — corrections create
+new versions". §8's `bars` is keyed `(symbol_id, interval, ts)` with no version column, so a second version of the
+same bar would collide with the first. `corporate_actions` has `confirmed BOOL` and `ingested_at` but no version
+or supersession field either.
+
+There are at least two ways to satisfy the gate, and they have different consequences. (a) Add a `data_version`
+to `bars` and its key, keeping every version as rows. (b) Keep `bars` raw-only and immutable, and derive
+`c_split_adj` and `v_split_adj` on read from confirmed `corporate_actions`, so "a new version" is a new set of
+confirmed actions. (b) interacts with ADR-0002, which defines `c_raw` as reconstructed from `c_split_adj`.
+
+### Why it is appealing
+N/A. Flagged spec defect, not a proposed feature.
+
+### Why it is parked
+Not parked by choice. This is a design decision the owner has to make, and it changes the schema of the largest
+table. Not resolved here.
+
+### The version that would be legitimate
+Two candidate resolutions, (a) and (b) above, neither chosen. Either is a one-section correction release.
+
+### Unfreeze triggers
+Kyle's call (2026-11-08): the version-home decision waits until M2 slice 6 planning, where it is made together
+with IDEA-034. It must still precede slice 8.
+
+### Drift class
+Row 11 of the canonical list. The revision is the versioned-rewrite language in §6.12 and the M2 gate. The stale
+dependent is §8 `bars`.
+
+---
+
+## IDEA-036: §6.5 puts Form 4 XML parsing in M10; §8's `insider_trades` and §16 M2 need what it produces
+
+**Status:** Open. Handled for the build by Kyle's decision below.
+**Raised:** 2026-11-08 (M2 planning)
+
+### The proposal
+§6.5 (M0 spike 4) says Form 4 transaction dates, security, size and open-market-vs-plan flag "live inside the
+referenced XML", and says to "scope this into M10 explicitly". §8's `insider_trades` has `transaction_date`,
+`side`, `shares`, `value` and `is_open_market`, and `lag_days` is a generated column on `transaction_date`. None of
+that can be filled from the EDGAR index alone, which gives filing dates only. Meanwhile §16 M2's scope names
+disclosures among the revision-prone feeds that get canonical observations with provenance.
+
+### How it is handled for the build
+Kyle's decision at M2 planning (2026-11-08): disclosures in M2, if built at all, are **index-level**. That means
+filing date and `acceptanceDateTime` (as `available_at`), and CIK identity. No Form 4 XML parsing before M10.
+What follows for the `insider_trades` columns that need the XML (written as NULL, or the row not written until M10)
+is not decided here and will need a `# DECISION:` when a disclosures slice exists. M2 builds no disclosures
+(IDEA-037), so the decision falls to M10.
+
+### Why it is appealing
+N/A. Flagged spec defect, not a proposed feature.
+
+### Why it is parked
+The frozen spec cannot be edited in place.
+
+### The version that would be legitimate
+A correction release that either moves the XML step into the milestone that first needs it, or states which
+`insider_trades` columns are nullable until M10.
+
+### Unfreeze triggers
+The next spec correction release.
+
+### Drift class
+Row 12 of the canonical list. The revision is the M0 spike 4 finding recorded in §6.5. The stale dependents are
+§8 `insider_trades` and §16 M2's scope sentence.
+
+---
+
+## IDEA-037: §16 M2's scope names FX and disclosure work that nothing before M7 and M10 reads
+
+**Status:** Recorded at M2 planning. Handled for the build as below. Needs a spec correction release. Blocks nothing, but M7's and M10's gates must carry the moved work.
+**Raised:** 2026-11-08 (M2 planning)
+
+### The proposal
+§16's M2 scope names "canonical observations with provenance ... on revision-prone feeds (macro, disclosures)", and
+§6 puts Frankfurter (FX), EDGAR and the two Stock Watcher dumps in the Phase 1 provider set. Nothing in M3, M4
+or M5 reads any of them. M3 is lineage and event infrastructure, M4 reads ETF and SPY bars, and M5's outcome
+tracking works from event prices. The first readers are M7 (the premium monitor's typed FX conversion) and M10
+(Congress and Form 4, with public-availability timestamps).
+
+### How it is handled for the build
+Kyle's decision at M2 planning (2026-11-08): **M2 builds yfinance, FRED and a fake provider, and nothing else.**
+This is a relocation, not a waiver:
+- **Frankfurter FX is cut from M2 and inherited by M7.** That is the `fx_rates` ingestion, the typed
+  `convert()` and the per-pair magnitude assertion under ADR-0001. The `currencies` reference table stays in M2
+  slice 3.
+- **The EDGAR index and both Stock Watcher dumps are cut from M2 and inherited by M10.** The EDGAR constraints
+  recorded in §6.5 (mandatory contact User-Agent, CIK identity, paging the `files` array, `acceptanceDateTime`
+  as `available_at`) and the index-level decision in IDEA-036 travel with them.
+- M7 and M10 do not pass their gates until the moved work is built and carries the provenance rules.
+- The number of M2 slice 9 is left vacant rather than renumbered, so the slice references in IDEA-033,
+  IDEA-034, IDEA-035 and IDEA-036 stay valid.
+
+**FRED stays in M2, and not because anything reads it.** Nothing before M6 does. It stays because it is the only
+provider that exercises a revision, and IDEA-034's provenance columns and ADR-0003's vintage rules are one design
+problem. Built six months apart, `macro_metrics` and `bars` would disagree. A consequence for M6: its scope
+sentence "FRED with first-seen + revision vintages (revisions never overwrite earlier vintages)" duplicates what
+M2 slice 5 builds, and that clause is satisfied early by slice 5. M6 keeps the Economy dashboard and the rest of
+its scope.
+
+### The version that would be legitimate
+A correction release that drops "disclosures" from M2's scope sentence, adds the FX and disclosure ingestion to
+M7's and M10's scope, and drops the vintage clause from M6's.
+
+### Drift class
+Not a row on the canonical list. This is an owner scope decision, not a stale reference left behind by a
+revision. IDEA-032, which is row 9, was different: its gate clause named components that did not exist yet.
+
+### Unfreeze triggers
+The next spec correction release.
+
+---
+
+## IDEA-038: The observation timestamp is `effective_ts` in §8 and `effective_at` everywhere else
+
+**Status:** Open. **Blocks M2 slice 5** (`macro_metrics`). Resolved by the shared provenance vocabulary decision at slice 5 planning (see IDEA-034).
+**Raised:** 2026-11-08 (M2 planning)
+
+### The proposal
+§8 defines `macro_metrics(metric TEXT, effective_ts TIMESTAMPTZ, value NUMERIC, available_at, revision INT, source,
+ingestion_run_id, PRIMARY KEY(metric, effective_ts, revision))` and its comment says "never `effective_ts` alone".
+Every other statement of the same concept says `effective_at`: §6.4 (spike 3), ADR-0003 decisions 1 and 2,
+ADR-0005, and §16 M2's list "(effective_at, available_at, ingested_at, revision, source, ingestion_run_id)". One
+column cannot be both. The schema is what a migration is written from, and the ADRs are what the tests are
+written from, so the two will disagree in the first slice that touches either.
+
+The same concept has other spellings in the spec as well, which the vocabulary decision will have to cover:
+- §6.4 line 330 still says `macro_metrics(metric, ts, value)`, the form from before vintages existed.
+- `bars` uses `ts`, and `fx_rates` uses `observed_at`.
+- `cot_positions` uses `report_date` (what the data describes) and `published_at` (called `available_at` in the
+  comment on that table).
+- `corporate_actions` has `available_at` and `ingested_at`, but no effective timestamp beyond `ex_date`.
+
+### Why it is appealing
+N/A. Flagged spec contradiction, not a proposed feature.
+
+### Why it is parked
+The frozen spec cannot be edited in place.
+
+### The version that would be legitimate
+A correction release that picks one name for the observation timestamp (`effective_at` has the ADRs and §16 behind
+it), fixes §8 `macro_metrics` and §6.4 line 330 to match, and states for each §8 time-series table which column
+plays which role.
+
+### Unfreeze triggers
+The slice 5 planning decision on the shared provenance vocabulary, then a spec correction release.
+
+### Drift class
+Not a row on the canonical list. I found no revision event behind it: the changelog records no rename of either
+spelling, and the two forms appear to have been written together in v4.0's point-in-time provenance change. It is
+a plain contradiction between two spellings of one concept, like IDEA-033. (The `macro_metrics(metric, ts, value)`
+form on line 330 is different: it is a stale statement left behind by the vintage redesign. I have not counted it
+separately, and if it should be a drift row, that is a one-line addition to the list.)

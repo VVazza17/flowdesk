@@ -2,14 +2,16 @@
 # The CI gates, callable from anywhere: ci.yml and a local shell run this same code.
 #   bash infra/ci-checks.sh lint|test|audit|license|arm64
 #
-# Every Python step runs in python:3.12-slim with the repo mounted read-only, so a Windows host and
-# a GitHub runner execute the same interpreter against the same hash-pinned locks.
+# Every Python step runs in the pinned base image (backend/Dockerfile's FROM line, via infra/base-image.sh)
+# with the repo mounted read-only, so a Windows host and a GitHub runner execute the same interpreter
+# against the same hash-pinned locks, and it is the interpreter the image ships.
 #
 # DECISION: tests/ and tools/ never go in the image; dev tooling never goes in the app. That is why
 # these run in a plain Python container and install from the locks each time.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+. infra/base-image.sh
 REPO_ROOT="$(pwd -W 2>/dev/null || pwd)"
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
@@ -25,7 +27,7 @@ in_python() {
     -v flowdesk-pip-cache:/pipcache -e PIP_CACHE_DIR=/pipcache \
     -e PIP_ROOT_USER_ACTION=ignore -e PIP_DISABLE_PIP_VERSION_CHECK=1 \
     -e PYTHONDONTWRITEBYTECODE=1 \
-    "${opts[@]+"${opts[@]}"}" python:3.12-slim sh -ec "$1"
+    "${opts[@]+"${opts[@]}"}" "$BASE_IMAGE" sh -ec "$1"
 }
 
 # A direct pin edited in requirements*.txt without re-running lock-deps.sh would otherwise ship the
@@ -41,7 +43,17 @@ check_locks_match() {
   echo "locks: every direct pin is in its lock"
 }
 
+# The base image has one definition (backend/Dockerfile's FROM, read through infra/base-image.sh). A
+# script or compose service that names the image itself would be a second one, floating again. The
+# [:] keeps this line from matching itself.
+check_no_second_base_image() {
+  local hits
+  hits=$(grep -nE 'python[:]3' infra/*.sh docker-compose.yml .github/workflows/*.yml 2>/dev/null || true)
+  [ -z "$hits" ] || fail "second definition of the Python base image (use \$BASE_IMAGE from infra/base-image.sh): $hits"
+}
+
 check_lint() {
+  check_no_second_base_image
   check_locks_match
   in_python -- '
     pip install --quiet --require-hashes -r requirements-dev.lock

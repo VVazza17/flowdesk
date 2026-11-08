@@ -7,6 +7,7 @@
 set -euo pipefail
 
 CHECKS=infra/ci-checks.sh
+. infra/base-image.sh
 TMP_ROOT=$(mktemp -d)
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
@@ -81,6 +82,16 @@ sed -i 's/^fastapi==.*/fastapi==0.1.0/' "$repo/backend/requirements.txt"
 expect_red "lint: direct pin missing from its lock" 'pins fastapi==0.1.0' bash "$repo/$CHECKS" lint
 
 repo=$(copy_repo)
+sed -i '/^FROM /s/@sha256:[0-9a-f]*//' "$repo/backend/Dockerfile"
+expect_red "lint: an unpinned base image" 'not tag@sha256' bash "$repo/$CHECKS" lint
+
+repo=$(copy_repo)
+tag=3.12-slim # a variable, so this file doesn't itself contain the literal the guard looks for
+echo "docker run --rm python:$tag true" >> "$repo/infra/smoke-fake.sh"
+expect_red "lint: a second definition of the base image" 'second definition of the Python base image' \
+  bash "$repo/$CHECKS" lint
+
+repo=$(copy_repo)
 printf 'def test_broken() -> None:\n    assert False\n' > "$repo/backend/tests/test_broken.py"
 expect_red "test: failing test" 'test_broken' bash "$repo/$CHECKS" test
 
@@ -108,7 +119,7 @@ expect_red "audit: a pin with a known advisory" 'urllib3' bash "$repo/$CHECKS" a
 # without publishing one. backend/tests/test_license_audit.py covers the wider cases.
 license_tool() {
   MSYS_NO_PATHCONV=1 docker run --rm -i -v "$(pwd -W 2>/dev/null || pwd)/backend:/src:ro" -w /src \
-    -e PYTHONDONTWRITEBYTECODE=1 python:3.12-slim python -m tools.license_audit
+    -e PYTHONDONTWRITEBYTECODE=1 "$BASE_IMAGE" python -m tools.license_audit
 }
 unknown_licence() { echo '[{"Name":"x","Version":"1","License":"UNKNOWN"}]' | license_tool; }
 empty_report() { echo '[]' | license_tool; }
@@ -117,7 +128,7 @@ expect_red "license: an empty report" 'no packages reported' empty_report
 
 # Emulation isn't always installed on a dev machine, so this reports rather than fails. CI's arm64
 # job installs QEMU and is the actual gate.
-if docker run --rm --platform linux/arm64 python:3.12-slim true >/dev/null 2>&1; then
+if docker run --rm --platform linux/arm64 "$BASE_IMAGE" true >/dev/null 2>&1; then
   expect_pass "arm64: builds and answers under emulation" bash "$CHECKS" arm64
 else
   echo "NOT RUN: arm64 (no emulation on this machine; ci.yml's arm64 job covers it)"

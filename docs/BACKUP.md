@@ -114,8 +114,8 @@ pg_dump: warning: there are circular foreign-key constraints on this table:
 pg_dump: detail: continuous_agg
 ```
 
-**Nothing runs this automatically yet.** That and off-box copies are IDEA-029, which must be resolved before
-M2 writes its first persistent observation. A dump on the same disk protects against a bad `DROP`, not
+**Nothing runs this automatically yet.** That and off-box copies are IDEA-029, which M2 slice 2 builds and must
+close before slice 6 persists its first scheduled bar. A dump on the same disk protects against a bad `DROP`, not
 against losing the machine.
 
 ## What restore refuses

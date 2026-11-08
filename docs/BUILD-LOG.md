@@ -639,3 +639,43 @@ the edit point silently disappeared.
   that one package and asserts the fixed version landed. Verified on amd64 and arm64 (QEMU); Grype with CI's flags:
   old image exit 2, new image exit 0. No threshold change, no ignore entry. Procedure: `docs/RUNBOOK-IMAGE-CVE.md`.
   Remove the Dockerfile block once the base image ships the fix (runbook step 5).
+
+## 2026-11-08 — M2 planning decisions, and slice 0
+
+**Decisions (Kyle).**
+- D1: the base image is pinned by digest, and the CI tooling container in the same change. Postgres and Redis stay
+  on exact version tags: `2.31.0-pg16` is already a version pin, and the drift was in `python:3.12-slim`.
+- D2: encrypted dump to Kyle's desktop as the off-box copy. Dev runs count. The six points: local dump first and
+  the off-box copy as a separate step (rsync over SSH, catch-up on wake); the key in the password manager,
+  never only on the laptop; a stale backup does not degrade `/health/ready` (it shows on `/health/data` and the
+  missed-run signal notifies); 14 dailies plus 8 weeklies; `never_completed` with a startup grace for the worker
+  check; Beat death and worker death documented as one state.
+- D3: worker health is keyed on recent `task_runs` completion, not process liveness, so a wedged worker degrades
+  too. Degrading `/health/ready` pages (ADR-0008 section 4).
+- D4: M2 builds yfinance, FRED and a fake provider only. Frankfurter goes to M7, EDGAR and both Stock Watchers
+  to M10 (IDEA-037, a relocation and not a waiver). Slice 9's number is left vacant.
+- D5: disclosures are index-level; the §6.5 vs §8 conflict is IDEA-036.
+- IDEA-035's version-home decision waits until slice 6 planning, with IDEA-034.
+- IDEA-029's wording is corrected: FRED vintages are re-fetchable (`output_type=4`); what is irrecoverable is
+  as-traded live-captured bars and `c_total_return` as it stood on a day. That puts the IDEA-029 line at slice 6,
+  not slice 5. The ordering is unchanged, because slice 2 precedes both.
+
+**Slices.** 0 pin the bases (done) · 1 worker and Beat, health keyed on task_runs · 2 scheduled encrypted
+backups (IDEA-029) · 3 reference tables, universes, calendars (IDEA-033) · 4 provider framework and fake provider
+· 5 FRED and macro vintages (ADR-0003) · 6 prices (ADR-0002, IDEA-034, IDEA-035 decided here) · 7 validation and
+quarantine (IDEA-023) · 8 corporate actions workflow · 9 vacant (IDEA-037) · 10 backfill and progress API · 11
+frontend scaffold and first-run page.
+
+**Slice 0 result.** `backend/Dockerfile`'s `FROM` is now `python:3.12-slim@sha256:5e2bdb1b...` (the multi-arch
+index, resolved 2026-11-08). `infra/base-image.sh` reads it for `ci-checks.sh`, `lock-deps.sh` and smokes 2, 8
+and 10, so there is one definition. Lint fails on a second one, and smoke 8 proves the guard and the unpinned-FROM
+check both go red. Verified: `lock-deps.sh` regenerates the locks byte-identical under the pinned image;
+smokes 2, 8 and 10 pass; `ci-checks.sh arm64` passes under emulation; Grype on the pinned image (zlib block
+retained) exits 0. `docs/RUNBOOK-IMAGE-CVE.md` step 3a is now "bump the pin". The cost is stated in the runbook:
+the base no longer takes fixes by itself, and the scan is the tripwire.
+
+- **IDEA-034 split recorded; IDEA-038 logged.** The shared provenance vocabulary (`effective_at`, `available_at`,
+  `ingested_at`, `revision`, `source`) is settled at slice 5 planning and binds every observation table; the
+  `bars`-specific decisions and IDEA-035 wait for slice 6 planning. IDEA-038 is the `effective_ts` (§8) vs
+  `effective_at` (ADRs, §16) contradiction, classed as a plain contradiction and not a drift row: no revision
+  event is behind it.

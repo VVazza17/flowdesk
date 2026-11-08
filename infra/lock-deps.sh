@@ -9,11 +9,12 @@
 # DECISION: pip-tools is pinned here, not in requirements-dev.txt. Nothing but this script uses it,
 # and in the dev lock it would add its own dependency tree to the licence audit.
 set -euo pipefail
+. "$(dirname "$0")/base-image.sh"
 
 # Git Bash on Windows rewrites paths in docker arguments unless told not to.
 MSYS_NO_PATHCONV=1 docker run --rm -v "$(pwd -W 2>/dev/null || pwd)/backend:/src" -w /src \
   -e CUSTOM_COMPILE_COMMAND="bash infra/lock-deps.sh" \
-  python:3.12-slim sh -ec '
+  "$BASE_IMAGE" sh -ec '
     pip install --quiet --no-cache-dir --root-user-action=ignore pip-tools==7.6.2
     compile() { pip-compile --quiet --generate-hashes --strip-extras --allow-unsafe "$@"; }
     compile --output-file=requirements.lock requirements.txt

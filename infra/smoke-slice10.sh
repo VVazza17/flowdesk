@@ -10,6 +10,7 @@ set -euo pipefail
 
 set -a; . ./.env; set +a
 . "$(dirname "$0")/lib.sh"
+. "$(dirname "$0")/base-image.sh"
 
 SINK=flowdesk-smoke10-sink
 SENTINEL="smoke10-sentinel-$$"
@@ -84,7 +85,7 @@ COMPOSE_PROFILES=private wait_ready
 pg_id=$(docker compose ps -q postgres)
 network=$(docker inspect -f '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{end}}' "$pg_id")
 docker rm -f "$SINK" >/dev/null 2>&1 || true
-docker run -d --name "$SINK" --network "$network" python:3.12-slim python -u -m http.server 9000 >/dev/null
+docker run -d --name "$SINK" --network "$network" "$BASE_IMAGE" python -u -m http.server 9000 >/dev/null
 expect_flowing "all up"
 
 echo "== exposure"

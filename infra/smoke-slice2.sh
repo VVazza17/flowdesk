@@ -7,6 +7,7 @@ set -euo pipefail
 
 set -a; . ./.env; set +a
 . "$(dirname "$0")/lib.sh"
+. "$(dirname "$0")/base-image.sh"
 API_PORT="${API_PORT:-8000}"
 
 # A multi-platform manifest list needs either the containerd image store or a
@@ -22,7 +23,7 @@ fi
 # case skips the arm64 half with a notice. Only that case: any other probe failure is a real failure.
 platforms=linux/amd64,linux/arm64
 built="amd64+arm64 build"
-if ! probe=$(docker run --rm --platform linux/arm64 python:3.12-slim true 2>&1); then
+if ! probe=$(docker run --rm --platform linux/arm64 "$BASE_IMAGE" true 2>&1); then
   case "$probe" in
     *"exec format error"*)
       platforms=linux/amd64
