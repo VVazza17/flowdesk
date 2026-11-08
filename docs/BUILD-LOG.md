@@ -632,3 +632,10 @@ the edit point silently disappeared.
 - **`migration_revisions()`** reads the alembic head once in `SqlRedisProbes.__init__`, not per call: a blocking
   directory walk inside an `async def` is not cancelled by `wait_for`. Two tests added. CI lint and tests green
   (195 passed); smoke 6 re-run and passed against the rebuilt image.
+
+- **Image scan red (CI `security` job, push and 2026-11-08 schedule run).** Two HIGH findings in `zlib1g`
+  (CVE-2026-76844, CVE-2026-85091), fixed in `1:1.3.dfsg+really1.3.1-1+deb13u1`. The current `python:3.12-slim`
+  (digest `sha256:5e2bdb1b...`) still carries `+b1`, so no re-pin was possible. `backend/Dockerfile` now upgrades
+  that one package and asserts the fixed version landed. Verified on amd64 and arm64 (QEMU); Grype with CI's flags:
+  old image exit 2, new image exit 0. No threshold change, no ignore entry. Procedure: `docs/RUNBOOK-IMAGE-CVE.md`.
+  Remove the Dockerfile block once the base image ships the fix (runbook step 5).

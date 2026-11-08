@@ -2,6 +2,16 @@
 # later numpy/pandas) and gains little. python:3.12-slim publishes amd64 and arm64.
 FROM python:3.12-slim
 
+# Base-image CVE patch, applied on top because the published python:3.12-slim lagged Debian's security
+# archive: two HIGH findings in zlib1g, fixed in 1:1.3.dfsg+really1.3.1-1+deb13u1 (trixie-security).
+# This upgrades that one package, not the whole image. The dpkg check fails the build if the fixed
+# version did not land, and passes once the base image ships it or anything newer. When it does,
+# delete this block (docs/RUNBOOK-IMAGE-CVE.md has the procedure and the removal check).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends --only-upgrade zlib1g \
+    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' zlib1g)" ge "1:1.3.dfsg+really1.3.1-1+deb13u1" \
+    && rm -rf /var/lib/apt/lists/*
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1

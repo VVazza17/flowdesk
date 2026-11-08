@@ -212,6 +212,7 @@ docs/
   HEALTH.md            # /health/* response shapes and the documented degraded states
   BACKUP.md            # restore runbook, the version trap, why plain pg_restore is forbidden
   HEARTBEAT.md         # external monitor setup, the alert drill, where it is armed, swapping provider
+  RUNBOOK-IMAGE-CVE.md # the CI image scan goes red: re-pin the base or upgrade one package; never a threshold or ignore change
 spikes/                # M0 proof scripts + evidence JSON (historical — do not modify)
 tests/
   fixtures/            # oracle/golden test data (premium_oracle.json)
