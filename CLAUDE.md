@@ -72,7 +72,9 @@ records M1 slice 10's heartbeat decisions.
 - **The worker and provider half of the M1 gate moves to M2's gate** (IDEA-032, a relocation and not a waiver). The gate says "killing Redis/worker/provider", and
   no worker or provider exists until M2, so it can't pass at M1. Only Redis was killed and verified. M2's gate
   must not pass until killing the worker and a provider each produce a documented health state (add them to
-  `docs/HEALTH.md`). The frozen §16 still says the old thing until a correction release. M2 is in progress (slice 0, the base-image pin, done 2026-11-08; the slice plan
+  `docs/HEALTH.md`). The frozen §16 still says the old thing until a correction release. M2 is in progress (slices 0 and 1 done 2026-11-08: the base-image pin, and the Celery worker and Beat with a
+  health check keyed on a canary task's recent completions, so a wedged worker degrades `/health/ready` and
+  pages; the worker half of IDEA-032 is therefore done, the provider half is slice 4's; the slice plan
   and the decisions behind it are in `docs/BUILD-LOG.md`). M2 builds yfinance, FRED and a fake provider only
   (IDEA-037); the slice 9 number is vacant.
 
@@ -192,7 +194,7 @@ elaboration is the most comfortable way to avoid execution.*
 
 ```
 cp .env.example .env              # first time only; set a real POSTGRES_PASSWORD
-docker compose up -d              # private profile (COMPOSE_PROFILES in .env): stack + migrate + api
+docker compose up -d              # private profile (COMPOSE_PROFILES in .env): stack + migrate + api + worker + beat
 docker compose --profile public up -d   # public instead (replaces, not adds); `docker compose rm -sf api` first
 docker compose exec postgres psql -U flowdesk -d flowdesk
 docker compose exec redis redis-cli ping
@@ -206,6 +208,7 @@ bash infra/smoke-slice7.sh        # slice 7: public = read-only, redacted, no do
 bash infra/smoke-slice8.sh        # slice 8: every gate green, then each goes red on a broken temp copy
 bash infra/smoke-slice9.sh        # slice 9: hypertable + aggregate + policies survive a restore; 15 breaks go red
 bash infra/smoke-slice10.sh       # slice 10: pings only on ready=ok, each outage silences them; uses a fake monitor
+bash infra/smoke-m2-slice1.sh     # M2 slice 1: worker stopped/paused, Beat stopped, fresh start, Redis down -> documented states
 bash infra/backup.sh              # dump + manifest into dumps/. Restoring and the version trap: docs/BACKUP.md
 bash infra/restore.sh dumps/<name>.dump --db <new-or-empty-db>   # refuses a non-empty target
 bash infra/ci-checks.sh lint      # also: test | audit | license | arm64. Same code ci.yml runs

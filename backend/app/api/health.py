@@ -6,7 +6,7 @@ import structlog
 from fastapi import APIRouter, Depends, Response
 
 from app import settings
-from app.deps import get_deployment_mode, get_now, get_probes
+from app.deps import get_deployment_mode, get_now, get_probes, get_started_at
 from app.services import health as svc
 
 log = structlog.get_logger(__name__)
@@ -27,12 +27,17 @@ Mode = Annotated[settings.DeploymentMode, Depends(get_deployment_mode)]
 
 
 @router.get("/ready")
-async def ready(response: Response, probes: Probes) -> dict[str, Any]:
+async def ready(
+    response: Response,
+    probes: Probes,
+    now: Annotated[datetime, Depends(get_now)],
+    started_at: Annotated[datetime, Depends(get_started_at)],
+) -> dict[str, Any]:
     # DECISION: bare JSON, not the §9 {data, as_of, stale} envelope. That envelope is specified
     # for /api/v1; these routes sit outside it, like /health/live. Logged as IDEA-025.
     # ok / degraded -> 200 (Redis is never the source of truth); not_ready -> 503. Never a 500:
     # every probe failure is converted to data inside svc.run_check.
-    code, body = await svc.assemble_ready(probes)
+    code, body = await svc.assemble_ready(probes, now, started_at, settings.worker_stale_after())
     response.status_code = code
     return body
 

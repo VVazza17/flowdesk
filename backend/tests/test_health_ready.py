@@ -29,11 +29,16 @@ class FakeProbes:
         rows: list[FeedRow] | None = None,
         state: dict[str, list[dict[str, Any]]] | None = None,
         redis_delay: float = 0,
+        # Default: the canary completed ten seconds ago, so a test about something else sees a
+        # healthy worker and "ok" keeps meaning "everything is fine".
+        last_success: datetime | None = NOW - timedelta(seconds=10),
+        worker_error: Exception | None = None,
     ) -> None:
         self.postgres, self.redis, self.revisions = postgres, redis, revisions
         self.rows = rows or []
         self.state = state or {"ingestion": [], "backfills": [], "tasks": []}
         self.redis_delay = redis_delay
+        self.last_success, self.worker_error = last_success, worker_error
 
     async def ping_postgres(self) -> None:
         if self.postgres:
@@ -51,6 +56,11 @@ class FakeProbes:
         if self.postgres:
             raise self.postgres
         return self.rows
+
+    async def last_task_success(self, task_name: str) -> datetime | None:
+        if self.worker_error:
+            raise self.worker_error
+        return self.last_success
 
     async def data_state(self) -> dict[str, list[dict[str, Any]]]:
         if self.postgres:

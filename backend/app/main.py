@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import FastAPI
@@ -21,6 +22,7 @@ def create_app(mode: settings.DeploymentMode | None = None) -> FastAPI:
     )
     app = FastAPI(title="FlowDesk", **docs_off)
     app.state.deployment_mode = mode
+    app.state.started_at = datetime.now(UTC)
     app.add_middleware(CorrelationIdMiddleware)
     app.include_router(health.router)
     if mode == "public" and (violations := public_route_violations(app.routes)):

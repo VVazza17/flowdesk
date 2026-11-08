@@ -16,6 +16,8 @@ from typing import Any, Protocol
 
 import structlog
 
+from app.tasks.names import CANARY
+
 log = structlog.get_logger(__name__)
 
 CHECK_TIMEOUT_S = 2.0
@@ -43,6 +45,10 @@ class HealthProbes(Protocol):
         ...
 
     async def provider_rows(self) -> list[FeedRow]: ...
+    async def last_task_success(self, task_name: str) -> datetime | None:
+        """completed_at of the newest task_runs row for this task with status 'succeeded'."""
+        ...
+
     async def data_state(self) -> dict[str, list[dict[str, Any]]]: ...
 
 
@@ -61,27 +67,106 @@ async def run_check(name: str, probe: Callable[[], Awaitable[Any]]) -> dict[str,
     return {"status": "ok"}
 
 
-async def assemble_ready(probes: HealthProbes) -> tuple[int, dict[str, Any]]:
-    """Readiness: ok (200) | degraded (200, Redis down) | not_ready (503).
+async def assemble_ready(
+    probes: HealthProbes, now: datetime, started_at: datetime, worker_stale_after: timedelta
+) -> tuple[int, dict[str, Any]]:
+    """Readiness: ok (200) | degraded (200) | not_ready (503).
 
-    Redis is a cache/bus, never the source of truth, so losing it degrades; losing Postgres
-    or running against an unmigrated schema means the API cannot serve real data.
+    Degraded means Redis is down or the worker is not completing the canary. Redis is a cache/bus,
+    never the source of truth, so losing it degrades; losing Postgres or running against an
+    unmigrated schema means the API cannot serve real data. A worker that has stopped completing
+    the canary degrades too (M2 slice 1): the API still answers, but nothing is being ingested.
+    `now` and `started_at` are passed in: no clock in the logic.
     """
     pg, redis = await asyncio.gather(
         run_check("postgres", probes.ping_postgres),
         run_check("redis", probes.ping_redis),
     )
     migrations = await _check_migrations(probes, pg_ok=pg["status"] == "ok")
-    checks = {"postgres": pg, "redis": redis, "migrations": migrations}
+    worker = await _check_worker(
+        probes,
+        pg_ok=pg["status"] == "ok",
+        now=now,
+        started_at=started_at,
+        stale_after=worker_stale_after,
+    )
+    checks = {"postgres": pg, "redis": redis, "migrations": migrations, "worker": worker}
 
     if pg["status"] != "ok" or migrations["status"] != "ok":
         return 503, {"status": "not_ready", "checks": checks}
     # WARNING: anything that returns `degraded` here also stops the external heartbeat, which pages
-    # the owner after 45 minutes. A new condition that shouldn't page doesn't belong here, or the
-    # gate in app/heartbeat.py changes in the same commit. See ADR-0008.
-    if redis["status"] != "ok":
+    # the owner after 45 minutes. A stale worker pages on purpose (Kyle, M2 planning). A stale
+    # backup must not, so it lives on /health/data and the missed-run signal. A new condition that
+    # shouldn't page doesn't belong here, or the gate in app/heartbeat.py changes in the same
+    # commit. See ADR-0008.
+    if redis["status"] != "ok" or _worker_degrades(worker):
         return 200, {"status": "degraded", "checks": checks}
     return 200, {"status": "ok", "checks": checks}
+
+
+async def _check_worker(
+    probes: HealthProbes,
+    *,
+    pg_ok: bool,
+    now: datetime,
+    started_at: datetime,
+    stale_after: timedelta,
+) -> dict[str, Any]:
+    if not pg_ok:
+        return {"status": "unknown", "reason": "postgres_down"}
+    last: datetime | None = None
+    answered = False
+
+    async def probe() -> None:
+        nonlocal last, answered
+        last = await probes.last_task_success(CANARY)
+        answered = True
+
+    result = await run_check("worker", probe)
+    if result["status"] != "ok" or not answered:
+        # Same stance as migrations: not being able to ask is not evidence that the worker is dead,
+        # and a Postgres or schema problem already shows in its own check (and as not_ready).
+        return {"status": "unknown", "error": result.get("error", "NoResult")}
+    return classify_worker(last, now, started_at, stale_after)
+
+
+def classify_worker(
+    last_success: datetime | None, now: datetime, started_at: datetime, stale_after: timedelta
+) -> dict[str, Any]:
+    """The worker's state from the canary's last recorded success. Beat dying and the worker dying
+    look identical here, on purpose: both mean completions stop, and one state is easier to act on.
+    A dead Redis looks the same too (Beat cannot publish, the worker cannot consume); Redis shows
+    its own check beside this one.
+
+    ok               a canary succeeded within `stale_after`
+    stale            the last success is older than that: something stopped completing
+    never_completed  no canary has ever succeeded. `in_grace` is true while the API itself has been
+                     up for less than `stale_after`: a fresh stack has not had time to run one yet,
+                     and that is not a failure. Past the grace it is.
+
+    DECISION: the grace is measured from the API process's start, because task_runs is empty on a
+    fresh install and has no first-seen time to measure from (the same gap as IDEA-026).
+    """
+    base: dict[str, Any] = {"task": CANARY, "stale_after_seconds": int(stale_after.total_seconds())}
+    if last_success is None:
+        return {
+            **base,
+            "status": "never_completed",
+            "in_grace": now - started_at <= stale_after,
+        }
+    age = now - last_success
+    return {
+        **base,
+        "status": "ok" if age <= stale_after else "stale",
+        "last_completed_at": _iso(last_success),
+        "age_seconds": int(age.total_seconds()),
+    }
+
+
+def _worker_degrades(worker: dict[str, Any]) -> bool:
+    if worker["status"] == "stale":
+        return True
+    return bool(worker["status"] == "never_completed" and not worker["in_grace"])
 
 
 async def _check_migrations(probes: HealthProbes, *, pg_ok: bool) -> dict[str, Any]:

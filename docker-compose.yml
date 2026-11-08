@@ -6,6 +6,9 @@ x-api-env: &api-env
   # Same URL-encoding caveat as migrate below; settings.py is where that gets fixed.
   DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:?set in .env}:${POSTGRES_PASSWORD:?set in .env}@postgres:5432/${POSTGRES_DB:?set in .env}
   REDIS_URL: redis://redis:6379/0
+  # The API judges the worker canary's staleness, Beat schedules it: one variable feeds both, so they
+  # cannot disagree about how often it runs (app/settings.py).
+  CANARY_INTERVAL_SECONDS: ${CANARY_INTERVAL_SECONDS:-60}
 
 x-api-base: &api-base
   build: ./backend
@@ -87,6 +90,32 @@ services:
       postgres:
         condition: service_healthy
     restart: "no"
+
+  # Celery worker and Beat (M2 slice 1). No profile: they run under private and public alike. No
+  # depends_on, like the API: Redis and Postgres being down is a state the health endpoints report,
+  # and Celery retries the broker connection (broker_connection_retry_on_startup) instead of exiting.
+  # No ports. The image's HEALTHCHECK probes port 8000, which nothing serves here, so it is disabled
+  # as for the heartbeat sender. The health signal for these two is the canary in task_runs, read by
+  # /health/ready: a process being up says nothing about whether it is working.
+  worker:
+    build: ./backend
+    command: ["celery", "-A", "app.worker", "worker", "--loglevel=INFO", "--concurrency=2"]
+    environment:
+      <<: *api-env
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+
+  beat:
+    build: ./backend
+    # The schedule file goes in /tmp: the app directory is root-owned and the container runs as an
+    # unprivileged user. Losing it on restart is harmless, Beat rebuilds it from the code.
+    command: ["celery", "-A", "app.worker", "beat", "--loglevel=INFO", "--schedule=/tmp/celerybeat-schedule"]
+    environment:
+      <<: *api-env
+    healthcheck:
+      disable: true
+    restart: unless-stopped
 
   heartbeat:
     # External dead-man sender (ADR-0008). No profile: it runs under private and public alike. Not

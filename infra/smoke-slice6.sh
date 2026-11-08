@@ -52,7 +52,7 @@ echo "== all up"
 wait_for_ok
 expect /health/live 200 '"status":"ok"'
 expect /health/providers 200 '"status":"no_feeds"'
-expect /health/data 200 '"status":"no_runs"'
+expect /health/data 200 '"status":"reported"'   # the worker's canary has written task_runs (M2 slice 1)
 
 echo "== redis killed -> degraded, not 500"
 docker compose stop redis
@@ -60,7 +60,7 @@ expect /health/ready 200 '"status":"degraded"'
 expect /health/ready 200 '"redis":{"status":"down"'
 expect /health/live 200 '"status":"ok"'
 expect /health/providers 200 '"status":"no_feeds"'   # Postgres-only: unaffected
-expect /health/data 200 '"status":"no_runs"'
+expect /health/data 200 '"status":"reported"'   # the worker's canary has written task_runs (M2 slice 1)
 
 echo "== redis back -> recovers"
 docker compose start redis

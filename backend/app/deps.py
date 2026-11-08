@@ -38,6 +38,12 @@ def get_now() -> datetime:
     return datetime.now(UTC)
 
 
+def get_started_at(request: Request) -> datetime:
+    # When this API process started: the reference for the worker check's startup grace.
+    started_at: datetime = request.app.state.started_at
+    return started_at
+
+
 def get_deployment_mode(request: Request) -> settings.DeploymentMode:
     # Read from the app, not the environment: create_app fixed it once (ADR-0007).
     mode: settings.DeploymentMode = request.app.state.deployment_mode

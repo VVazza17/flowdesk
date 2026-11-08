@@ -8,11 +8,12 @@ from typing import Any
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from redis.asyncio import Redis
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.models.ops import BackfillRun, IngestionRun, ProvidersHealth, TaskRun
 from app.services.health import FeedRow
+from app.tasks.runs import STATUS_SUCCEEDED
 
 ALEMBIC_INI = Path(__file__).resolve().parents[2] / "alembic.ini"
 
@@ -69,6 +70,19 @@ class SqlRedisProbes:
                 return None, head
             current = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar()
         return current, head
+
+    async def last_task_success(self, task_name: str) -> datetime | None:
+        # DECISION: no index on task_runs yet. At one canary a minute this scans a table that stays
+        # small; add (task_name, status, completed_at) when ingestion tasks make it big.
+        async with self._need_engine().connect() as conn:
+            newest: datetime | None = (
+                await conn.execute(
+                    select(func.max(TaskRun.completed_at)).where(
+                        TaskRun.task_name == task_name, TaskRun.status == STATUS_SUCCEEDED
+                    )
+                )
+            ).scalar()
+            return newest
 
     async def provider_rows(self) -> list[FeedRow]:
         async with self._need_engine().connect() as conn:

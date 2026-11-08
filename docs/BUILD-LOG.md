@@ -679,3 +679,31 @@ the base no longer takes fixes by itself, and the scan is the tripwire.
   `bars`-specific decisions and IDEA-035 wait for slice 6 planning. IDEA-038 is the `effective_ts` (§8) vs
   `effective_at` (ADRs, §16) contradiction, classed as a plain contradiction and not a drift row: no revision
   event is behind it.
+
+## 2026-11-08 — M2 slice 1: Celery worker and Beat, health keyed on completions
+
+**Built.** `worker` and `beat` compose services (same image, no profile, no ports, image healthcheck disabled);
+`app/celery_app.py` (factory, no import side effects), `app/worker.py` (entry), `app/tasks/{names,runs,canary}.py`.
+The canary is a Beat task every `CANARY_INTERVAL_SECONDS` (60) that records itself in `task_runs`
+(`running`/`succeeded`/`failed`, a stopgap under IDEA-022). `/health/ready` gains `checks.worker`, judged from
+the newest `succeeded` canary: `ok`, `stale` (older than 3 intervals, **degraded**), `never_completed` (ok inside
+a startup grace measured from API start, degraded after), `unknown` (Postgres down or unreadable, no verdict).
+Beat death, worker death, a frozen worker and a dead Redis all read `stale`, as one state. States are documented
+in `docs/HEALTH.md`.
+
+**Verified.** `infra/smoke-m2-slice1.sh` (interval 3 s): worker stopped, worker *paused* (process alive, not
+working), Beat stopped, fresh stack, and Redis stopped each give the documented state; never a 500; `/health/live`
+always 200; all recover. Smokes 6, 7 and 10 pass (smoke 6's `/health/data` assertions changed from `no_runs` to
+`reported`, since the canary now writes `task_runs`). Lint, mypy, 217 tests, audit, license and the arm64 check
+pass. Celery 5.7.0 with the `redis` extra resolves against the pinned `redis==8.1.0`; `celery-types` is a
+dev-only dependency so mypy stays strict without an ignore.
+
+**Found along the way.**
+- A paused container reports `Status=paused` but `Running=true`; the smoke checks `Running` and `Paused`.
+- `docker compose pause` is what a wedged worker looks like to the canary: the case a liveness check misses.
+- Without `expires` on the schedule, unpausing replays every missed canary at once; the entry sets
+  `expires = 2 x interval`.
+
+**Not done, deliberately.** Sweeping `running` rows whose process died (nothing long-running exists yet; slice
+10), and protecting the canary from being starved by a long task (revisit with the first one). Both are written
+up in `docs/HEALTH.md` under "What it does not catch yet". The smoke is not in CI, like smokes 6, 7 and 10.

@@ -489,6 +489,12 @@ A spec correction release, or before M2 first writes `ingestion_runs` / `backfil
 whichever comes first — status vocabularies and the backfill uniqueness rule are
 hard to change once rows exist.
 
+**Addendum, 2026-11-08 (M2 slice 1).** The worker canary is the first thing to write `task_runs` rows, so the
+vocabulary question has arrived for that table. The stopgap, in `backend/app/tasks/runs.py`: `status` is
+`running` / `succeeded` / `failed` (TEXT, no CHECK); `completed_at` is set when a run finishes either way, and
+only `succeeded` counts as a completion for health; `attempt` starts at 1. `ingestion_runs` and `backfill_runs`
+are still unwritten, so their triggers stand for slices 4 and 10.
+
 ---
 
 ## IDEA-023: `providers_health` has no quarantine columns, but §6 says quarantine counts feed it

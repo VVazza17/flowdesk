@@ -60,3 +60,28 @@ def heartbeat_interval_seconds() -> int:
 # each series' own publication cadence, so there is deliberately no global default: a feed
 # without an entry reports stale=null rather than being judged against an invented number.
 FEED_STALE_AFTER: dict[tuple[str, str], timedelta] = {}
+
+
+# --- The worker canary (M2 slice 1) ---------------------------------------------------------------
+# A trivial Beat task whose recorded completions are the evidence that Beat, Redis, the worker and
+# Postgres all work together. /health/ready reads the age of the last success (keyed on task_runs,
+# not on whether a process is alive, so a wedged worker degrades too).
+#
+# DECISION: stale after three missed runs. One miss can be a queued or slow run; three is not. The
+# threshold is derived from the interval, so the API (which judges) and Beat (which schedules) read
+# the same variable and cannot disagree. Revisit when long tasks share the worker: a canary stuck
+# behind a long backfill would look like a dead worker.
+WORKER_STALE_MULTIPLIER = 3
+
+
+def canary_interval_seconds() -> int:
+    # Overridable because the smoke test cannot wait minutes for a stale verdict, not for tuning.
+    raw = os.environ.get("CANARY_INTERVAL_SECONDS", "").strip() or "60"
+    value = int(raw)
+    if value <= 0:
+        raise ValueError(f"CANARY_INTERVAL_SECONDS must be positive, got {raw!r}")
+    return value
+
+
+def worker_stale_after() -> timedelta:
+    return timedelta(seconds=canary_interval_seconds() * WORKER_STALE_MULTIPLIER)

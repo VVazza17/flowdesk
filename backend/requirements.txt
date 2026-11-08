@@ -5,3 +5,4 @@ sqlalchemy[asyncio]==2.0.55
 asyncpg==0.32.0
 structlog==26.1.0
 redis==8.1.0
+celery[redis]==5.7.0
