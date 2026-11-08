@@ -9,9 +9,20 @@ set -euo pipefail
 CHECKS=infra/ci-checks.sh
 TMP_ROOT=$(mktemp -d)
 trap 'rm -rf "$TMP_ROOT"' EXIT
-export COMPOSE_PROJECT_NAME=flowdesk # A copy must reuse this stack, not start a second on the same ports.
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
+
+# A copy must reuse this checkout's stack, not start a second on the same ports, so the project name is
+# pinned for the copies' compose calls. DECISION: pin the name compose itself derives for THIS checkout
+# (`docker compose config` prints it), not a literal "flowdesk": a literal made the script act on
+# whichever checkout's stack happened to be named flowdesk. An explicit COMPOSE_PROJECT_NAME from the
+# caller still wins, like for every other infra/ script.
+if [ -z "${COMPOSE_PROJECT_NAME:-}" ]; then
+  COMPOSE_PROJECT_NAME=$(docker compose config | sed -n 's/^name: //p' | tr -d '\r') || true
+fi
+[ -n "${COMPOSE_PROJECT_NAME:-}" ] || fail "could not determine this checkout's compose project name (needs a .env)"
+export COMPOSE_PROJECT_NAME
+echo "scoped to compose project: $COMPOSE_PROJECT_NAME"
 
 # A fresh copy of what the gates read, with the working tree's uncommitted changes included.
 copy_repo() {
