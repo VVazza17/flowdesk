@@ -28,6 +28,20 @@ class SqlRedisProbes:
     def __init__(self, engine: AsyncEngine | None, redis: Redis | None) -> None:
         self._engine = engine
         self._redis = redis
+        # DECISION: the head is read once, here, not per call. ScriptDirectory walks the versions
+        # directory with blocking file I/O. Inside an `async def` that cannot be cancelled, so the
+        # wait_for in run_check would not bound it. The head cannot change while the process runs.
+        # get_probes() is lru_cached and sync, so this runs once per process, in FastAPI's
+        # threadpool on the first health request that needs probes, outside any wait_for.
+        # A failure is kept and raised from migration_revisions(): raising here would make
+        # get_probes fail on every request (lru_cache does not cache exceptions) instead of
+        # reporting "unknown".
+        self._head: str | None = None
+        self._head_error: Exception | None = None
+        try:
+            self._head = ScriptDirectory.from_config(Config(str(ALEMBIC_INI))).get_current_head()
+        except Exception as exc:  # reported via the migrations check, same as before
+            self._head_error = exc
 
     def _need_engine(self) -> AsyncEngine:
         if self._engine is None:
@@ -44,7 +58,9 @@ class SqlRedisProbes:
         await self._redis.ping()
 
     async def migration_revisions(self) -> tuple[str | None, str]:
-        head = ScriptDirectory.from_config(Config(str(ALEMBIC_INI))).get_current_head()
+        if self._head_error is not None:
+            raise self._head_error
+        head = self._head
         if head is None:
             raise RuntimeError("NoMigrationHead")
         async with self._need_engine().connect() as conn:

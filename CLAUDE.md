@@ -54,7 +54,9 @@ records M1 slice 10's heartbeat decisions.
   request-size limits and rate limits have no owning slice and are required before any internet
   exposure (IDEA-019 addendum in `docs/SPEC-DEFECTS.md`).
 - **arm64 is only proven under QEMU.** The image builds, loads its compiled wheels and answers
-  `/health/live` under emulation. Migrations and TimescaleDB have never run on arm64.
+  `/health/live` under emulation. Migrations 0001-0002 and the smoke-9 hypertable, continuous aggregate and
+  policy DDL also run clean under QEMU (2026-11-08, TimescaleDB 2.31.0 on aarch64). Native arm64 hardware, backup/restore
+  on arm64 and the full compose stack on arm64 are still unproven.
 - **The worker and provider half of the M1 gate moves to M2's gate** (IDEA-032, a relocation and not a waiver). The gate says "killing Redis/worker/provider", and
   no worker or provider exists until M2, so it can't pass at M1. Only Redis was killed and verified. M2's gate
   must not pass until killing the worker and a provider each produce a documented health state (add them to
@@ -189,8 +191,11 @@ docker compose down               # add -v to wipe the pgdata volume; inactive p
 # before Docker Desktop's 2026-11-03 upgrade. `docker compose up -d` is still the one command.
 # NOTE: a native Windows postgresql-x64-17 service (automatic start) holds 5432 on this machine and
 # stops the stack from starting. Stop it, or set POSTGRES_PORT in .env.
-# NOTE: this machine has no arm64 emulation, by Kyle's choice. smoke-slice2.sh skips arm64 with a notice;
-# `ci-checks.sh arm64` fails with `exec format error`. CI's arm64 job installs its own QEMU and is the gate.
+# NOTE: this machine does run arm64 under emulation (`docker run --platform linux/arm64 alpine uname -m` prints
+# aarch64, checked 2026-11-08); the earlier "no emulation" note was wrong. Kyle's choice stands that local
+# emulation is not the arm64 gate: CI's arm64 job installs its own QEMU and is. The old claims that
+# smoke-slice2.sh skips arm64 here and that `ci-checks.sh arm64` fails with `exec format error` were not
+# re-run and may be stale.
 # Migration tests (skipped without DATABASE_URL), from backend/:
 #   DATABASE_URL=postgresql+asyncpg://flowdesk:<pw>@127.0.0.1:5432/flowdesk pytest
 ```

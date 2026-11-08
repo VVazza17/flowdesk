@@ -10,6 +10,39 @@ Numbering is shared with `docs/IDEAS.md` (both draw from the same IDEA-NNN seque
 never collide between the two files. This file starts at IDEA-013 because IDEA-001–012 are
 parked features that stayed in `docs/IDEAS.md`.
 
+## Drift class: the canonical list
+
+**Definition** (from IDEA-015's broader-pattern note): a revision or renumbering happened somewhere in the spec,
+and a dependent reference or definition elsewhere was never updated to match.
+
+**This list is the count.** Do not recount from the per-entry "Nth instance" sentences: they were written at
+different times, each from a partial list, and two of them are wrong (see the last paragraph). A new entry appends
+a row here and takes the next number. The number is the row's position, which is the order the instances were
+written up, not the order of the IDEA ids.
+
+| # | Entry | Revision | Stale dependent |
+|---|---|---|---|
+| 1 | IDEA-013 | v4.9 episodes (§7.16) | §8 `natural_key` has no time component. (The entry names no revision; it is counted because every earlier label counted it.) |
+| 2 | IDEA-014 | v4.7 renumbering | §8 `events.episode_id` comment cites §7.15 |
+| 3 | IDEA-015 | v4.1 decision 15 revision | §17.1 "never integrate a broker API" rule |
+| 4 | IDEA-016 | events-v2 lineage redesign | `alerts` has no `event_id` FK |
+| 5 | IDEA-018 | ADR numbering | IDEA-003's "per ADR-0007" citation |
+| 6 | IDEA-021 | §16 M1 route list | §9 line 968 and §5 line 255 health route names |
+| 7 | IDEA-024 | §16 M2 scope | §10 line 1003 first-run progress source |
+| 8 | IDEA-019 | §14 two-tier design | §16 gate line lost the "anonymous" qualifier |
+| 9 | IDEA-032 | later milestones' components | §16 M1 gate names a worker and a provider |
+
+Not a row: the stale "enters §7.16 when the simulator is built" line (architecture.md line 1418, quoted in
+IDEA-006; the simulator is §7.17). IDEA-015's note counts it as its own instance, but it is the same v4.7
+renumbering as row 2, it has no entry of its own, and IDEA-014 already points at it. Counting it separately would
+make IDEA-032 the tenth. Overrule this and the count shifts by one from row 3 onward.
+
+**IDEA-015 is in the class.** It is the defining case: decision 15 was revised in v4.1 and §17.1, which cites it,
+kept the pre-revision text. Its own note counts itself (item 3) and IDEA-014 calls it "a third instance". No entry
+gives a reason for leaving it out, so the omissions in IDEA-019's list ("seventh") and IDEA-024's list ("sixth")
+were slips, not a ruling. Those two labels are therefore wrong; the ordinals in them are superseded by the table
+above. They were not edited.
+
 ---
 
 ## IDEA-013: Natural-key / episode contradiction in `events` (§8 vs §7.16)
@@ -802,10 +835,10 @@ A correction release that edits §16: M1's gate keeps "killing Redis" and drops 
 was not edited.
 
 ### Drift class
-This is the **ninth** instance of the drift class, alongside IDEA-013, 014, 015, 016, 018, 019, 021 and 024. Here
-the dependent is §16's gate line, which names components from a later milestone's scope. The "seventh" in IDEA-019
-and the "sixth" in IDEA-024 each leave IDEA-015 out of their lists, though lines 72 and 122 above count it, so
-those two labels are one low. They were not edited.
+This is the **ninth** instance of the drift class, row 9 of the canonical list at the top of this file. Here the
+dependent is §16's gate line, which names components from a later milestone's scope. IDEA-015 is in the class
+(settled 2026-11-08, reasoning in the list), so the "seventh" in IDEA-019 and the "sixth" in IDEA-024, which leave
+it out, are each one low. They were not edited; the list supersedes them.
 
 ### Unfreeze triggers
 The next spec correction release.

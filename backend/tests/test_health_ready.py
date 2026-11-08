@@ -155,6 +155,46 @@ def test_unconfigured_probes_report_down() -> None:
     assert r.json()["checks"]["postgres"] == {"status": "down", "error": "RuntimeError"}
 
 
+def test_migration_head_is_read_once_at_construction(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The directory walk happens in __init__ (once), never inside the async probe, where
+    wait_for could not cancel it."""
+    from alembic.script import ScriptDirectory
+
+    from app.services import health_probes
+
+    calls: list[int] = []
+    real = ScriptDirectory.from_config
+
+    def counting(*a: Any, **k: Any) -> Any:
+        calls.append(1)
+        return real(*a, **k)
+
+    monkeypatch.setattr(ScriptDirectory, "from_config", counting)
+    probes = health_probes.SqlRedisProbes(None, None)
+    assert len(calls) == 1
+    for _ in range(3):  # no engine: fails after the head check, which must not walk again
+        with pytest.raises(RuntimeError):
+            asyncio.run(probes.migration_revisions())
+    assert len(calls) == 1
+
+
+def test_unreadable_head_is_reported_by_the_check_not_raised_at_construction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """get_probes is lru_cached; an __init__ that raised would 500 every request."""
+    from alembic.script import ScriptDirectory
+
+    from app.services import health_probes
+
+    def boom(*a: Any, **k: Any) -> Any:
+        raise FileNotFoundError("alembic.ini")
+
+    monkeypatch.setattr(ScriptDirectory, "from_config", boom)
+    probes = health_probes.SqlRedisProbes(None, None)  # must not raise
+    with pytest.raises(FileNotFoundError):
+        asyncio.run(probes.migration_revisions())
+
+
 # --- /health/providers: the three situations -------------------------------------------------
 
 

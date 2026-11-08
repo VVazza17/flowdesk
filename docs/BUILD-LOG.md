@@ -618,3 +618,17 @@ missing entries from git history.
 sections at the end or via targeted inserts, don't regenerate the whole file), and run
 `git diff` before committing any change to a long document to confirm nothing upstream of
 the edit point silently disappeared.
+
+## 2026-11-08 — post-gate follow-ups
+
+- **Drift class settled.** IDEA-015 is in the class (it is the defining case). The canonical list now lives at the
+  top of `docs/SPEC-DEFECTS.md`; IDEA-032 stays the ninth. The "seventh" in IDEA-019 and "sixth" in IDEA-024 are one
+  low and were not edited. The IDEA-006 line is counted with IDEA-014, not separately (stated there; overrule moves
+  the count by one).
+- **arm64.** CLAUDE.md said this machine had no arm64 emulation; it does. Migrations 0001-0002 and the smoke-9
+  hypertable, continuous aggregate and policy DDL ran clean on `timescale/timescaledb:2.31.0-pg16` and the API
+  image under `--platform linux/arm64` (QEMU). Nothing needed fixing. Not covered: native arm64, backup/restore on
+  arm64, the full compose stack on arm64.
+- **`migration_revisions()`** reads the alembic head once in `SqlRedisProbes.__init__`, not per call: a blocking
+  directory walk inside an `async def` is not cancelled by `wait_for`. Two tests added. CI lint and tests green
+  (195 passed); smoke 6 re-run and passed against the rebuilt image.
