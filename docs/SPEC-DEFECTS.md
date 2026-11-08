@@ -771,3 +771,41 @@ correction release.
 ### Unfreeze triggers
 The next spec correction release. Revisit the gate if `/health/ready` gains a `degraded` condition that shouldn't
 page.
+
+---
+
+## IDEA-032: §16's M1 gate requires killing a worker and a provider, but neither exists until M2
+
+**Status:** Recorded at the M1 gate review. Handled for the build as below. Needs a spec correction release. Blocks nothing, but M2's gate must carry the moved clause.
+**Raised:** 2026-11-08 (M1 gate review)
+
+### The proposal
+§16's M1 paragraph (line 1107) says the gate includes "killing Redis/worker/provider produces the documented
+health state". M1's own scope builds no Celery worker and no provider client; both first exist in M2. Two of the
+three components the clause names cannot be killed, so the clause cannot pass literally at M1, whatever is built.
+CLAUDE.md already said so before the review ("it can't pass literally"), and `docs/HEALTH.md` records it under
+what the endpoints cannot yet show.
+
+The gate line was written against the finished system's component list, not against what M1 builds.
+
+### How it is handled for the build
+Kyle's decision at the M1 gate review: the M1 gate is recorded as **passed**, with the Redis part of the clause
+verified (HTTP 200, `degraded`, `checks.redis` = `{"status":"down","error":"ConnectionError"}`, recovery to `ok`)
+and the worker and provider parts **moved to M2's gate**, where those components first exist. This is a
+relocation, not a waiver: M2 does not pass until killing the worker and killing a provider each produce a
+documented health state. The documentation to write is in `docs/HEALTH.md`, and the states will have to be added
+there when M2 builds the components.
+
+### The version that would be legitimate
+A correction release that edits §16: M1's gate keeps "killing Redis" and drops "worker/provider"; M2's gate gains
+"killing the worker and a provider produces the documented health state". `docs/architecture.md` is frozen and
+was not edited.
+
+### Drift class
+This is the **ninth** instance of the drift class, alongside IDEA-013, 014, 015, 016, 018, 019, 021 and 024. Here
+the dependent is §16's gate line, which names components from a later milestone's scope. The "seventh" in IDEA-019
+and the "sixth" in IDEA-024 each leave IDEA-015 out of their lists, though lines 72 and 122 above count it, so
+those two labels are one low. They were not edited.
+
+### Unfreeze triggers
+The next spec correction release.

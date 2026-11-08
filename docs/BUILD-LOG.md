@@ -10,6 +10,61 @@ editing history.
 
 ---
 
+## 2026-11-08 — M1 gate review: passed
+
+Kyle recorded the M1 gate as **passed**. The review was run as if the ten slices had proven nothing: a fresh
+`git clone` into a scratch directory, each §16 clause checked directly, then the slice smokes as a second opinion.
+
+**What was checked, and what held**
+- *Fresh clone, one command.* A bare `docker compose up -d` fails ("set in .env"); after `cp .env.example .env` it
+  came up in 9 s (image layers were cached). §16 line 1080 itself says "fresh clone + `.env` + `docker compose up`",
+  so the `.env` step is in the spec; there was no README saying so (fixed below).
+- *Migrations.* Alembic at 0002, the four ops tables and TimescaleDB 2.31.0 present, `migrate` exited 0.
+- *Backup restores clean.* Own round-trip, not the script's word: 25 ops rows plus a 5-chunk hypertable with a
+  composite primary key. After `backup.sh` then `restore.sh` into a new database, row counts and content hashes were
+  identical, the hypertable primary key survived, duplicates were rejected in an old chunk and a new one, the identity
+  sequence continued, and restore refused a non-empty target.
+- *Redis down.* HTTP 200, `degraded`, `checks.redis` = `{"status":"down","error":"ConnectionError"}`, `/health/live`
+  unaffected, recovery to `ok`. Exactly what `docs/HEALTH.md` documents. Postgres down gave 503 `not_ready`; no 500s.
+- *Never externally exposed.* Postgres and the API publish on 127.0.0.1, Redis publishes nothing. Probed every host
+  IPv4 address including the LAN one: closed.
+- *Public profile read-only.* POST/PUT/PATCH/DELETE 405, docs paths 404. The route invariant was checked for the
+  `_IncludedRouter` vacuous-pass trap: it sees all four real routes and rejects a nested POST, a Mount and a WebSocket.
+
+**What did not hold literally.** "Killing Redis/**worker/provider**": no worker or provider exists until M2. Kyle moved
+those two to M2's gate. IDEA-032 records it as a spec defect (the ninth of the drift class); it is a relocation, not a
+waiver.
+
+**Caveats on the evidence**
+- The dev stack held 5432 and 8000 and could not be stopped, so the clone ran on 55432 and 18000. A default-port start
+  was not tested.
+- Five smokes (1, 4, 5, 6, 9) failed on first run, and every cause was the reviewer's: a public-profile stack left
+  running held the API port, and seeded test rows broke slice 6's fresh-install precondition. All passed after cleanup.
+- Slice 2 was not run (it creates a global buildx builder). Slice 8 was not run during the review because it pinned the
+  compose project name to `flowdesk` and would have acted on the dev stack.
+
+**Fixed afterwards (one commit)**
+- `infra/smoke-slice8.sh` no longer hard-codes `COMPOSE_PROJECT_NAME=flowdesk`. It pins the name compose derives for the
+  invoking checkout (`docker compose config`), still honours an explicit override, and prints the project it is scoped to.
+  Verified by running it in the scratch clone: all its checks went green and red as designed, the project was
+  `gate-review`, and the dev stack's containers were untouched.
+- `README.md` added: what FlowDesk is, the `cp .env.example .env` step, `docker compose up -d`, where the runbooks are.
+
+**Observed, not fixed: the readiness check rebuilds alembic's `ScriptDirectory` on every call.**
+`SqlRedisProbes.migration_revisions` (`backend/app/services/health_probes.py`) builds a fresh `Config` and
+`ScriptDirectory` each time and re-executes every file in `alembic/versions/`. Measured in a throwaway container:
+about 1.3 ms and 2 file executions per call at 2 migrations, no object reuse between calls, and it is synchronous
+code inside an `async def`, so it runs on the event loop and the 2 s `asyncio.wait_for` cannot interrupt it. Cost
+grows with the number of migrations. Not as hot as first suspected: the 10 s Docker healthcheck hits `/health/live`,
+which never reaches it; the only built-in caller of `/health/ready` is the heartbeat, every 300 s, and it does not
+call at all while `HEARTBEAT_URL` is blank. The "setup plugin alembic.autogenerate…" log lines seen during the
+review were one-off (a single request ID, from a previous run), the first import of alembic, not per request.
+The head cannot change while the process lives, so it could be computed once. Decision deferred to Kyle.
+
+**Also noticed, unresolved.** CLAUDE.md says this machine has no arm64 emulation by Kyle's choice. On 2026-11-08
+`docker run --platform linux/arm64 python:3.12-slim uname -m` printed `aarch64` and slice 8's arm64 check went green,
+so emulation is present now. The CLAUDE.md note was not changed.
+
 ## 2026-11-05 — M1 slice 10 closed: the heartbeat drill passed
 
 Result of the drill in `docs/HEARTBEAT.md`, run by Kyle against the real provider (Healthchecks, check

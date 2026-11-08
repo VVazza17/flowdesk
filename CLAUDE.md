@@ -35,7 +35,8 @@ records M1 slice 10's heartbeat decisions.
 ## Current state
 
 - **M0 CLOSED** (2026-08-16). Seven ADRs written; premium oracle fixtures recorded.
-- **M1 in progress.** Slices 1–10 built and closed: compose (Postgres/TimescaleDB + Redis), FastAPI +
+- **M1 CLOSED** (gate passed 2026-11-08, Kyle's call after a fresh-clone review; `docs/BUILD-LOG.md`).
+  Slices 1–10 built and closed: compose (Postgres/TimescaleDB + Redis), FastAPI +
   `/health/live`, Alembic baseline, §8 ops tables, structlog JSON + correlation-ID middleware,
   `/health/ready` · `/health/data` · `/health/providers` (states documented in `docs/HEALTH.md`),
   private/public compose profiles with the IDEA-019 route invariant, GitHub Actions CI with
@@ -54,8 +55,10 @@ records M1 slice 10's heartbeat decisions.
   exposure (IDEA-019 addendum in `docs/SPEC-DEFECTS.md`).
 - **arm64 is only proven under QEMU.** The image builds, loads its compiled wheels and answers
   `/health/live` under emulation. Migrations and TimescaleDB have never run on arm64.
-- **Next: the M1 gate review.** The gate says "killing Redis/worker/provider", and
-  no worker or provider exists until M2, so it can't pass literally. That's Kyle's call; do not decide it.
+- **The worker and provider half of the M1 gate moves to M2's gate** (IDEA-032, a relocation and not a waiver). The gate says "killing Redis/worker/provider", and
+  no worker or provider exists until M2, so it can't pass at M1. Only Redis was killed and verified. M2's gate
+  must not pass until killing the worker and a provider each produce a documented health state (add them to
+  `docs/HEALTH.md`). The frozen §16 still says the old thing until a correction release. M2 has not been started.
 
 M1 is built as ten reviewable slices, in order. Each ends with something I can verify myself:
 
@@ -82,7 +85,7 @@ tier, and finding that mismatch in month four is a bad afternoon.
 
 ## Open decisions that block work
 
-Tracked in `docs/SPEC-DEFECTS.md` (IDEA-013 … IDEA-031). Four block a milestone:
+Tracked in `docs/SPEC-DEFECTS.md` (IDEA-013 … IDEA-032). Four block a milestone:
 
 - **IDEA-013 → blocks M3.** `natural_key` has no time component, but §7.16's episode example
   requires five daily rows to exist. One of the two sections is wrong.
@@ -199,7 +202,7 @@ docs/
   architecture.md      # v4.9.10 FROZEN spec — grep, never read whole
   adr/                 # ADR-0001 … 0008, binding
   IDEAS.md             # parked features, IDEA-001…012, each with an unfreeze trigger
-  SPEC-DEFECTS.md      # flagged spec defects, IDEA-013…031
+  SPEC-DEFECTS.md      # flagged spec defects, IDEA-013…032
   BUILD-LOG.md         # narrative history: what shipped, what was decided, what broke
   HEALTH.md            # /health/* response shapes and the documented degraded states
   BACKUP.md            # restore runbook, the version trap, why plain pg_restore is forbidden
