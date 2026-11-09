@@ -753,6 +753,14 @@ Design settled by Kyle at M2 planning (2026-11-08), built in M2 slice 2:
    `/health/data`, and the missed-run signal notifies.
 4. **Retention: 14 dailies plus 8 weeklies**, to be revisited when the data volume is real.
 
+Addendum, 2026-11-09. The desktop turned out to be Windows, so the transport is SFTP over Windows OpenSSH Server
+and the write-only restriction is NTFS permissions on a dedicated account (`docs/BACKUP.md`). Two parts of the
+original ask are **not yet true**, and are recorded here so they are not assumed: (a) **retention is enforced on
+the laptop's local copy only.** The account cannot delete on the desktop, by design, so nothing prunes the
+destination and the 14+8 rule is aspirational there until a job on the desktop runs `infra/backup/prune.sh`
+(nothing does, and the Task Scheduler entry in `docs/BACKUP.md` is untested); (b) **"restores clean from the
+off-box copy" has been shown only against stand-in servers**, not the real desktop.
+
 ### The version that would be legitimate
 A scheduled `backup.sh`, a retention rule, a copy that leaves the machine at zero recurring cost, and a visible
 signal when a run is missed. Dumps are unencrypted, so an off-box copy also needs a decision on encryption.

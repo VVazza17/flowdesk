@@ -163,9 +163,17 @@ or schemas (the dump loses the hypertable/chunk relationship). Both are from the
 
 ## Scheduled backups (M2 slice 2, IDEA-029)
 
-**Status: built and smoke-tested, not closed.** The slice closes when a real unattended dump lands on the
-real desktop and restores from there ([Closing the slice](#closing-the-slice)). Until then the mechanics are
-proven only against a stand-in sshd (`infra/smoke-m2-slice2.sh`).
+**Status: built, smoke-tested against stand-ins, not closed.** The slice closes when a real unattended dump
+lands on the real desktop and restores from there ([Closing the slice](#closing-the-slice)).
+
+What has been run, and what has not:
+
+| | Where | State |
+|---|---|---|
+| Scheduling, encryption, the copy, restore with the private key, fail-closed, catch-up, health states | `infra/smoke-m2-slice2.sh`, against throwaway Linux sshd containers that speak SFTP only | **Run** |
+| What each NTFS permission variant allows (commands below) | The exact commands, on a throwaway folder on a Windows machine, with a stand-in account | **Run** |
+| `prune.sh` under Git Bash on Windows | A Windows 10 machine, 45 files | **Run** |
+| Windows OpenSSH Server accepting the `sshd_config` below, the key file location, the `/C:/...` path form, how `sftp-server.exe` behaves under these permissions | The real desktop | **Not run.** Written from Microsoft's documentation. Treat the first real attempt as the test, and `verify-destination.sh` as the instrument |
 
 ### What runs, and where
 
@@ -190,17 +198,18 @@ write a failed row every few minutes.
 | Step | What | Local result |
 |---|---|---|
 | `ops.backup` | `pg_dump -Fc`, `pg_restore --list` check, manifest, `tar` of both, `age` to the recipients | `/backups/<db>_<UTC>.tar.age` |
-| `ops.backup_copy` | `rsync` of the `*.tar.age` files the destination does not have, over SSH | none |
+| `ops.backup_copy` | Over SFTP: list the destination, `put` every `*.tar.age` it lacks, then list again and compare sizes | none |
 
 The archive is the `.dump` and `.manifest` pair that `backup.sh` writes, so `restore.sh` takes them
 unchanged. The plaintext exists only in a private directory on tmpfs for the length of one backup.
 
 **Fails closed.** With no real age key in `infra/backup/recipients.txt`, the backup records `NoRecipient` and
-writes nothing. It never falls back to an unencrypted copy.
+writes nothing. It never falls back to an unencrypted copy. The same goes for the copy: with no
+`BACKUP_SSH_PATH` it refuses, because a default would put the files somewhere the permissions were not set on.
 
-**Retention:** the newest backup of each of the last 14 days, plus the newest of each of the last 8 seven-day
-buckets (`BACKUP_KEEP_DAILY`, `BACKUP_KEEP_WEEKLY`). Revisit when the data volume is real. This prunes the
-local `backups` volume only: see [The destination](#the-destination).
+**Retention** keeps the newest backup of each of the last 14 days, plus the newest of each of the last 8
+seven-day buckets (`BACKUP_KEEP_DAILY`, `BACKUP_KEEP_WEEKLY`). **It applies to the local `backups` volume
+only.** See [Retention on the destination](#retention-on-the-destination-not-enforced-yet).
 
 **`docker compose down -v` wipes the local backups along with the database.** The off-box copies are what
 survive that.
@@ -210,24 +219,26 @@ survive that.
 | | age key | SSH key |
 |---|---|---|
 | For | Encrypting the dump | The transport to the desktop |
-| Public half | `infra/backup/recipients.txt`, **committed** | On the desktop, in `authorized_keys` |
+| Public half | `infra/backup/recipients.txt`, **committed** | On the desktop, in a key file only administrators can edit |
 | Private half | **Never on the laptop.** Made on the desktop, kept in the password manager | On the laptop (the container needs it), path in `.env`, never in git |
-| What it protects | Anyone who gets the files cannot read them | Only rsync into one directory is possible with it |
+| What it protects | Anyone who gets the files cannot read them | SFTP into one folder; what it may do there is set by NTFS on the desktop |
 
 The rule: the key and the backups never share a single point of failure. The age private key must exist
 somewhere other than the machine that holds the backups.
 
 Make the age key **on the desktop**:
 
-```bash
+```powershell
 age-keygen -o flowdesk-age.key        # prints "Public key: age1..."
 ```
 
-Put the whole file in the password manager. Paste the `age1...` line into `infra/backup/recipients.txt`
-(replacing the commented example) and commit it. Rotating later means adding the new public key as a second
-line: old backups stay readable with the old key.
+(`age` for Windows: `winget install FiloSottile.age`, or use the copy inside the backup image through
+`infra/restore-backup.sh`, which needs only Docker.) Put the whole file in the password manager. Paste the
+`age1...` line into `infra/backup/recipients.txt` (replacing the commented example) and commit it. Rotating
+later means adding the new public key as a second line: old backups stay readable with the old key.
 
-Make the SSH key **on the laptop**, with no passphrase (the container cannot type one):
+Make the SSH key **on the laptop, in Git Bash**, with no passphrase (the container cannot type one). Git Bash
+and not PowerShell, because empty arguments are passed differently by different PowerShell versions:
 
 ```bash
 ssh-keygen -t ed25519 -N "" -C flowdesk-backup -f ~/.ssh/flowdesk_backup
@@ -237,13 +248,17 @@ ssh-keygen -t ed25519 -N "" -C flowdesk-backup -f ~/.ssh/flowdesk_backup
 
 ```
 BACKUP_SSH_HOST=<desktop hostname or IP>
-BACKUP_SSH_USER=<account on the desktop>
+BACKUP_SSH_USER=flowdesk-backup
 BACKUP_SSH_PORT=22
-BACKUP_SSH_PATH=.
+BACKUP_SSH_PATH=/C:/FlowdeskBackups
 BACKUP_SSH_KEY_FILE=C:/Users/Kyle/.ssh/flowdesk_backup
 BACKUP_SSH_KNOWN_HOSTS_FILE=C:/Users/Kyle/.ssh/flowdesk_backup_known_hosts
 BACKUP_PING_URL=<the external monitor's ping URL for the backup check>
 ```
+
+`BACKUP_SSH_PATH` is the folder on the desktop, in the form the native Windows OpenSSH server uses for a drive:
+`/C:/FlowdeskBackups` (the leading slash and the colon are part of it; WinSCP's FAQ documents this form). It has
+no default on purpose. `verify-destination.sh` fails with a clear message if the path does not resolve.
 
 With `BACKUP_SSH_HOST` blank the copy step records `skipped` / `NotConfigured`, which `/health/data` shows as
 `not_configured`. It is visible and never counts as a success.
@@ -253,37 +268,183 @@ must exist. Make it from the laptop, then **compare the fingerprint with the des
 it, so you are not pinning whoever answered first:
 
 ```bash
-ssh-keyscan -p 22 -t ed25519 <HOST> > ~/.ssh/flowdesk_backup_known_hosts     # use the same HOST string as in .env
-ssh-keygen -lf ~/.ssh/flowdesk_backup_known_hosts                             # on the laptop
-ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub                              # on the desktop: must match
+# On the laptop, in Git Bash (PowerShell 5.1's > writes UTF-16, which ssh cannot read):
+ssh-keyscan -t ed25519 <HOST> > ~/.ssh/flowdesk_backup_known_hosts     # use the same HOST string as in .env
+ssh-keygen -lf ~/.ssh/flowdesk_backup_known_hosts
 ```
 
-### The destination
-
-On the desktop, create a directory for the backups and put this **one line** in the receiving account's
-`~/.ssh/authorized_keys` (the public key is the contents of `flowdesk_backup.pub`):
-
-```
-restrict,command="/usr/bin/rrsync -wo /home/<user>/flowdesk-backups" ssh-ed25519 AAAA... flowdesk-backup
+```powershell
+# On the desktop: the fingerprint must match the one above.
+ssh-keygen -lf C:\ProgramData\ssh\ssh_host_ed25519_key.pub
 ```
 
-Check where `rrsync` is with `command -v rrsync` and use that path. It is a Python script, so the desktop needs
-`python3`. What the line does, and what `infra/smoke-m2-slice2.sh` proves with a line of exactly this form:
+### The destination: Windows OpenSSH Server and NTFS
 
-- `restrict` turns off a terminal, port and agent forwarding, and X11.
-- `rrsync -wo DIR` makes the key **write-only into `DIR`**. A shell command is refused (`SSH_ORIGINAL_COMMAND
-  does not run rsync`), reading is refused (`reading from write-only server is not allowed`), `..` is refused,
-  and an absolute path is not honoured: it is anchored inside `DIR`.
-- Because the directory is fixed by this line, `BACKUP_SSH_PATH` is relative to it. Leave it at `.`.
+**Why this shape.** The desktop is Windows, which has no rsync, so the copy is SFTP. OpenSSH Server is a native
+Windows service with start type Automatic, so it comes back by itself after a reboot. (Running sshd inside WSL2
+was rejected: it needs a Task Scheduler entry to start after a reboot, and a destination that silently stops
+accepting backups after a reboot is the failure you find out about when you need the backup.)
 
-**The destination is never pruned by the laptop**, because this key cannot delete. Run the same retention
-rule on the desktop yourself, from time to time or from its own scheduler:
+**Two layers, and which does what.**
+- `sshd_config` makes the account **SFTP-only**: no shell, no tunnels.
+- **NTFS permissions** decide what the account can do inside the backup folder. The restriction on deleting is
+  not enforced by the backup code or by sshd; it is the ACL, which is why `verify-destination.sh` exists.
 
-```bash
-bash infra/backup/prune.sh /home/<user>/flowdesk-backups --dry-run      # then without --dry-run
+**Not used: `ChrootDirectory`.** Windows supports it for SFTP sessions only, and there are reports of Windows
+`Match User` + `ChrootDirectory` setups behaving unpredictably, including the service refusing to start. A
+restriction that can stop sshd is the wrong place to put one. The consequence is in [Limits](#limits).
+
+**Not possible as asked: "home is the backup folder".** A Windows local account's SFTP start directory is its
+profile, and I found nothing in Microsoft's documentation for changing that. So the copy names the folder
+explicitly (`BACKUP_SSH_PATH`), and the permissions are on that folder.
+
+Run these in an **elevated PowerShell on the desktop**. Do them in order and stop at the first error.
+
+**1. OpenSSH Server running and automatic.**
+
+```powershell
+Get-WindowsCapability -Online -Name OpenSSH.Server*                  # State should be Installed
+Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0        # only if it says NotPresent
+Set-Service -Name sshd -StartupType Automatic
+Start-Service sshd
+Get-Service sshd                                                      # Status Running, StartType Automatic
+Get-NetFirewallRule -Name *ssh* | Format-Table Name, Enabled, Profile, Direction, Action
 ```
 
-It only ever touches files named like `<db>_<UTC stamp>.tar.age`.
+The firewall rule must be enabled for the network profile your LAN uses (usually Private).
+
+**2. A dedicated, non-administrator account.** Its password is random, never used and not stored: sign-in is by
+key only.
+
+```powershell
+$pw = ConvertTo-SecureString ([guid]::NewGuid().ToString('N') + 'Aa1!') -AsPlainText -Force
+New-LocalUser -Name 'flowdesk-backup' -Password $pw -PasswordNeverExpires -UserMayNotChangePassword -AccountNeverExpires -Description 'FlowDesk backup receiver (SFTP only)'
+Add-LocalGroupMember -Group 'Users' -Member 'flowdesk-backup'
+```
+
+It must **not** be in Administrators (administrators' keys are read from a different file, and it would defeat the
+point).
+
+**3. The folder and its permissions.** Create it, remove inherited permissions, and give the administrators and
+SYSTEM control (so an administrator can prune and clean up). Then choose **one** of the two variants.
+
+```powershell
+New-Item -ItemType Directory C:\FlowdeskBackups
+icacls C:\FlowdeskBackups /inheritance:r
+icacls C:\FlowdeskBackups /grant "SYSTEM:(OI)(CI)F" "BUILTIN\Administrators:(OI)(CI)F"
+```
+
+**Variant W, write-once. The default.** The account can add a new backup and read what is there. It cannot
+overwrite, truncate, append to, rename or delete anything, and cannot make subfolders. This is the default
+because of a tested finding about Variant D, below, and not as a matter of taste.
+
+```powershell
+icacls C:\FlowdeskBackups /grant "flowdesk-backup:(RX,WD)"
+icacls C:\FlowdeskBackups /grant "flowdesk-backup:(OI)(IO)(RX)"
+icacls C:\FlowdeskBackups /deny  "flowdesk-backup:(OI)(IO)(WD,AD,WEA,WA,DE)"
+icacls C:\FlowdeskBackups /deny  "flowdesk-backup:(DC)"
+```
+
+**Variant D, no-delete. The original specification, and not append-only. Do not use it as the default.** The
+account can create and write files and read; Delete and Delete-subfolders-and-files are denied.
+
+```powershell
+icacls C:\FlowdeskBackups /grant "flowdesk-backup:(OI)(CI)(RX,WD,WEA,WA)"
+icacls C:\FlowdeskBackups /deny  "flowdesk-backup:(OI)(CI)(DE,DC)"
+```
+
+Write `DE`, not `D`. In a deny entry icacls's `D` shorthand also sets Synchronize, which blocks almost every file
+open (listing and reading stopped working when I first tried it). `DE` is exactly Delete.
+
+What each variant allowed, measured by running the commands above on a throwaway folder on Windows with a
+stand-in account (not elevated, so permissions applied):
+
+| Operation | Variant W | Variant D |
+|---|---|---|
+| List; read a backup | allowed | allowed |
+| Create a new file and fill it in one open (what an upload does) | allowed | allowed |
+| Delete; rename (so no temp-name-then-rename) | denied | denied |
+| Create a subfolder | denied | denied |
+| Append; truncating overwrite, asking for generic write (what most runtimes ask) | denied | denied |
+| **Open an existing file asking only for the data-write right, write in place or truncate** | **denied** | **ALLOWED** |
+
+**The finding: denying Delete does not make a destination append-only.** Under Variant D, an open on an existing
+backup that asked only for the data-write right wrote into it in place, and a truncating overwrite with the same
+right **cut a 24-byte backup to 1 byte**. Delete and rename were refused, exactly as specified. Writing into an
+existing file is a different permission from deleting it, and D grants it. Under Variant W every overwrite,
+truncate, append, delete and rename was refused, whatever access the open asked for.
+
+Opens that ask for generic write (which also includes append) are denied under D, so whether a stolen key could
+do this through Windows' `sftp-server.exe` depends on the exact access it requests, which I could not observe
+from here. That uncertainty is the reason not to rely on D: under D a stolen key *may* be able to destroy every
+backup without deleting one, and under W it cannot.
+
+Reproduce it yourself, before trusting either variant, in an ordinary (not elevated) PowerShell on the desktop.
+It runs the exact commands above on a throwaway folder, with your own account standing in for the backup account,
+and removes the folder afterwards:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File infra\backup\acl-experiment.ps1
+```
+
+It prints the table above and ends `RESULT: as documented` or says what differs.
+
+**The price of W:** an upload that is interrupted halfway (the laptop sleeps mid-copy) leaves a short file under
+the real name, and the account cannot overwrite it to repair it. The copy notices by size, fails loudly with
+`PartialOnDestination`, and names the file. You delete that one file on the desktop (as an administrator), and
+the next run uploads it whole. That is a visible, manual step; the alternative is a key that can corrupt your
+backups. Under D the copy repairs it by itself, if the server's open allows it.
+
+**4. The account's key.** Keep it in a file only administrators can edit, so the account cannot change its own
+key. Put the single line from `flowdesk_backup.pub` into it:
+
+```powershell
+$line = '<paste the one line from flowdesk_backup.pub>'
+Set-Content -Path C:\ProgramData\ssh\flowdesk-backup.authorized_keys -Value $line -Encoding ascii
+icacls C:\ProgramData\ssh\flowdesk-backup.authorized_keys /inheritance:r /grant "SYSTEM:F" /grant "BUILTIN\Administrators:F"
+```
+
+If sshd refuses the key from that location, check its log (`Get-WinEvent -LogName 'OpenSSH/Operational' -MaxEvents 20`)
+and fall back to the standard place, `C:\Users\flowdesk-backup\.ssh\authorized_keys`, which exists only after the
+account's first sign-in. Do not create `C:\Users\flowdesk-backup` by hand: Windows may then give the real profile
+a different folder name.
+
+**5. SFTP-only, in `C:\ProgramData\ssh\sshd_config`.** Add this block at the **end** of the file (a `Match` block
+applies to everything after it). Leave the existing `Subsystem sftp ...` line alone: the SFTP client needs it, and
+without it the connection opens and closes straight away. User names in `Match` must be lower case.
+
+```
+Match User flowdesk-backup
+    AuthorizedKeysFile C:/ProgramData/ssh/flowdesk-backup.authorized_keys
+    ForceCommand internal-sftp
+    PasswordAuthentication no
+    AllowTcpForwarding no
+    PermitTTY no
+```
+
+Only use keywords the Windows build supports (`KbdInteractiveAuthentication`, `X11Forwarding`, `StrictModes`
+and several others are not available there, per Microsoft's documentation).
+
+**6. Test the configuration before restarting.** A bad `sshd_config` can stop the service, and a stopped service
+is exactly the silent failure to avoid.
+
+```powershell
+& "$env:WINDIR\System32\OpenSSH\sshd.exe" -t        # prints nothing if the file is valid
+Restart-Service sshd
+Get-Service sshd                                     # Running
+```
+
+**7. Check it from the laptop, with the real tool.** Add the settings to `.env`, then:
+
+```powershell
+docker compose up -d --build backup
+docker compose exec -u postgres backup /opt/backup/verify-destination.sh
+```
+
+It connects with the real key, creates a probe file, then tries to overwrite, delete, rename and make a folder,
+and says which policy is in force. **It must end with `RESULT: OK`; delete and rename must say `refused`.**
+`policy write-once` is Variant W working; `policy no-delete` is Variant D, with the overwrite warning. It leaves
+one file, `flowdesk-probe-<stamp>.tar.age`, which only an administrator can remove (that is the point).
 
 ### Restoring from a scheduled backup
 
@@ -296,7 +457,8 @@ bash infra/restore-backup.sh /path/to/flowdesk_20261109T080000Z.tar.age --identi
 It decrypts (with `age` if installed, otherwise the copy inside the backup image, so only Docker is needed),
 checks the archive holds exactly one dump and its manifest, then runs `restore.sh` unchanged. Everything in
 [If you are here because something failed](#if-you-are-here-because-something-failed) applies after that, including
-the version trap: the machine restoring needs the same Postgres image tag as the manifest's `image=`.
+the version trap: the machine restoring needs the same Postgres image tag as the manifest's `image=`. Use Git
+Bash on Windows, as for the rest of these scripts.
 
 ### Telling you when it stops (the missed-run signal)
 
@@ -317,14 +479,14 @@ signal working, not a fault. A grace longer than 12 hours trades it for slower n
 
 IDEA-029 closes when all of this is true, on the real hardware, and is recorded in `docs/BUILD-LOG.md`:
 
-1. `docker compose up -d --build backup`, then `docker compose logs backup` shows `backup_scheduler_started`
-   with `"offbox":"configured"`.
-2. **Unattended:** you do not run anything by hand. A backup appears after a scheduled slot has passed (or
+1. `verify-destination.sh` against the real desktop ends `RESULT: OK` (and `policy write-once`, the default).
+2. `docker compose logs backup` shows `backup_scheduler_started` with `"offbox":"configured"`.
+3. **Unattended:** you do not run anything by hand. A backup appears after a scheduled slot has passed (or
    after a wake from sleep that crossed one), and its `.tar.age` arrives on the desktop.
-3. `/health/data` shows `backups.backup` and `backups.copy` both `ok`.
-4. On the desktop, `restore-backup.sh` restores that file into a database named something other than the live
+4. `/health/data` shows `backups.backup` and `backups.copy` both `ok`.
+5. On the desktop, `restore-backup.sh` restores that file into a database named something other than the live
    one, with the private key from the password manager, and prints `OK: restored into ...`.
-5. The monitor shows a ping from step 2.
+6. The monitor shows a ping from step 3.
 
 To skip waiting for the slot while setting up, run the two steps by hand as the `postgres` user (the files
 must belong to the user the scheduler runs as):
@@ -334,44 +496,64 @@ docker compose exec -u postgres backup /opt/backup/run-backup.sh
 docker compose exec -u postgres backup /opt/backup/run-copy.sh
 ```
 
-That tests the configuration. It does not satisfy step 2.
+That tests the configuration. It does not satisfy step 3.
 
 ### What to verify on the desktop first
 
-1. **Which OS?** `rsync` and `rrsync` must exist on the *receiving* side. Linux and macOS: fine (`command -v
-   rsync rrsync`). The restricted line was tested against rsync 3.5; older versions ship a different `rrsync`
-   (a Perl script) that was not tried. **Windows has neither by default**, and the
-   restricted line above is for a system where `rrsync` runs. See "If the desktop is Windows" below.
-2. **Is the SSH server running?** Linux: `systemctl status ssh` (or `sshd`). Windows: `Get-Service sshd` shows
-   `Running` with start type `Automatic`; if the service is missing, the optional feature isn't installed
-   (`Get-WindowsCapability -Online -Name OpenSSH.Server*`).
-3. **Is the port open to the laptop?** The Windows firewall rule for TCP 22 must cover your network profile
-   (Private, not only Domain). From the laptop: `ssh -p 22 <user>@<host>` should reach a prompt or a
-   "permission denied", not time out.
-4. **Will the desktop keep the same address?** Use a DHCP reservation on the router or a stable hostname. An
+1. **Is the OpenSSH Server feature installed and the `sshd` service Running and Automatic?** (Step 1.) It is
+   available on Windows 10 and 11 including Home.
+2. **Is TCP 22 reachable from the laptop** on the right firewall profile? From the laptop, `ssh -p 22
+   flowdesk-backup@<host>` should say `This service allows sftp connections only.` or at least ask for nothing
+   and close, not time out.
+3. **Will the desktop keep the same address?** Use a DHCP reservation on the router or a stable hostname. An
    address that changes breaks the pinned `known_hosts` and looks like a dead desktop.
-5. **Is it awake when the copy runs?** It need not be: a failed copy is retried. But a desktop that is mostly
+4. **Is it awake when the copy runs?** It need not be: a failed copy is retried. But a desktop that is mostly
    asleep means the monitor will alert on most mornings.
-6. **Does the account have a writable directory** for the backups, and enough disk? Dumps are small now.
-7. **The host key fingerprints match** (see above).
+5. **Disk space** on the backup drive, and see the retention section below.
+6. **The host-key fingerprints match** (see above).
 
-#### If the desktop is Windows
+### Retention on the destination: not enforced yet
 
-The tested, restricted setup needs a Unix-style receiver. Two ways to get one, neither built or tested here:
-run the receiving `sshd` and `rsync` inside WSL2 (the `authorized_keys` line then works as written, and the
-Windows-side firewall and port forwarding need setting up), or use `sftp` as the transport instead of rsync
-(Windows OpenSSH has `sftp-server` built in, and an `internal-sftp` jail restricts the account to one
-directory). The second is a change to `run-copy.sh` only; say if you want it. Do not widen the `authorized_keys`
-line to an unrestricted shell as a shortcut.
+The 14-daily plus 8-weekly rule runs inside the container, on the **local** volume. It cannot run on the
+destination: the account is deliberately unable to delete there. So today **nothing prunes the desktop, and the
+14+8 rule is aspirational for the copies that matter most** until something runs it.
+
+What would run it: a job on the desktop, as an administrator or SYSTEM (who have Delete), weekly, applying the
+same rule with `infra/backup/prune.sh`. That script was run under Git Bash on Windows (GNU awk), 45 files in,
+18 left, and it leaves anything not named like `<db>_<UTC stamp>.tar.age` alone, including the probe files. The
+desktop needs Git for Windows and a clone of this repo. A Task Scheduler entry would look like the following. It
+has **not** been run on the desktop, and the quoting is the part most likely to need a fix:
+
+```powershell
+schtasks /Create /TN "FlowDesk backup prune" /SC WEEKLY /D SUN /ST 04:00 /RU SYSTEM /RL HIGHEST `
+  /TR "\"C:\Program Files\Git\bin\bash.exe\" -c \"/c/path/to/Flowdesk/infra/backup/prune.sh /c/FlowdeskBackups\""
+```
+
+Try it with `--dry-run` first. If Git for Windows is not on the desktop, the alternative is a PowerShell port
+of the rule, which should be checked against `retention_delete` on the same file names so the two cannot
+drift. Neither exists yet. Until one runs, the destination grows without bound; a dump is 37 KB today, and that
+will not stay true.
 
 ### Limits
 
-- **The backup image is not covered by the CI vulnerability scan**, which builds `backend/` only. Its Alpine
-  packages (`age`, `rsync`, `openssh-client`, `curl`) float at build time on top of an exact Postgres tag.
-- **The SSH private key lives on the laptop**, because the container needs it. That is why the key is
-  restricted to rsync-write into one directory: stolen, it can add files there and nothing else.
-- **A write-only key cannot verify the copy afterwards.** `rsync` checks each file as it transfers; nothing
-  lists the destination. Restore drills are the check.
+- **The backup image is not covered by CI's vulnerability scan.** The `security` job builds `backend/` only.
+  The backup image's Alpine packages (`age`, `openssh-client`, `curl`, `tzdata`, `bash`) float at build time,
+  on top of an exact Postgres tag whose own packages nobody scans either. Slice 0 pinned the Python base and
+  closed that floating tag; this is a second image with the same problem, and it is open. Closing it means
+  scanning it in the same job, and probably pinning the Alpine packages or the base by digest.
+- **arm64 is untested for the backup image.** `infra/ci-checks.sh arm64` builds `backend/` only. The image is
+  built FROM the multi-arch Timescale image and Alpine publishes arm64 packages for everything it installs, but
+  neither has been built or run under emulation.
+- **Retention on the destination is not enforced** (above).
+- **Nothing here has run against Windows OpenSSH Server**, and the NTFS result was measured with Win32 calls
+  and a stand-in account, not through `sftp-server.exe`. `verify-destination.sh` is how that gets checked.
+- **The SFTP session is not chrooted.** If the SSH key leaked, the account could list and read whatever the
+  `Users` group can read on the desktop (not other users' profiles), though it could not write outside the
+  backup folder. The backups are encrypted. Chroot is the usual fix and is not used, for the reason above.
+- **The SSH private key lives on the laptop**, because the container needs it. That is why what it can do on the
+  desktop is limited by NTFS, and why Variant W is the default.
+- **A write-restricted account cannot confirm a copy's integrity beyond its size.** Restore drills are the check.
 - **`BACKUP_AT` and daylight saving:** plain arithmetic on the local day, so on the two days a year the clocks
   change the slot can be an hour off. Once a day, after the slot, is what is guaranteed.
-- **Not on arm64 yet:** the image is built for the host's architecture and has only been run on amd64.
+- **The destination's long listing is parsed from the right** (size and name are the last five columns), and the
+  name is whatever follows the last `/` or `\`. Real Windows output has not been seen.

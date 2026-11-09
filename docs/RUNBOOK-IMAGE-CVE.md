@@ -118,3 +118,19 @@ base image, not in our locks, and today they appear only at MEDIUM or lower. If 
   the interpreter.
 - A package from `requirements.lock`: that is the `audit` step's job, not this one; fix it with
   `infra/lock-deps.sh`.
+
+## What this scan does not cover
+
+**Only the `backend/` image is scanned.** The `security` job builds `backend/Dockerfile` and nothing else. The
+slice 0 pin closed the floating tag on that image, the CI tooling container, `lock-deps.sh` and the smokes. It
+did not touch the **backup image** (`infra/backup/`, M2 slice 2), which is built from the Timescale image with a
+handful of Alpine packages (`age`, `openssh-client`, `curl`, `tzdata`, `bash`) installed **without versions**, so
+they float at every build, and nothing scans that image or the OS packages of its base. This is open, and it is
+a hole next to the one slice 0 closed.
+
+What closing it takes: build the second image in the same job and scan it with the same settings (fixable HIGH
+and above only, which also keeps unfixable findings in the Timescale base from keeping the build red); then pin
+whatever that turns up, by apk version or by base digest, with a bump procedure like step 3a. Nothing here
+covers the backup image until that is done, and a red scan on it will not appear on its own.
+
+The backup image has not been built for arm64 either (`infra/ci-checks.sh arm64` covers `backend/` only).

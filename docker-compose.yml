@@ -148,7 +148,8 @@ services:
       BACKUP_SSH_HOST: ${BACKUP_SSH_HOST:-}
       BACKUP_SSH_USER: ${BACKUP_SSH_USER:-}
       BACKUP_SSH_PORT: ${BACKUP_SSH_PORT:-22}
-      BACKUP_SSH_PATH: ${BACKUP_SSH_PATH:-.}
+      # No default, on purpose: the copy refuses to run without it. See run-copy.sh.
+      BACKUP_SSH_PATH: ${BACKUP_SSH_PATH:-}
       BACKUP_PING_URL: ${BACKUP_PING_URL:-}
     volumes:
       # The encrypted backups kept locally. `docker compose down -v` wipes them with the database; the

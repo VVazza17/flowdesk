@@ -755,3 +755,71 @@ start type Automatic, so it comes back on its own.
 What survives unchanged: the container and its scheduler, local-first encryption, retention, fail-closed with no
 recipient, catch-up after sleep, `task_runs` and `/health/data`, `restore-backup.sh`, the missed-run ping. What
 moves is `run-copy.sh` and the receiving-side setup in `docs/BACKUP.md`.
+
+## 2026-11-09 — M2 slice 2, transport rebuilt: SFTP over Windows OpenSSH, restriction in NTFS (slice still open)
+
+**Changed.** `run-copy.sh` now uses `sftp` (rsync is gone from the image). It lists the destination, uploads
+what is missing or a different size, then lists again and compares sizes. It never relies on rename (denied) or
+on overwrite (denied under the recommended permissions). `BACKUP_SSH_PATH` has no default and the copy refuses
+without it: a default of `.` would copy into the account's start directory, not the folder the permissions were
+set on. New `infra/backup/verify-destination.sh` probes the real destination for the one property everything
+rests on (the key cannot delete or rename) and says which of two policies is in force. The smoke's stand-in is
+now three SFTP-only sshd containers (no-delete, write-once, open). Unchanged: scheduling, catch-up, encryption,
+retention, fail-closed, `task_runs`, `/health/data`, `restore-backup.sh`, the missed-run ping.
+
+**What the NTFS experiments found** (the exact `icacls` commands, run on a throwaway folder on Windows with a
+stand-in account; `docs/BACKUP.md` has the table):
+- **`D` is not Delete in a deny entry.** icacls's `D` shorthand also sets Synchronize, which blocks almost every
+  open, so my first results (everything denied, including reading) were an artifact. `DE` is the right flag.
+- **"Create and write, deny Delete and Delete-child" does not stop overwriting.** An open asking only for the
+  data-write right on an existing file wrote in place and truncated it (24 bytes to 1). Opens that also ask for
+  append were denied. Whether `sftp-server.exe` asks for exactly that is unknown, so this variant may leave a
+  stolen key able to destroy every backup without deleting one.
+- **Write-once works on NTFS.** Folder: list and add files, this folder only. Files inherit read-only plus an
+  explicit deny of write, append and delete. A new file can be created and filled in one open (the creating
+  handle is not subject to the new file's inherited deny), and nothing can reopen it for writing. Every
+  overwrite, truncate, append, delete, rename and mkdir was denied, whatever access was requested. **This is
+  the default (Kyle, 2026-11-09)**, chosen on the measurement and not on preference: the original spec, deny
+  Delete and Delete-child, was never append-only (a 24-byte backup was cut to 1 byte in place). The experiment
+  is `infra/backup/acl-experiment.ps1`, so it can be re-run on the desktop. The cost is that an interrupted upload cannot be repaired by the account: the copy fails
+  loudly (`PartialOnDestination`) and an administrator deletes that one file.
+
+**Chroot and "home is the backup folder" were not used.** Microsoft supports `ChrootDirectory` for SFTP only,
+and there are reports of Windows `Match User` + `ChrootDirectory` configurations misbehaving, including the
+service not starting; a restriction that can stop sshd is the wrong place for one. Nothing found in Microsoft's
+documentation changes a local account's SFTP start directory, so the folder is named explicitly. Consequence: the
+session is not chrooted, so a leaked key could read what the `Users` group can read on the desktop (the backups
+are encrypted, and it cannot write outside the folder).
+
+**Found along the way.**
+- OpenSSH's `sftp ls -l` prints the **full path** in the last column, not the bare name. My first parser matched
+  names exactly and silently found nothing, so the post-upload size check reported "missing". It now takes what
+  follows the last `/` or `\`, and reads size and name from the right of the line, because Windows owner and
+  group columns can contain spaces.
+- Alpine's default `sshd_config` carries the `Subsystem sftp` line; my minimal stand-in config dropped it and the
+  connection opened and closed at once. Windows' default config has it too, so the setup says not to remove it.
+- `>` in Windows PowerShell 5.1 writes UTF-16, which ssh cannot read as `known_hosts`, and the empty-passphrase
+  argument to `ssh-keygen` is quoted differently across PowerShell versions: both moved to Git Bash in the docs.
+- Smoke assertions of absence ("no shell", "no delete") now also assert the refusal's own words
+  (`This service allows sftp connections only`, `remote delete ... Permission denied`).
+- `prune.sh` runs correctly under Git Bash on Windows (GNU awk): 45 files in, 18 left, non-backup files untouched.
+
+**Three things that are open, logged so they are not assumed closed.**
+1. **The backup image is not covered by CI's vulnerability scan.** The `security` job builds `backend/` only. The
+   image's Alpine packages float at every build, on top of a Timescale base nobody scans. Slice 0 closed the
+   floating tag on the backend image; this is the same problem on a second image, and it is open.
+   (`docs/RUNBOOK-IMAGE-CVE.md`, "What this scan does not cover".)
+2. **arm64 is untested for the backup image** (`ci-checks.sh arm64` builds `backend/` only).
+3. **Retention on the destination is aspirational.** `prune.sh` is a manual step on the desktop. The 14+8 rule
+   runs on the laptop's local volume only; the account cannot delete on the desktop, by design, so nothing prunes
+   the copies that matter most. What would run it: a weekly Task Scheduler job on the desktop, as an administrator
+   or SYSTEM, running `prune.sh` under Git Bash (needs Git for Windows and a clone of the repo). The `schtasks`
+   command in `docs/BACKUP.md` is untested; a PowerShell port with a parity check against `retention_delete` is
+   the alternative if Git for Windows is not there. Until one runs, the destination grows without bound.
+
+**Not verified, and why the slice stays open.** Windows OpenSSH Server accepting the `sshd_config`, the
+`ProgramData` key file location, the `/C:/...` path form, and how `sftp-server.exe` behaves under these
+permissions have never run. They are written from Microsoft's documentation. The first real attempt is the test,
+and `verify-destination.sh` is the instrument. Sources: Microsoft's OpenSSH Server configuration page (chroot is
+SFTP-only; unsupported keywords; `AuthorizedKeysFile` and administrator key rules), WinSCP's FAQ (drive paths as
+`/X:/...`), the Win32-OpenSSH issue tracker and an SSH.NET discussion (chroot problems).

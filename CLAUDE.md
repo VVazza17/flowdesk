@@ -51,21 +51,28 @@ records M1 slice 10's heartbeat decisions.
 - **Scheduled backups are built (M2 slice 2) but the slice is not closed** (IDEA-029). The `backup` compose
   service dumps nightly (03:00 `America/New_York`, with catch-up after sleep), encrypts with `age` to the
   public key in `infra/backup/recipients.txt`, keeps 14 dailies plus 8 weeklies locally, and then copies to
-  Kyle's desktop with rsync over a write-only restricted SSH key, as a separate step, so a sleeping desktop is
-  a failed copy and not a failed backup. With no real age key in `recipients.txt` it records `NoRecipient`
+  Kyle's Windows desktop over SFTP (Windows OpenSSH Server, a dedicated non-admin account, restricted by NTFS
+  permissions, not rsync), as a separate step, so a sleeping desktop is a failed copy and not a failed backup. With no real age key in `recipients.txt` it records `NoRecipient`
   and writes nothing: **the placeholder is committed, and backups fail closed until Kyle adds the key.** The
   age private key is made on the desktop and kept in the password manager, never on the laptop. A stale
   backup shows on `/health/data` (`backups`) and never degrades `/health/ready`; the page is the external
-  monitor missing the copy's pings (`BACKUP_PING_URL`). Proven against a stand-in sshd by
-  `infra/smoke-m2-slice2.sh`. **It closes only when a real unattended dump lands on the real desktop and
-  restores from there** (`docs/BACKUP.md`, "Closing the slice"). A plain `pg_restore` silently damages
-  hypertables: use `infra/restore.sh`, or `infra/restore-backup.sh` for a scheduled backup.
+  monitor missing the copy's pings (`BACKUP_PING_URL`). Proven against stand-in sshd containers by
+  `infra/smoke-m2-slice2.sh`; **nothing has run against Windows OpenSSH Server**, and
+  `infra/backup/verify-destination.sh` is how the real destination gets checked. **It closes only when a real
+  unattended dump lands on the real desktop and restores from there** (`docs/BACKUP.md`, "Closing the
+  slice"). Known gaps, all in `docs/BACKUP.md` "Limits": **retention (14 daily + 8 weekly) is enforced on
+  the laptop's copy only; nothing prunes the desktop** (the account cannot delete, by design), so on the
+  destination it is aspirational until a Task Scheduler job runs `prune.sh` there; **the backup image is
+  not covered by CI's vulnerability scan** (`security` builds `backend/` only), so its Alpine packages
+  float, which is a hole next to what slice 0 closed; **arm64 is untested** for it. A plain `pg_restore`
+  silently damages hypertables: use `infra/restore.sh`, or `infra/restore-backup.sh` for a scheduled backup.
 - **The base image is pinned by digest** (M2 slice 0, 2026-11-08). The `FROM` line in `backend/Dockerfile` is
   the one definition. The CI tooling container, `lock-deps.sh` and the smokes read it through
   `infra/base-image.sh`, and lint fails on a second definition. The base no longer updates itself: the daily
   image scan is the tripwire and `docs/RUNBOOK-IMAGE-CVE.md` is the bump procedure. Postgres and Redis stay on
   exact version tags by decision; a tag like `2.31.0-pg16` is already a version pin, and the drift was in
-  `python:3.12-slim`, which floated.
+  `python:3.12-slim`, which floated. **Not covered:** the backup image (`infra/backup/`) has floating Alpine
+  packages and is outside CI's vulnerability scan, which builds `backend/` only (`docs/RUNBOOK-IMAGE-CVE.md`).
 - **The public profile is not internet-ready.** `api-public` binds to loopback; strict CORS,
   request-size limits and rate limits have no owning slice and are required before any internet
   exposure (IDEA-019 addendum in `docs/SPEC-DEFECTS.md`).
@@ -215,7 +222,7 @@ bash infra/smoke-slice8.sh        # slice 8: every gate green, then each goes re
 bash infra/smoke-slice9.sh        # slice 9: hypertable + aggregate + policies survive a restore; 15 breaks go red
 bash infra/smoke-slice10.sh       # slice 10: pings only on ready=ok, each outage silences them; uses a fake monitor
 bash infra/smoke-m2-slice1.sh     # M2 slice 1: worker stopped/paused, Beat stopped, fresh start, Redis down -> documented states
-bash infra/smoke-m2-slice2.sh     # M2 slice 2: encrypt, restricted-key copy to a stand-in sshd, restore with the private key only
+bash infra/smoke-m2-slice2.sh     # M2 slice 2: encrypt, SFTP copy to stand-in sshd (3 permission policies), restore with the private key only
 bash infra/backup.sh              # dump + manifest into dumps/. Restoring and the version trap: docs/BACKUP.md
 bash infra/restore.sh dumps/<name>.dump --db <new-or-empty-db>   # refuses a non-empty target
 bash infra/restore-backup.sh <name>.tar.age --identity <age key> --db <new-or-empty-db>   # a scheduled backup, on the desktop

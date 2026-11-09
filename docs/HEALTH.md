@@ -125,7 +125,7 @@ a fact worth stating:
 separate so that a sleeping desktop reads as `copy.last_attempt_failed: true` with `last_error_class:
 Unreachable` while `backup` stays `ok`. A copy whose last attempt failed is still `ok` while an earlier copy is
 recent enough. Error classes: `NoRecipient`, `DumpFailed`, `DumpUnreadable`, `EncryptFailed`, `ReadFailed`
-(backup); `Unreachable`, `RsyncFailed`, `ConfigInvalid`, `NothingToCopy` (copy).
+(backup); `Unreachable`, `SftpFailed`, `SizeMismatch`, `PartialOnDestination`, `ConfigInvalid`, `NothingToCopy` (copy).
 
 **This never touches `/health/ready` or the HTTP status.** A stale backup can wait until morning, and anything
 that degrades `ready` pages (ADR-0008 section 4). The page comes from the external monitor noticing the copy's

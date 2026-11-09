@@ -1,26 +1,35 @@
 #!/usr/bin/env bash
-# M2 slice 2 smoke test (IDEA-029): scheduled, encrypted backups with an off-box copy, tested end to end
+# M2 slice 2 smoke test (IDEA-029): scheduled, encrypted backups with an off-box SFTP copy, tested end to end
 # without anything from the home network.
 #
-# What stands in for the desktop: a throwaway sshd container whose authorized_keys line is EXACTLY the
-# restricted line documented in docs/BACKUP.md (rrsync, write-only, one directory). So this proves the
-# transport, the restriction and the restore path, not just the copy.
+# What stands in for the Windows desktop: throwaway Linux sshd containers that speak SFTP only
+# (ForceCommand internal-sftp), configured to mimic the three permission policies the real account could have:
+#   no-delete   cannot delete or rename; CAN overwrite          (what "create and write, deny Delete" gives)
+#   write-once  also cannot overwrite, append or make folders   (new files are created read-only: the creating
+#                                                                handle can fill them, nothing can reopen them)
+#   open        nothing is refused                              (to prove the probe catches a broken restriction)
 #
-# What it does NOT prove: that a real unattended dump lands on the real desktop and restores from there.
-# The slice closes on that, by hand (docs/BACKUP.md, "Closing the slice").
+# What it does NOT prove, and cannot: Windows OpenSSH Server itself, NTFS ACLs, or that a real unattended dump
+# lands on the real desktop and restores from there. The ACL semantics were measured separately on NTFS
+# (docs/BACKUP.md); the real destination is checked by infra/backup/verify-destination.sh, and the slice closes
+# on the drill in docs/BACKUP.md ("Closing the slice").
 #
-# Safety: everything runs against a scratch database and one-off containers. The running `backup` service,
-# its `backups` volume and the real database are never touched. Run from the repo root (needs a .env).
+# Safety: everything runs against a scratch database and one-off containers. The running `backup` service, its
+# `backups` volume and the real database are never touched. Run from the repo root (needs a .env).
 set -euo pipefail
 
 set -a; . ./.env; set +a
 . "$(dirname "$0")/lib.sh"
 export MSYS_NO_PATHCONV=1   # Git Bash on Windows would otherwise rewrite container paths
 
-SINK=flowdesk-smoke-sink
+SINKS="flowdesk-smoke-sink flowdesk-smoke-opensink flowdesk-smoke-wosink"
+SINK=flowdesk-smoke-sink          # alias: sink       policy: no-delete
+OPENSINK=flowdesk-smoke-opensink  # alias: opensink   policy: open
+WOSINK=flowdesk-smoke-wosink      # alias: wosink     policy: write-once
 LOOP=flowdesk-smoke-loop
 SCRATCH=flowdesk_smoke_s2
 RESTORED=flowdesk_smoke_s2_restored
+RDIR=/srv/backups
 work=$(mktemp -d)
 
 winpath() { cygpath -m "$1" 2> /dev/null || printf '%s' "$1"; }  # a path Docker Desktop understands
@@ -28,7 +37,8 @@ psql_pg() { docker compose exec -T postgres psql -X -q -U "$POSTGRES_USER" -v ON
 
 cleanup() {
   local rc=$?
-  docker rm -f "$SINK" "$LOOP" > /dev/null 2>&1 || true
+  # shellcheck disable=SC2086
+  docker rm -f $SINKS "$LOOP" > /dev/null 2>&1 || true
   psql_pg -d postgres -c "DROP DATABASE IF EXISTS $SCRATCH WITH (FORCE)" > /dev/null 2>&1 || true
   psql_pg -d postgres -c "DROP DATABASE IF EXISTS $RESTORED WITH (FORCE)" > /dev/null 2>&1 || true
   if [ "$rc" -ne 0 ] && [ -s "$work/err.log" ]; then echo "--- last container stderr:" >&2; tail -n 20 "$work/err.log" >&2; fi
@@ -63,56 +73,90 @@ docker compose run --rm --no-deps -T \
   -e "DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${SCRATCH}" \
   migrate > /dev/null 2> "$work/err.log"
 
-echo "== a stand-in for the desktop: sshd with the restricted key line, write-only, one directory"
+echo "== stand-ins for the desktop: three SFTP-only sshd policies"
 network=$(docker inspect -f '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{end}}' "$(docker compose ps -q postgres)")
-mkdir -p "$work/sink"
-printf 'restrict,command="rrsync -wo /srv/backups" %s\n' "$(cat "$work/k/id.pub")" > "$work/sink/authorized_keys"
-cat > "$work/sink/run.sh" << 'SINKEOF'
+mkdir -p "$work/sinkctx"
+cat "$work/k/id.pub" > "$work/sinkctx/authorized_keys"
+cat > "$work/sinkctx/Dockerfile" << 'DOCKEREOF'
+FROM alpine:3.23
+RUN apk add --no-cache openssh-server openssh-sftp-server busybox-extras \
+ && adduser -D -s /bin/false fd \
+ && echo "fd:$(head -c 24 /dev/urandom | base64)" | chpasswd \
+ && mkdir -p /srv/backups /srv/www /home/fd/.ssh \
+ && echo ok > /srv/www/ping \
+ && chown fd:fd /srv/backups \
+ && ssh-keygen -A > /dev/null
+COPY authorized_keys /home/fd/.ssh/authorized_keys
+COPY run.sh /run.sh
+RUN chown -R fd:fd /home/fd/.ssh && chmod 700 /home/fd/.ssh && chmod 600 /home/fd/.ssh/authorized_keys
+ENTRYPOINT ["sh", "/run.sh"]
+DOCKEREOF
+cat > "$work/sinkctx/run.sh" << 'SINKEOF'
 set -eu
-if [ ! -f /tmp/setup-done ]; then
-  apk add --no-cache openssh-server rsync rrsync python3 busybox-extras > /dev/null
-  adduser -D -s /bin/sh fd
-  echo "fd:$(head -c 24 /dev/urandom | base64)" | chpasswd   # unlocks the account; password login is off
-  mkdir -p /srv/backups /srv/www /home/fd/.ssh
-  echo ok > /srv/www/ping
-  chown fd:fd /srv/backups
-  cp /setup/authorized_keys /home/fd/.ssh/authorized_keys
-  chown -R fd:fd /home/fd/.ssh
-  chmod 700 /home/fd/.ssh
-  chmod 600 /home/fd/.ssh/authorized_keys
-  printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\nPubkeyAuthentication yes\nAllowUsers fd\n' > /etc/ssh/sshd_config
-  ssh-keygen -A > /dev/null
-  touch /tmp/setup-done
-fi
+# The restriction lives in sshd_config, as it does on the Windows destination: SFTP only, no shell, no tunnels.
+# SFTP_ARGS shapes what the SFTP server will do, standing in for the NTFS permissions of the real account.
+cat > /etc/ssh/sshd_config << EOF
+PasswordAuthentication no
+PubkeyAuthentication yes
+AllowUsers fd
+Subsystem sftp internal-sftp
+Match User fd
+    ForceCommand internal-sftp ${SFTP_ARGS:-}
+    AllowTcpForwarding no
+    PermitTTY no
+EOF
 busybox-extras httpd -f -p 8080 -h /srv/www -vv &
 exec /usr/sbin/sshd -D -e
 SINKEOF
-docker rm -f "$SINK" > /dev/null 2>&1 || true
+docker build -q -t flowdesk-smoke-sink "$(winpath "$work/sinkctx")" > /dev/null
+docker rm -f $SINKS > /dev/null 2>&1 || true
+# no-delete: remove/rename refused. write-once: also mkdir and setstat refused, and files are created 0444.
 docker run -d --name "$SINK" --network "$network" --network-alias sink \
-  -v "$(winpath "$work/sink"):/setup:ro" alpine:3.23 sh /setup/run.sh > /dev/null
-wait_sink() {
-  local deadline=$((SECONDS + 90))
-  until docker logs "$SINK" 2>&1 | grep -q "Server listening"; do
-    [ $SECONDS -lt $deadline ] || { docker logs "$SINK" 2>&1 | tail -n 20 >&2; fail "the sink's sshd did not start"; }
+  -e "SFTP_ARGS=-P remove,rmdir,rename,posix-rename" flowdesk-smoke-sink > /dev/null
+docker run -d --name "$OPENSINK" --network "$network" --network-alias opensink flowdesk-smoke-sink > /dev/null
+docker run -d --name "$WOSINK" --network "$network" --network-alias wosink \
+  -e "SFTP_ARGS=-u 0222 -P remove,rmdir,rename,posix-rename,mkdir,setstat,fsetstat" flowdesk-smoke-sink > /dev/null
+wait_sink() { # CONTAINER
+  local deadline=$((SECONDS + 60))
+  until docker logs "$1" 2>&1 | grep -q "Server listening"; do
+    [ $SECONDS -lt $deadline ] || { docker logs "$1" 2>&1 | tail -n 20 >&2; fail "$1's sshd did not start"; }
     sleep 1
   done
 }
-wait_sink
-printf 'sink %s\n' "$(docker exec "$SINK" cut -d' ' -f1,2 /etc/ssh/ssh_host_ed25519_key.pub)" > "$work/k/known_hosts"
+for s in $SINKS; do wait_sink "$s"; done
+: > "$work/k/known_hosts"
+for pair in "$SINK:sink" "$OPENSINK:opensink" "$WOSINK:wosink"; do
+  printf '%s %s\n' "${pair#*:}" "$(docker exec "${pair%%:*}" cut -d' ' -f1,2 /etc/ssh/ssh_host_ed25519_key.pub)" >> "$work/k/known_hosts"
+done
+echo "ok: $(wc -l < "$work/k/known_hosts" | tr -d ' ') hosts pinned"
 
-# One-off backup containers. The compose service's own bind mounts take their sources from these variables,
-# so exporting them here points the one-offs at the throwaway keys. The `backups` volume is never used:
-# BACKUP_DIR is a path inside each one-off.
+# One-off backup containers. The compose service's bind mounts take their sources from these variables, so
+# exporting them points the one-offs at the throwaway keys. The `backups` volume is never used: BACKUP_DIR is a
+# path inside each one-off.
 export BACKUP_SSH_KEY_FILE="$(winpath "$work/k/id")"
 export BACKUP_SSH_KNOWN_HOSTS_FILE="$(winpath "$work/k/known_hosts")"
 export BACKUP_RECIPIENTS_FILE="$(winpath "$work/k/recipients.txt")"
+# Mounted into every one-off: reads a file's size off a destination, taking the NAME from the end of the long
+# listing's path (the same rule run-copy.sh uses), so the smoke does not trust the code it is checking.
+cat > "$work/helpers.sh" << 'HELPEREOF'
+remote_size() { # HOST NAME
+  echo "ls -l \"$BACKUP_SSH_PATH\"" |
+    sftp -q -F /dev/null -i /run/backup/id_key -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+      -o UserKnownHostsFile=/run/backup/known_hosts -o ConnectTimeout=10 -b - "fd@$1" 2> /dev/null |
+    awk -v n="$2" 'NF >= 9 { b = $NF; sub(/^.*[\/\\]/, "", b); if (b == n) print $(NF-4) }'
+}
+HELPEREOF
 bk() { # [extra docker compose run flags] -- command...
   local flags=()
   while [ "$1" != "--" ]; do flags+=("$1"); shift; done
   shift
   docker compose run --rm --no-deps -T -e "PGDATABASE=$SCRATCH" -e BACKUP_DIR=/tmp/smoke \
-    -e BACKUP_SSH_HOST=sink -e BACKUP_SSH_USER=fd "${flags[@]+"${flags[@]}"}" backup "$@" 2> "$work/err.log"
+    -v "$(winpath "$work/helpers.sh"):/helpers.sh:ro" \
+    -e BACKUP_SSH_HOST=sink -e BACKUP_SSH_USER=fd -e "BACKUP_SSH_PATH=$RDIR" \
+    "${flags[@]+"${flags[@]}"}" backup "$@" 2> "$work/err.log"
 }
+# Common sftp options for the probes that talk to a sink by hand from inside a one-off.
+SFTP='sftp -q -F /dev/null -i /run/backup/id_key -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/run/backup/known_hosts -o ConnectTimeout=10'
 
 echo "== a backup is encrypted and kept locally; the copy reaches the sink; a second copy sends nothing"
 out=$(bk -- bash -c '
@@ -124,18 +168,19 @@ out=$(bk -- bash -c '
   echo "PGDMP-IN-FILE:"; grep -c PGDMP /tmp/smoke/*.tar.age || true
 ')
 printf '%s\n' "$out" | grep -q '"event":"backup_succeeded"' || { echo "$out" >&2; fail "no backup_succeeded line"; }
-printf '%s\n' "$out" | grep -q '"event":"copy_succeeded"' || { echo "$out" >&2; fail "no copy_succeeded line"; }
-[ "$(printf '%s\n' "$out" | grep -c '"event":"copy_succeeded"')" = "2" ] || fail "the second copy should also succeed"
+[ "$(printf '%s\n' "$out" | grep -c '"event":"copy_succeeded"')" = "2" ] || { echo "$out" >&2; fail "both copies should succeed"; }
+printf '%s\n' "$out" | grep '"event":"copy_succeeded"' | sed -n 1p | grep -q '"uploaded":"1"' || fail "the first copy should upload one file"
+printf '%s\n' "$out" | grep '"event":"copy_succeeded"' | sed -n 2p | grep -q '"uploaded":"0","repaired":"0","skipped":"1"' || fail "the second copy should upload nothing and skip one"
 printf '%s\n' "$out" | sed -n '/^LOCAL:/,/^PLAINTEXT-LEFT:/p' | grep -q '_[0-9]\{8\}T[0-9]\{6\}Z.tar.age$' || fail "no .tar.age file kept locally"
 [ "$(printf '%s\n' "$out" | sed -n '/^PLAINTEXT-LEFT:/{n;p;}')" = "0" ] || fail "plaintext dump, manifest or partial file left behind"
 printf '%s\n' "$out" | sed -n '/^MAGIC:/{n;p;}' | grep -q '^age-encryption.org/v1' || fail "the kept file is not an age file"
 [ "$(printf '%s\n' "$out" | sed -n '/^PGDMP-IN-FILE:/{n;p;}')" = "0" ] || fail "the encrypted file contains a plaintext pg_dump header"
-landed=$(docker exec "$SINK" ls -1 /srv/backups)
+landed=$(docker exec "$SINK" ls -1 "$RDIR")
 [ "$(printf '%s\n' "$landed" | wc -l | tr -d ' ')" = "1" ] || fail "expected exactly one file on the sink, got: $landed"
-echo "ok: $landed"
+echo "ok: $landed (uploaded once, skipped the second time)"
 
 echo "== the copy that landed restores, using only the PRIVATE key (infra/restore-backup.sh)"
-docker cp "$SINK:/srv/backups/$landed" "$(winpath "$work")/got.tar.age"   # docker.exe needs a Windows path here
+docker cp "$SINK:$RDIR/$landed" "$(winpath "$work")/got.tar.age"   # docker.exe needs a Windows path here
 bash infra/restore-backup.sh "$work/got.tar.age" --identity "$work/k/age.key" --db "$RESTORED" > "$work/restore.out" 2>&1 \
   || { cat "$work/restore.out" >&2; fail "restore-backup.sh failed"; }
 grep -q "^OK: restored into '$RESTORED'" "$work/restore.out" || { cat "$work/restore.out" >&2; fail "restore did not report OK"; }
@@ -149,30 +194,76 @@ echo "ok: restored $landed into $RESTORED"
   || fail "restore-backup.sh accepted an SSH key as the age identity"
 echo "ok: the wrong key is refused"
 
-echo "== the restricted key: no shell, no reading the destination, no writing outside its directory"
+echo "== the key gets SFTP and nothing else: no shell, no delete, no rename (stand-in for the account's rights)"
 probe=$(bk -- bash -c '
-  o="-F /dev/null -i /run/backup/id_key -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/run/backup/known_hosts -o ConnectTimeout=10"
-  echo "SHELL:"; ssh $o fd@sink "echo shell-works" 2>&1; echo "shell-exit=$?"
-  echo "PULL:"; mkdir -p /tmp/pull; rsync -r -e "ssh $o" fd@sink:./ /tmp/pull/ 2>&1; echo "pull-exit=$?"; echo "pulled=$(ls /tmp/pull | wc -l)"
-  echo "ESCAPE:"; echo x > /tmp/x.tar.age; rsync -r -e "ssh $o" /tmp/x.tar.age fd@sink:../escape.tar.age 2>&1; echo "escape-exit=$?"
-  echo "ABSOLUTE:"; rsync -r -e "ssh $o" /tmp/x.tar.age fd@sink:/etc/escape.tar.age 2>&1; echo "absolute-exit=$?"
+  mkdir -p /tmp/p; echo data > /tmp/p/one
+  echo "SHELL:"; ssh -F /dev/null -i /run/backup/id_key -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/run/backup/known_hosts -o ConnectTimeout=10 fd@sink "echo shell-works; id" 2>&1; echo "shell-exit=$?"
+  echo "PUT:"; echo "put /tmp/p/one '"$RDIR"'/probe-one" | '"$SFTP"' -b - fd@sink 2>&1; echo "put-exit=$?"
+  echo "RM:"; echo "rm '"$RDIR"'/probe-one" | '"$SFTP"' -b - fd@sink 2>&1; echo "rm-exit=$?"
+  echo "RENAME:"; echo "rename '"$RDIR"'/probe-one '"$RDIR"'/probe-two" | '"$SFTP"' -b - fd@sink 2>&1; echo "rename-exit=$?"
 ' || true)
-# Each refusal is checked by the rrsync message that proves WHO refused, so a probe that fails for an
-# unrelated reason (a dead sshd, a wrong key) cannot pass as "restricted".
-printf '%s\n' "$probe" | grep -q 'shell-works' && { printf '%s\n' "$probe" >&2; fail "the restricted key ran a shell command"; }
-printf '%s\n' "$probe" | grep -q 'rrsync error: SSH_ORIGINAL_COMMAND does not run rsync' \
-  || { printf '%s\n' "$probe" >&2; fail "a shell command was not refused by rrsync"; }
-echo "ok: no shell (refused by rrsync)"
-[ "$(printf '%s\n' "$probe" | sed -n 's/^pulled=//p')" = "0" ] || fail "the restricted key could read the destination"
-printf '%s\n' "$probe" | grep -q 'rrsync error: reading from write-only server is not allowed' \
-  || { printf '%s\n' "$probe" >&2; fail "a pull was not refused by rrsync"; }
-echo "ok: nothing can be pulled (refused by rrsync)"
-printf '%s\n' "$probe" | grep -q 'rrsync error: do not use .. in arg' \
-  || { printf '%s\n' "$probe" >&2; fail "a path with .. was not refused by rrsync"; }
-# An absolute path is not refused, it is anchored inside the restricted directory; the point is where it lands.
-docker exec "$SINK" sh -c 'test ! -e /srv/escape.tar.age && test ! -e /etc/escape.tar.age && test ! -e /srv/backups/escape.tar.age' \
-  || fail "the restricted key wrote outside its directory"
-echo "ok: nothing written outside /srv/backups"
+printf '%s\n' "$probe" | grep -q 'shell-works' && { printf '%s\n' "$probe" >&2; fail "the key ran a shell command"; }
+printf '%s\n' "$probe" | grep -q 'uid=' && { printf '%s\n' "$probe" >&2; fail "the key ran a shell command (id)"; }
+# The refusals are checked by their own words, so a probe that fails for an unrelated reason (a dead sshd, a
+# wrong key) cannot pass as "restricted". The put in the same probe already proves the session itself works.
+printf '%s\n' "$probe" | grep -q 'This service allows sftp connections only' \
+  || { printf '%s\n' "$probe" >&2; fail "a shell request was not refused by the SFTP-only rule"; }
+echo "ok: no shell (sshd said: this service allows sftp connections only)"
+printf '%s\n' "$probe" | grep -q '^put-exit=0$' || { printf '%s\n' "$probe" >&2; fail "the key could not create a file"; }
+printf '%s\n' "$probe" | grep -q '^rm-exit=[1-9]' || { printf '%s\n' "$probe" >&2; fail "the key could delete"; }
+printf '%s\n' "$probe" | grep -q 'remote delete .*Permission denied' || { printf '%s\n' "$probe" >&2; fail "delete was not refused by the server"; }
+printf '%s\n' "$probe" | grep -q '^rename-exit=[1-9]' || { printf '%s\n' "$probe" >&2; fail "the key could rename"; }
+printf '%s\n' "$probe" | grep -q 'remote rename .*Permission denied' || { printf '%s\n' "$probe" >&2; fail "rename was not refused by the server"; }
+docker exec "$SINK" test -e "$RDIR/probe-one" || fail "the probe file vanished"
+docker exec "$SINK" test ! -e "$RDIR/probe-two" || fail "the probe file was renamed"
+echo "ok: create works; delete and rename are refused and the file is still there"
+
+echo "== an interrupted upload (a short file under the real name) is detected by size and repaired"
+out=$(bk -- bash -c '
+  mkdir -p /tmp/smoke; /opt/backup/run-backup.sh >/dev/null && /opt/backup/run-copy.sh >/dev/null
+  f=$(ls /tmp/smoke/*.tar.age); n=${f##*/}
+  head -c 50 "$f" > /tmp/short
+  echo "put /tmp/short '"$RDIR"'/$n" | '"$SFTP"' -b - fd@sink
+  . /helpers.sh
+  echo "short-on-sink: $(remote_size sink "$n")"
+  /opt/backup/run-copy.sh; echo "copy-exit=$?"
+  echo "full-on-sink: $(remote_size sink "$n")  local: $(wc -c < "$f" | tr -d " ")"
+' || true)
+printf '%s\n' "$out" | grep -q '^short-on-sink: 50$' || { echo "$out" >&2; fail "the setup did not leave a 50-byte file on the sink"; }
+printf '%s\n' "$out" | grep -q '"repaired":"1"' || { echo "$out" >&2; fail "the short file was not detected and repaired"; }
+printf '%s\n' "$out" | grep -q '^copy-exit=0$' || fail "the repair run should succeed"
+a=$(printf '%s\n' "$out" | sed -n 's/^full-on-sink: \([0-9]*\)  local: \([0-9]*\)$/\1/p'); b=$(printf '%s\n' "$out" | sed -n 's/^full-on-sink: \([0-9]*\)  local: \([0-9]*\)$/\2/p')
+[ -n "$a" ] && [ "$a" = "$b" ] || { echo "$out" >&2; fail "sizes differ after the repair: sink $a, local $b"; }
+echo "ok: 50 bytes on the sink, repaired to $a"
+
+echo "== write-once destination: a short file cannot be overwritten, so the copy fails LOUDLY and names it"
+out=$(bk -e BACKUP_SSH_HOST=wosink -- bash -c '
+  mkdir -p /tmp/smoke; /opt/backup/run-backup.sh >/dev/null
+  f=$(ls /tmp/smoke/*.tar.age); n=${f##*/}
+  head -c 50 "$f" > /tmp/short
+  echo "put /tmp/short '"$RDIR"'/$n" | '"$SFTP"' -b - fd@wosink
+  /opt/backup/run-copy.sh; echo "copy-exit=$?"
+  . /helpers.sh
+  echo "still-short: $(remote_size wosink "$n")"
+' || true)
+printf '%s\n' "$out" | grep -q '"error_class":"PartialOnDestination"' || { echo "$out" >&2; fail "expected PartialOnDestination"; }
+printf '%s\n' "$out" | grep -q '^copy-exit=1$' || fail "the copy should fail"
+printf '%s\n' "$out" | grep -q '^still-short: 50$' || fail "the short file should be untouched"
+echo "ok: refused, named, untouched"
+
+echo "== the probe tells the policies apart, and fails when the restriction is not in force"
+policy_of() { # HOST -> output and exit code of verify-destination.sh against that host
+  bk -e "BACKUP_SSH_HOST=$1" -- /opt/backup/verify-destination.sh || true
+}
+v=$(bk -e BACKUP_SSH_HOST=sink -- /opt/backup/verify-destination.sh; echo "exit=$?") || true
+printf '%s\n' "$v" | grep -q 'RESULT: OK, policy no-delete' || { echo "$v" >&2; fail "expected policy no-delete on the no-delete sink"; }
+printf '%s\n' "$v" | grep -q '^exit=0$' || fail "the probe should pass on the no-delete sink"
+v=$(bk -e BACKUP_SSH_HOST=wosink -- /opt/backup/verify-destination.sh; echo "exit=$?") || true
+printf '%s\n' "$v" | grep -q 'RESULT: OK, policy write-once' || { echo "$v" >&2; fail "expected policy write-once on the write-once sink"; }
+v=$(bk -e BACKUP_SSH_HOST=opensink -- /opt/backup/verify-destination.sh; echo "exit=$?") || true
+printf '%s\n' "$v" | grep -q 'RESULT: FAIL' || { echo "$v" >&2; fail "the probe passed a destination whose key can delete"; }
+printf '%s\n' "$v" | grep -q '^exit=1$' || fail "the probe should exit 1 on an open destination"
+echo "ok: no-delete, write-once recognised; an open destination fails"
 
 echo "== no recipient key: the backup fails closed, writes nothing, and says why"
 out=$(bk -v "$(winpath "$PWD/infra/backup/recipients.txt"):/placeholder:ro" -e BACKUP_RECIPIENTS_FILE=/placeholder -- bash -c '
@@ -181,6 +272,13 @@ printf '%s\n' "$out" | grep -q '"error_class":"NoRecipient"' || { echo "$out" >&
 printf '%s\n' "$out" | grep -q '^exit=1$' || fail "a backup with no recipient should exit 1"
 printf '%s\n' "$out" | grep -q '^files=0$' || fail "a backup with no recipient wrote a file"
 echo "ok: refused, nothing written"
+
+echo "== no destination path: refused, because a default would copy somewhere unprotected"
+out=$(bk -e BACKUP_SSH_PATH= -- bash -c '
+  mkdir -p /tmp/smoke; /opt/backup/run-backup.sh >/dev/null; /opt/backup/run-copy.sh; echo "exit=$?"' || true)
+printf '%s\n' "$out" | grep -q '"error_class":"ConfigInvalid"' || { echo "$out" >&2; fail "expected ConfigInvalid for an empty BACKUP_SSH_PATH"; }
+printf '%s\n' "$out" | grep -q 'BACKUP_SSH_PATH is empty' || fail "the message should name BACKUP_SSH_PATH"
+echo "ok: refused"
 
 echo "== the destination is unreachable: the backup still succeeds, only the copy fails"
 docker stop "$SINK" > /dev/null
@@ -226,10 +324,10 @@ echo "ok: $h"
 
 echo "== the destination is back: the scheduler catches up by itself, pings the monitor, and backs up once"
 docker start "$SINK" > /dev/null
-wait_sink
+wait_sink "$SINK"
 docker rm -f "$LOOP" > /dev/null 2>&1 || true
 docker compose run -d --name "$LOOP" --no-deps -T -e "PGDATABASE=$SCRATCH" -e BACKUP_DIR=/tmp/smoke \
-  -e BACKUP_SSH_HOST=sink -e BACKUP_SSH_USER=fd -e BACKUP_AT=00:00 \
+  -e BACKUP_SSH_HOST=sink -e BACKUP_SSH_USER=fd -e "BACKUP_SSH_PATH=$RDIR" -e BACKUP_AT=00:00 \
   -e BACKUP_TICK_SECONDS=1 -e BACKUP_RETRY_SECONDS=2 -e BACKUP_RETRY_CAP_SECONDS=2 \
   -e BACKUP_PING_URL=http://sink:8080/ping backup bash -c 'mkdir -p /tmp/smoke && exec /opt/backup/backup-loop.sh' > /dev/null 2> "$work/err.log"
 deadline=$((SECONDS + 90))
@@ -243,7 +341,8 @@ logs=$(docker logs "$LOOP" 2>&1)
 [ "$(printf '%s\n' "$logs" | grep -c '"event":"backup_succeeded"')" = "1" ] || { printf '%s\n' "$logs" >&2; fail "expected exactly one backup from the scheduler"; }
 printf '%s\n' "$logs" | grep -q '"event":"backup_scheduler_started"' || fail "no scheduler start line"
 docker logs "$SINK" 2>&1 | grep -q 'url:/ping' || fail "the monitor URL was never requested"
-[ "$(docker exec "$SINK" ls -1 /srv/backups | wc -l | tr -d ' ')" = "2" ] || fail "the sink should now hold two backups"
+n_on_sink=$(docker exec "$SINK" sh -c "ls -1 $RDIR | grep -c 'tar.age\$'")
+[ "$n_on_sink" -ge 2 ] || fail "the sink should now hold the scheduler's backup as well (has $n_on_sink)"
 docker rm -f "$LOOP" > /dev/null
 echo "ok: backed up once, copied after the destination returned, pinged the monitor"
 
@@ -255,4 +354,4 @@ h=$(health)
 [ "$h" = "backup=ok copy=not_configured copy_failed=False copy_error=NotConfigured" ] || fail "unexpected backup health: $h"
 echo "ok: $h"
 
-echo "OK: M2 slice 2 smoke passed (encrypted, kept locally, copied through the restricted key, restored with the private key only; fails closed with no recipient; a down destination fails the copy and not the backup; the scheduler catches up and pings; unconfigured is reported as such)"
+echo "OK: M2 slice 2 smoke passed (encrypted, kept locally, copied over SFTP, restored with the private key only; no shell/delete/rename; interrupted uploads detected by size and repaired, or failed loudly where overwrite is refused; the probe tells no-delete from write-once and fails an open destination; fails closed with no recipient or path; a down destination fails the copy and not the backup; the scheduler catches up and pings; unconfigured is reported as such)"
