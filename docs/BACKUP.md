@@ -198,7 +198,7 @@ write a failed row every few minutes.
 | Step | What | Local result |
 |---|---|---|
 | `ops.backup` | `pg_dump -Fc`, `pg_restore --list` check, manifest, `tar` of both, `age` to the recipients | `/backups/<db>_<UTC>.tar.age` |
-| `ops.backup_copy` | Over SFTP: list the destination, `put` every `*.tar.age` it lacks, then list again and compare sizes | none |
+| `ops.backup_copy` | Over SFTP: list the destination; for each backup with no object of the right size, `put` a new object (never overwriting); then list again and compare sizes | none |
 
 The archive is the `.dump` and `.manifest` pair that `backup.sh` writes, so `restore.sh` takes them
 unchanged. The plaintext exists only in a private directory on tmpfs for the length of one backup.
@@ -319,11 +319,15 @@ key only.
 ```powershell
 $pw = ConvertTo-SecureString ([guid]::NewGuid().ToString('N') + 'Aa1!') -AsPlainText -Force
 New-LocalUser -Name 'flowdesk-backup' -Password $pw -PasswordNeverExpires -UserMayNotChangePassword -AccountNeverExpires -Description 'FlowDesk backup receiver (SFTP only)'
-Add-LocalGroupMember -Group 'Users' -Member 'flowdesk-backup'
+Get-LocalGroupMember -Group 'Users' | Where-Object Name -like '*flowdesk-backup'     # shows the account if it is in Users
+Remove-LocalGroupMember -Group 'Users' -Member 'flowdesk-backup' -ErrorAction SilentlyContinue
 ```
 
 It must **not** be in Administrators (administrators' keys are read from a different file, and it would defeat the
-point).
+point). It is also kept **out of `Users`**, which removes its read access to `C:\Windows`, the Program Files
+folders and `ProgramData`. Whether Windows OpenSSH lets an account that is not in `Users` sign in is **untested**;
+it is checked in step 7, with a fallback. Read [What the account can reach](#what-the-account-can-reach) before
+deciding that is enough.
 
 **3. The folder and its permissions.** Create it, remove inherited permissions, and give the administrators and
 SYSTEM control (so an administrator can prune and clean up). Then choose **one** of the two variants.
@@ -389,11 +393,26 @@ powershell -NoProfile -ExecutionPolicy Bypass -File infra\backup\acl-experiment.
 
 It prints the table above and ends `RESULT: as documented` or says what differs.
 
-**The price of W:** an upload that is interrupted halfway (the laptop sleeps mid-copy) leaves a short file under
-the real name, and the account cannot overwrite it to repair it. The copy notices by size, fails loudly with
-`PartialOnDestination`, and names the file. You delete that one file on the desktop (as an administrator), and
-the next run uploads it whole. That is a visible, manual step; the alternative is a key that can corrupt your
-backups. Under D the copy repairs it by itself, if the server's open allows it.
+**What W costs, and why it does not stall the copy.** An upload interrupted halfway (a sleeping laptop makes
+that routine) leaves a short file under the real name, and under W nothing can reopen it to finish it. So the
+copy never tries to: it **steps over** it. A backup counts as copied when the destination holds an object of that
+backup at the same size as the local file. If none does, the next attempt creates a **new object**,
+`<db>_<stamp>.r<N>.tar.age` (N one higher than any already there), and leaves the short one where it is. W forbids
+reopening a file, not creating one, so this is allowed, and no administrator has to do anything for copies to
+resume. The same single code path is used under every policy; the copy never overwrites.
+
+What it leaves behind is litter: short objects, at most one per interrupted attempt, which nothing removes until
+`prune.sh` runs on the desktop (below). Two safeguards make the litter harmless:
+
+- **A short object can never be restored by mistake.** `age` authenticates the whole file, so decrypting a
+  truncated one fails before anything reaches a database. Tested: a 50-byte object is refused and no database is
+  created.
+- **Retention knows about retry objects.** It keeps the highest-numbered object of each backup and deletes the
+  lower ones, which is correct because a retry is only ever made when every lower object is short.
+
+To restore a backup that has several files, use the highest `r<N>` (or the one whose size matches what the
+copy logged). Tested on a stand-in where the plain object was 50 bytes and `r1` was 80 bytes: the complete copy
+was `r2`, and it restored.
 
 **4. The account's key.** Keep it in a file only administrators can edit, so the account cannot change its own
 key. Put the single line from `flowdesk_backup.pub` into it:
@@ -445,6 +464,63 @@ It connects with the real key, creates a probe file, then tries to overwrite, de
 and says which policy is in force. **It must end with `RESULT: OK`; delete and rename must say `refused`.**
 `policy write-once` is Variant W working; `policy no-delete` is Variant D, with the overwrite warning. It leaves
 one file, `flowdesk-probe-<stamp>.tar.age`, which only an administrator can remove (that is the point).
+
+If it cannot even connect and the Windows Security log shows "The user has not been granted the requested logon
+type at this computer", the account needs `Users` membership after all: see
+[What the account can reach](#what-the-account-can-reach) for the fallback and what it costs.
+
+### What the account can reach
+
+The permissions in step 3 govern one folder. The account is still a signed-in Windows user, and an SFTP session
+without a chroot can browse the whole disk as that user. Run the survey **on the desktop** to see what that
+means there (read-only; it changes nothing):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File infra\backup\acl-survey.ps1
+```
+
+What it showed on a default Windows 10 layout (the laptop, 2026-11-09; the desktop will differ):
+
+| Place | Through `Users` only | Through Everyone / Authenticated Users / NETWORK |
+|---|---|---|
+| `C:\Windows`, `Program Files`, `Program Files (x86)` | read | nothing |
+| `C:\ProgramData` | read, and create files | nothing |
+| `C:\Users\<anyone>` (profiles) | nothing | nothing (owner only) |
+| **A folder created directly under `C:\`** | read | **read, modify and delete: `Authenticated Users:(M)` is inherited from the drive root** |
+
+On that machine 17 of 20 top-level folders carried that inherited Modify. Data drives formatted by Windows
+usually carry the same rule on their root.
+
+Two consequences, one of which corrects what this document said before:
+
+1. **Removing the account from `Users` does not close the exposure that matters.** It removes the reads of
+   Windows, Program Files and ProgramData (low value). It does not touch `Authenticated Users`, which every
+   account holds, so the account can still read, change and delete the contents of ordinary top-level folders.
+   *Earlier text said the account could not write outside the backup folder. For top-level folders on a default
+   install, that was wrong.* A leaked SSH key is therefore a key to those folders, not only to the backups.
+2. **Does Windows OpenSSH need `Users` membership to authenticate? Not established.** Nothing in Microsoft's
+   documentation says so. The only discussion found (a Win32-OpenSSH issue) is a commenter who *believes* sshd
+   does a network logon, which the default "Access this computer from the network" right grants to Everyone, and
+   a reply that sshd's own configuration governs access; nobody verified either. So test it: step 7 connects as
+   the account. If it fails with "The user has not been granted the requested logon type at this computer"
+   (Security event 4625, status `0xC000015B`), put it back and accept the extra reads:
+
+   ```powershell
+   Add-LocalGroupMember -Group 'Users' -Member 'flowdesk-backup'
+   ```
+
+What would actually close it, in increasing order of effort. None is done, and each is a decision for the desktop's
+owner:
+- **Chroot** the account to the backup folder (`ChrootDirectory` in the `Match` block). It is the real fix, because
+  the account then cannot name any other path. It is not the default because of the reports of Windows chroot
+  setups failing, including `sshd` not starting. A guarded trial: copy `sshd_config` aside first, run
+  `sshd.exe -t` before restarting, and restore the copy if the service does not come back. Only that account is
+  affected by the block, but a service that does not start affects everything.
+- **Remove `Authenticated Users` from the top-level folders** that matter (and from the data drive's root), so
+  that nothing inherits Modify for it. This changes the desktop's own permissions, which may have other
+  consequences for programs that rely on them.
+- **Keep the SSH port off the internet** (no port forward to 22) and treat the laptop's key file as the sensitive
+  part: anyone who has it and can reach the desktop on the network has this access.
 
 ### Restoring from a scheduled backup
 
@@ -516,7 +592,14 @@ That tests the configuration. It does not satisfy step 3.
 
 The 14-daily plus 8-weekly rule runs inside the container, on the **local** volume. It cannot run on the
 destination: the account is deliberately unable to delete there. So today **nothing prunes the desktop, and the
-14+8 rule is aspirational for the copies that matter most** until something runs it.
+14+8 rule is aspirational for the copies that matter most** until something runs it. That now includes the
+litter from interrupted uploads (short objects and superseded retry objects): it accumulates until `prune.sh` runs,
+which is acceptable only because it is small and never gets in the way of a copy.
+
+One known edge: if the newest backup of a day has *only* short objects at the moment `prune.sh` runs (its
+upload was interrupted and not yet retried), an older complete backup from the same day is the one pruned. With
+one backup a day that needs a manual extra backup and an unlucky weekly run, and the retry completes the newer
+one. It is the reason to prune weekly and not continuously.
 
 What would run it: a job on the desktop, as an administrator or SYSTEM (who have Delete), weekly, applying the
 same rule with `infra/backup/prune.sh`. That script was run under Git Bash on Windows (GNU awk), 45 files in,
@@ -547,9 +630,11 @@ will not stay true.
 - **Retention on the destination is not enforced** (above).
 - **Nothing here has run against Windows OpenSSH Server**, and the NTFS result was measured with Win32 calls
   and a stand-in account, not through `sftp-server.exe`. `verify-destination.sh` is how that gets checked.
-- **The SFTP session is not chrooted.** If the SSH key leaked, the account could list and read whatever the
-  `Users` group can read on the desktop (not other users' profiles), though it could not write outside the
-  backup folder. The backups are encrypted. Chroot is the usual fix and is not used, for the reason above.
+- **The SFTP session is not chrooted, and that exposes more than the backups.** If the SSH key leaked, the
+  account could read, and on a default install **modify and delete**, the contents of ordinary top-level folders
+  (`Authenticated Users:(M)` is inherited from the drive root), as well as reading system folders unless it is
+  kept out of `Users`. The backups themselves are encrypted and, under Variant W, cannot be changed. See
+  [What the account can reach](#what-the-account-can-reach) for the measurements and the options.
 - **The SSH private key lives on the laptop**, because the container needs it. That is why what it can do on the
   desktop is limited by NTFS, and why Variant W is the default.
 - **A write-restricted account cannot confirm a copy's integrity beyond its size.** Restore drills are the check.

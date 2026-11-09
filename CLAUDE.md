@@ -64,7 +64,9 @@ records M1 slice 10's heartbeat decisions.
   the laptop's copy only; nothing prunes the desktop** (the account cannot delete, by design), so on the
   destination it is aspirational until a Task Scheduler job runs `prune.sh` there; **the backup image is
   not covered by CI's vulnerability scan** (`security` builds `backend/` only), so its Alpine packages
-  float, which is a hole next to what slice 0 closed; **arm64 is untested** for it. A plain `pg_restore`
+  float, which is a hole next to what slice 0 closed; **arm64 is untested** for it; **the SFTP account is not
+  chrooted, so a leaked key reaches more than the backups** (on a default Windows install, `Authenticated Users`
+  can modify ordinary top-level folders; `infra/backup/acl-survey.ps1` sizes it on the desktop). A plain `pg_restore`
   silently damages hypertables: use `infra/restore.sh`, or `infra/restore-backup.sh` for a scheduled backup.
 - **The base image is pinned by digest** (M2 slice 0, 2026-11-08). The `FROM` line in `backend/Dockerfile` is
   the one definition. The CI tooling container, `lock-deps.sh` and the smokes read it through

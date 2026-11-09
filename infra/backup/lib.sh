@@ -24,6 +24,7 @@ name_epoch() {
   local base=${1##*/} stamp
   stamp=${base%.tar.age}
   stamp=${stamp##*_}
+  stamp=${stamp%%.r[0-9]*}   # a retry object, <db>_<stamp>.r<N>.tar.age, is the same backup
   [[ $stamp =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || return 1
   date -u -d "${stamp:0:4}-${stamp:4:2}-${stamp:6:2} ${stamp:9:2}:${stamp:11:2}:${stamp:13:2}" +%s
 }
@@ -87,10 +88,25 @@ next_delay() {
 # nothing else in the directory can ever be deleted.   retention_delete KEEP_DAILY KEEP_WEEKLY
 # DECISION: "weeks" are 7-day buckets counted from the epoch, not ISO calendar weeks. Same count of weekly
 # copies, no calendar library.
+#
+# Retry objects (<db>_<stamp>.r<N>.tar.age, made when an upload was interrupted; see run-copy.sh) sort
+# AFTER the plain name for the same stamp, so the highest-numbered object of a backup is the one kept and
+# the short ones below it are deleted. That is right because a retry is only ever made when every lower
+# object is short. Known edge: if the newest backup of a day has ONLY short objects when this runs (its upload
+# was interrupted and not yet retried), an older complete backup the same day is the one deleted. One backup
+# a day makes that rare, and the retry completes the newer one; it is why the destination is pruned weekly,
+# not continuously.
 retention_delete() {
   local kd=$1 kw=$2
-  awk '{ if (match($0, /_[0-9]{8}T[0-9]{6}Z\.tar\.age$/)) print substr($0, RSTART + 1, 15), $0 }' |
-    sort -r |
+  awk '{
+    if (match($0, /_[0-9]{8}T[0-9]{6}Z(\.r[0-9]+)?\.tar\.age$/)) {
+      st = substr($0, RSTART + 1, 15)
+      at = 0
+      if (match($0, /\.r[0-9]+\.tar\.age$/)) at = substr($0, RSTART + 2, RLENGTH - 10) + 0
+      print st, at, $0
+    }
+  }' |
+    sort -k1,1r -k2,2nr |
     awk -v kd="$kd" -v kw="$kw" '
       # Days since 1970-01-01 for a civil date (Howard Hinnant, days_from_civil).
       function dfc(y, m, d,   yy, mm, era, yoe, doy, doe) {
@@ -108,7 +124,7 @@ retention_delete() {
         keep = 0
         if (!(day in dayseen)) { dayseen[day] = 1; if (++ndays <= kd) keep = 1 }
         if (!(wk in wkseen)) { wkseen[wk] = 1; if (++nwk <= kw) keep = 1 }
-        if (!keep) print $2
+        if (!keep) print $3
       }'
 }
 

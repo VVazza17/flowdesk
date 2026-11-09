@@ -41,6 +41,8 @@ cleanup() {
   docker rm -f $SINKS "$LOOP" > /dev/null 2>&1 || true
   psql_pg -d postgres -c "DROP DATABASE IF EXISTS $SCRATCH WITH (FORCE)" > /dev/null 2>&1 || true
   psql_pg -d postgres -c "DROP DATABASE IF EXISTS $RESTORED WITH (FORCE)" > /dev/null 2>&1 || true
+  psql_pg -d postgres -c "DROP DATABASE IF EXISTS ${RESTORED}_r WITH (FORCE)" > /dev/null 2>&1 || true
+  psql_pg -d postgres -c "DROP DATABASE IF EXISTS ${RESTORED}_s WITH (FORCE)" > /dev/null 2>&1 || true
   if [ "$rc" -ne 0 ] && [ -s "$work/err.log" ]; then echo "--- last container stderr:" >&2; tail -n 20 "$work/err.log" >&2; fi
   rm -rf "$work"
   exit "$rc"
@@ -170,7 +172,7 @@ out=$(bk -- bash -c '
 printf '%s\n' "$out" | grep -q '"event":"backup_succeeded"' || { echo "$out" >&2; fail "no backup_succeeded line"; }
 [ "$(printf '%s\n' "$out" | grep -c '"event":"copy_succeeded"')" = "2" ] || { echo "$out" >&2; fail "both copies should succeed"; }
 printf '%s\n' "$out" | grep '"event":"copy_succeeded"' | sed -n 1p | grep -q '"uploaded":"1"' || fail "the first copy should upload one file"
-printf '%s\n' "$out" | grep '"event":"copy_succeeded"' | sed -n 2p | grep -q '"uploaded":"0","repaired":"0","skipped":"1"' || fail "the second copy should upload nothing and skip one"
+printf '%s\n' "$out" | grep '"event":"copy_succeeded"' | sed -n 2p | grep -q '"uploaded":"0","stepped_over":"0","skipped":"1"' || fail "the second copy should upload nothing and skip one"
 printf '%s\n' "$out" | sed -n '/^LOCAL:/,/^PLAINTEXT-LEFT:/p' | grep -q '_[0-9]\{8\}T[0-9]\{6\}Z.tar.age$' || fail "no .tar.age file kept locally"
 [ "$(printf '%s\n' "$out" | sed -n '/^PLAINTEXT-LEFT:/{n;p;}')" = "0" ] || fail "plaintext dump, manifest or partial file left behind"
 printf '%s\n' "$out" | sed -n '/^MAGIC:/{n;p;}' | grep -q '^age-encryption.org/v1' || fail "the kept file is not an age file"
@@ -218,38 +220,66 @@ docker exec "$SINK" test -e "$RDIR/probe-one" || fail "the probe file vanished"
 docker exec "$SINK" test ! -e "$RDIR/probe-two" || fail "the probe file was renamed"
 echo "ok: create works; delete and rename are refused and the file is still there"
 
-echo "== an interrupted upload (a short file under the real name) is detected by size and repaired"
+echo "== an interrupted upload leaves a short object; the retry is a NEW object and the short one is stepped over"
 out=$(bk -- bash -c '
+  . /helpers.sh
   mkdir -p /tmp/smoke; /opt/backup/run-backup.sh >/dev/null && /opt/backup/run-copy.sh >/dev/null
-  f=$(ls /tmp/smoke/*.tar.age); n=${f##*/}
+  f=$(ls /tmp/smoke/*.tar.age); n=${f##*/}; b=${n%.tar.age}
+  # Simulate the interruption: this destination lets the account overwrite, so cut the complete copy short.
   head -c 50 "$f" > /tmp/short
   echo "put /tmp/short '"$RDIR"'/$n" | '"$SFTP"' -b - fd@sink
-  . /helpers.sh
-  echo "short-on-sink: $(remote_size sink "$n")"
+  echo "short: $(remote_size sink "$n")"
   /opt/backup/run-copy.sh; echo "copy-exit=$?"
-  echo "full-on-sink: $(remote_size sink "$n")  local: $(wc -c < "$f" | tr -d " ")"
+  echo "sizes: original=$(remote_size sink "$n") retry=$(remote_size sink "$b.r1.tar.age") local=$(wc -c < "$f" | tr -d " ")"
+  /opt/backup/run-copy.sh; echo "second-copy-exit=$?"
+  echo "second-retry: [$(remote_size sink "$b.r2.tar.age")]"
 ' || true)
-printf '%s\n' "$out" | grep -q '^short-on-sink: 50$' || { echo "$out" >&2; fail "the setup did not leave a 50-byte file on the sink"; }
-printf '%s\n' "$out" | grep -q '"repaired":"1"' || { echo "$out" >&2; fail "the short file was not detected and repaired"; }
-printf '%s\n' "$out" | grep -q '^copy-exit=0$' || fail "the repair run should succeed"
-a=$(printf '%s\n' "$out" | sed -n 's/^full-on-sink: \([0-9]*\)  local: \([0-9]*\)$/\1/p'); b=$(printf '%s\n' "$out" | sed -n 's/^full-on-sink: \([0-9]*\)  local: \([0-9]*\)$/\2/p')
-[ -n "$a" ] && [ "$a" = "$b" ] || { echo "$out" >&2; fail "sizes differ after the repair: sink $a, local $b"; }
-echo "ok: 50 bytes on the sink, repaired to $a"
+printf '%s\n' "$out" | grep -q '^short: 50$' || { echo "$out" >&2; fail "the setup did not leave a 50-byte object on the destination"; }
+printf '%s\n' "$out" | grep -q '"uploaded":"1","stepped_over":"1"' || { echo "$out" >&2; fail "the short object was not stepped over by a new upload"; }
+printf '%s\n' "$out" | grep -q '"event":"copy_stepped_over"' || fail "stepping over a short object should be logged"
+printf '%s\n' "$out" | grep -q '^copy-exit=0$' || fail "the retry run should succeed"
+a=$(printf '%s\n' "$out" | sed -n 's/^sizes: original=\([0-9]*\) retry=\([0-9]*\) local=\([0-9]*\)$/\1 \2 \3/p')
+[ "${a%% *}" = "50" ] || { echo "$out" >&2; fail "the short object should be left exactly as it was (got: $a)"; }
+set -- $a
+[ "$2" = "$3" ] && [ -n "$2" ] || { echo "$out" >&2; fail "the retry object is not the full size (got: $a)"; }
+printf '%s\n' "$out" | grep -q '^second-retry: \[\]$' || fail "a second run made another retry although a complete object exists"
+echo "ok: 50-byte object left in place, complete copy written beside it ($2 bytes), nothing more on the next run"
 
-echo "== write-once destination: a short file cannot be overwritten, so the copy fails LOUDLY and names it"
+echo "== write-once: nothing can be reopened, a double interruption still does not stall the chain"
 out=$(bk -e BACKUP_SSH_HOST=wosink -- bash -c '
-  mkdir -p /tmp/smoke; /opt/backup/run-backup.sh >/dev/null
-  f=$(ls /tmp/smoke/*.tar.age); n=${f##*/}
-  head -c 50 "$f" > /tmp/short
-  echo "put /tmp/short '"$RDIR"'/$n" | '"$SFTP"' -b - fd@wosink
-  /opt/backup/run-copy.sh; echo "copy-exit=$?"
   . /helpers.sh
-  echo "still-short: $(remote_size wosink "$n")"
+  mkdir -p /tmp/smoke; /opt/backup/run-backup.sh >/dev/null
+  f=$(ls /tmp/smoke/*.tar.age); n=${f##*/}; b=${n%.tar.age}
+  head -c 50 "$f" > /tmp/short; head -c 80 "$f" > /tmp/short2
+  echo "put /tmp/short '"$RDIR"'/$n" | '"$SFTP"' -b - fd@wosink
+  echo "put /tmp/short2 '"$RDIR"'/$b.r1.tar.age" | '"$SFTP"' -b - fd@wosink
+  echo "put /tmp/short2 '"$RDIR"'/$n" | '"$SFTP"' -b - fd@wosink 2>&1; echo "overwrite-exit=$?"
+  /opt/backup/run-copy.sh; echo "copy-exit=$?"
+  echo "sizes: plain=$(remote_size wosink "$n") r1=$(remote_size wosink "$b.r1.tar.age") r2=$(remote_size wosink "$b.r2.tar.age") local=$(wc -c < "$f" | tr -d " ")"
+  echo "backup: $b"
 ' || true)
-printf '%s\n' "$out" | grep -q '"error_class":"PartialOnDestination"' || { echo "$out" >&2; fail "expected PartialOnDestination"; }
-printf '%s\n' "$out" | grep -q '^copy-exit=1$' || fail "the copy should fail"
-printf '%s\n' "$out" | grep -q '^still-short: 50$' || fail "the short file should be untouched"
-echo "ok: refused, named, untouched"
+printf '%s\n' "$out" | grep -q '^overwrite-exit=[1-9]' || { echo "$out" >&2; fail "the write-once destination let a file be reopened; the premise of this test is gone"; }
+printf '%s\n' "$out" | grep -q '^copy-exit=0$' || { echo "$out" >&2; fail "the copy should step over two short objects and succeed"; }
+printf '%s\n' "$out" | grep -q '"stepped_over":"2"' || { echo "$out" >&2; fail "expected two short objects stepped over"; }
+a=$(printf '%s\n' "$out" | sed -n 's/^sizes: plain=\([0-9]*\) r1=\([0-9]*\) r2=\([0-9]*\) local=\([0-9]*\)$/\1 \2 \3 \4/p')
+set -- $a
+[ "$1" = "50" ] && [ "$2" = "80" ] && [ "$3" = "$4" ] && [ -n "$3" ] || { echo "$out" >&2; fail "unexpected sizes on the write-once destination: $a"; }
+backup_stem=$(printf '%s\n' "$out" | sed -n 's/^backup: //p')
+echo "ok: plain 50, r1 80 (both untouched), r2 $3 (complete)"
+
+echo "== a retry object restores; a short object is rejected before it can reach a database"
+docker cp "$WOSINK:$RDIR/$backup_stem.r2.tar.age" "$(winpath "$work")/retry.tar.age"
+docker cp "$WOSINK:$RDIR/$backup_stem.tar.age" "$(winpath "$work")/short.tar.age"
+bash infra/restore-backup.sh "$work/retry.tar.age" --identity "$work/k/age.key" --db "${RESTORED}_r" > "$work/restore2.out" 2>&1 \
+  || { cat "$work/restore2.out" >&2; fail "restoring from the retry object failed"; }
+grep -q "^OK: restored into '${RESTORED}_r'" "$work/restore2.out" || { cat "$work/restore2.out" >&2; fail "the retry object did not restore"; }
+if bash infra/restore-backup.sh "$work/short.tar.age" --identity "$work/k/age.key" --db "${RESTORED}_s" > "$work/restore3.out" 2>&1; then
+  cat "$work/restore3.out" >&2; fail "a short object was restored"
+fi
+grep -q 'could not decrypt\|wrong key, or the file is damaged\|not a tar' "$work/restore3.out" || { cat "$work/restore3.out" >&2; fail "the short object was rejected, but not for the expected reason"; }
+[ "$(psql_pg -d postgres -c "select count(*) from pg_database where datname = '${RESTORED}_s'")" = "0" ] \
+  || fail "rejecting a short object still created a database"
+echo "ok: the retry object restored; the 50-byte object was refused and created nothing"
 
 echo "== the probe tells the policies apart, and fails when the restriction is not in force"
 policy_of() { # HOST -> output and exit code of verify-destination.sh against that host
@@ -354,4 +384,4 @@ h=$(health)
 [ "$h" = "backup=ok copy=not_configured copy_failed=False copy_error=NotConfigured" ] || fail "unexpected backup health: $h"
 echo "ok: $h"
 
-echo "OK: M2 slice 2 smoke passed (encrypted, kept locally, copied over SFTP, restored with the private key only; no shell/delete/rename; interrupted uploads detected by size and repaired, or failed loudly where overwrite is refused; the probe tells no-delete from write-once and fails an open destination; fails closed with no recipient or path; a down destination fails the copy and not the backup; the scheduler catches up and pings; unconfigured is reported as such)"
+echo "OK: M2 slice 2 smoke passed (encrypted, kept locally, copied over SFTP, restored with the private key only; no shell/delete/rename; an interrupted upload is stepped over by a new retry object on every policy, and a short object never restores; the probe tells no-delete from write-once and fails an open destination; fails closed with no recipient or path; a down destination fails the copy and not the backup; the scheduler catches up and pings; unconfigured is reported as such)"

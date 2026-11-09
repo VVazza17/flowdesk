@@ -5,16 +5,18 @@
 #
 # The destination is a Windows machine running OpenSSH Server. Its restriction is NTFS permissions on a
 # dedicated account, NOT anything this script enforces: the account may create files in one folder and may
-# not delete or rename. So this script is written to need neither:
+# not delete, rename or (write-once variant) reopen a file. So this script needs none of those:
 #   - no upload to a temporary name followed by a rename (rename is denied);
-#   - no reliance on overwriting (denied under the write-once variant);
+#   - no overwriting, ever, under any variant: one code path, and the same on every destination;
 #   - completeness is checked by SIZE after the upload, because nothing else can be checked.
-# A file is skipped only when the destination already has that name at the same size.
 #
-# An interrupted upload leaves a short file under the real name. Where the account may overwrite, the next run
-# repairs it. Where it may not (write-once), the copy fails loudly with PartialOnDestination, naming the file:
-# an administrator on the destination deletes it, and the next run uploads it whole. That is the price of an
-# account that cannot destroy a backup.
+# A backup counts as copied when the destination holds an object of that backup at the same size as the local
+# file. An interrupted upload (routine on a laptop that sleeps) leaves a short object. It is STEPPED OVER, not
+# repaired: the retry creates a NEW object, <db>_<stamp>.r<N>.tar.age with N one above the highest already there,
+# and leaves the short one in place. So the chain never stalls and nobody has to delete anything; the cost is
+# litter, which prune.sh clears (it keeps the highest-numbered object of each backup, and that one is the
+# complete one: a retry is only ever made when every lower object is short). A short object can never be
+# restored by mistake: age rejects a truncated file when it decrypts, before anything reaches a database.
 set -uo pipefail
 here=$(dirname "$0")
 # shellcheck source=lib.sh
@@ -93,46 +95,59 @@ list_remote() {
 list_remote
 
 uploads=()
-repairs=()
+sources=()   # the local file each destination object is made from
+stepped=0    # short objects left in place on the destination
 skipped=0
 for f in "$BACKUP_DIR"/*.tar.age; do
   name=${f##*/}
+  base=${name%.tar.age}
   size=$(wc -c < "$f" | tr -d ' ')
-  if [ -n "${remote[$name]+set}" ]; then
-    if [ "${remote[$name]}" = "$size" ]; then
-      skipped=$((skipped + 1))
-      continue
-    fi
-    repairs+=("$name")   # there, but a different size: an interrupted upload
+  complete=0
+  maxn=-1
+  # Every object of this backup on the destination: <base>.tar.age (attempt 0) and <base>.r<N>.tar.age.
+  for k in "${!remote[@]}"; do
+    case "$k" in
+      "$name") n=0 ;;
+      "$base".r[0-9]*.tar.age) n=${k#"$base".r}; n=${n%.tar.age} ;;
+      *) continue ;;
+    esac
+    [[ $n =~ ^[0-9]+$ ]] || continue
+    [ "$n" -le "$maxn" ] || maxn=$n
+    if [ "${remote[$k]}" = "$size" ]; then complete=1; else stepped=$((stepped + 1)); fi
+  done
+  if [ "$complete" -eq 1 ]; then
+    skipped=$((skipped + 1))
+    continue
   fi
-  uploads+=("$name")
+  # No complete object: write a new one. The first attempt uses the plain name; each retry the next number.
+  if [ "$maxn" -lt 0 ]; then object=$name; else object="$base.r$((maxn + 1)).tar.age"; fi
+  uploads+=("$object")
+  sources+=("$name")
 done
 
 if [ "${#uploads[@]}" -gt 0 ]; then
   batch=""
-  for name in "${uploads[@]}"; do
-    batch+=$(printf 'put "%s" "%s/%s"\n' "$BACKUP_DIR/$name" "${rdir%/}" "$name")$'\n'
+  for i in "${!uploads[@]}"; do
+    batch+=$(printf 'put "%s" "%s/%s"\n' "$BACKUP_DIR/${sources[$i]}" "${rdir%/}" "${uploads[$i]}")$'\n'
   done
   printf '%s' "$batch" | sftp_run > /dev/null
   rc=$?
-  if [ "$rc" -ne 0 ]; then
-    if [ "${#repairs[@]}" -gt 0 ] && [ "$rc" -ne 255 ] && [ "$rc" -ne 124 ]; then
-      fail PartialOnDestination "the destination has an incomplete copy of ${repairs[*]} and does not let this account overwrite it. Delete that file on the destination as an administrator; the next run uploads it whole. sftp said: $(tail -c 200 "$errlog")"
-    fi
-    classify_and_fail "$rc" "uploading ${uploads[*]}"
-  fi
+  [ "$rc" -eq 0 ] || classify_and_fail "$rc" "uploading ${uploads[*]}"
 
   # Nothing else can confirm the transfer, so compare sizes with a fresh listing.
   list_remote
-  for name in "${uploads[@]}"; do
-    want=$(wc -c < "$BACKUP_DIR/$name" | tr -d ' ')
-    [ "${remote[$name]:-missing}" = "$want" ] \
-      || fail SizeMismatch "$name is ${remote[$name]:-missing} bytes on the destination, expected $want"
+  for i in "${!uploads[@]}"; do
+    want=$(wc -c < "$BACKUP_DIR/${sources[$i]}" | tr -d ' ')
+    [ "${remote[${uploads[$i]}]:-missing}" = "$want" ] \
+      || fail SizeMismatch "${uploads[$i]} is ${remote[${uploads[$i]}]:-missing} bytes on the destination, expected $want"
   done
+  if [ "$stepped" -gt 0 ]; then
+    jlog info copy_stepped_over "count=$stepped" "detail=short objects from interrupted uploads were left in place; prune.sh clears them"
+  fi
 fi
 
 task_finish "$id" succeeded || jlog warning copy_bookkeeping_failed "detail=copy done but task_runs was not updated"
-jlog info copy_succeeded "host=$BACKUP_SSH_HOST" "uploaded=${#uploads[@]}" "repaired=${#repairs[@]}" "skipped=$skipped"
+jlog info copy_succeeded "host=$BACKUP_SSH_HOST" "uploaded=${#uploads[@]}" "stepped_over=$stepped" "skipped=$skipped"
 
 # The external monitor hears about a successful off-box copy. If these pings stop, it alerts: that is the
 # missed-run signal, and it lives outside this machine. The URL is a credential and is never logged.

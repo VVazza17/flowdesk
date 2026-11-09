@@ -823,3 +823,41 @@ permissions have never run. They are written from Microsoft's documentation. The
 and `verify-destination.sh` is the instrument. Sources: Microsoft's OpenSSH Server configuration page (chroot is
 SFTP-only; unsupported keywords; `AuthorizedKeysFile` and administrator key rules), WinSCP's FAQ (drive paths as
 `/X:/...`), the Win32-OpenSSH issue tracker and an SSH.NET discussion (chroot problems).
+
+## 2026-11-09 — M2 slice 2, follow-up: retries are new objects; the unchrooted account reaches more than the backups
+
+**Retry shape (Kyle's question: can an interrupted upload be stepped over instead of needing an administrator?).
+Yes, and it is built and tested.** Write-once forbids reopening a file, not creating one. A backup now counts as
+copied when the destination holds an object of that backup at the same size as the local file. If none does, the
+copy creates a NEW object, `<db>_<stamp>.r<N>.tar.age` (N one above the highest already there), and leaves the short
+one alone. So the chain never stalls and no administrator step is needed; `PartialOnDestination` is gone as an
+error class. The copy never overwrites, under any permission variant: one code path. Retention
+(`retention_delete`) was taught the names: it keeps the highest-numbered object of each backup and deletes the lower
+ones, which is correct because a retry is only made when every lower object is short; ordering is numeric (r10 beats
+r9). Tested by `infra/smoke-m2-slice2.sh` on a no-delete destination (50-byte object left, complete `r1` beside it,
+nothing more on the next run) and on a write-once one (plain 50 bytes, `r1` 80 bytes, complete `r2`; a direct
+overwrite attempt confirmed refused), a retry object restores, a 50-byte object is refused by `age` before it can
+reach a database and creates no database. Self-test: 30 assertions.
+Costs: litter on a destination nothing prunes yet (documented), and one known edge in retention (the newest backup of
+a day having only short objects at the moment prune runs would let an older same-day backup go). Bug on the way: my
+loop reused the variable that held the ssh destination for the object name, so sftp tried to connect to a host named
+after the file ("Connection closed", exit 255); found by tracing the script in isolation.
+
+**The Users-group question (Kyle: can flowdesk-backup be removed from Users, closing most of the unchrooted gap?).
+Partly answerable, and the exposure is bigger than I said.**
+- *Does Windows OpenSSH need `Users` membership to authenticate?* **Not established.** Microsoft's documentation does
+  not say. The one relevant Win32-OpenSSH discussion only has a commenter who believes sshd does a network logon
+  (which the default "Access this computer from the network" right grants to Everyone) and a reply that sshd's
+  configuration governs access; neither was verified. It is a two-minute test on the desktop, with a one-line
+  fallback, and the docs now say to try it (step 2, step 7).
+- *Would removing it close most of the gap?* **No.** Measured on this laptop's default Windows 10 layout
+  (`infra/backup/acl-survey.ps1`): removal drops the account's reads of `C:\Windows`, Program Files and ProgramData,
+  but `Authenticated Users`, which every account holds, has **Modify on anything created directly under a drive
+  root** (`Authenticated Users:(OI)(CI)(IO)(M)`, inherited by new folders). 17 of this laptop's 20 top-level folders
+  carry it. So an SFTP-only account without a chroot can read, change and delete ordinary top-level folders whatever
+  groups it is in.
+- **Correction to my own earlier text:** I wrote that the account "could not write outside the backup folder". For
+  top-level folders on a default install that was wrong; `docs/BACKUP.md` ("What the account can reach", "Limits")
+  and `CLAUDE.md` now say so. What would close it: a chroot (the real fix; reported flaky on Windows, so a guarded
+  trial with a config backup and `sshd -t`), or removing `Authenticated Users` from the top-level folders that
+  matter, or accepting it with the port off the internet. Undecided; the desktop's real layout is the input.

@@ -60,6 +60,23 @@ prune_dir "$tmp" 14 8 > /dev/null
 check "pruning twice changes nothing" 19 "$(ls "$tmp" | grep -c 'tar.age$')"
 rm -rf "$tmp"
 
+echo "-- retry objects (an interrupted upload is stepped over, then pruned)"
+check "a retry name is read as the same backup" "$(name_epoch flowdesk_20261108T033000Z.tar.age)" "$(name_epoch flowdesk_20261108T033000Z.r2.tar.age)"
+tmp=$(mktemp -d)
+for n in flowdesk_20261108T030000Z.tar.age flowdesk_20261108T030000Z.r1.tar.age flowdesk_20261108T030000Z.r2.tar.age \
+  flowdesk_20261107T030000Z.tar.age \
+  flowdesk_20261106T030000Z.r9.tar.age flowdesk_20261106T030000Z.r10.tar.age \
+  flowdesk-probe-20261108T030000Z.tar.age flowdesk_20261108T030000Z.r.tar.age flowdesk_20261108T030000Z.rx.tar.age; do
+  touch "$tmp/$n"
+done
+doomed=$(ls "$tmp" | retention_delete 14 8)
+check "of a backup's objects only the highest-numbered survives" "flowdesk_20261108T030000Z.r1.tar.age
+flowdesk_20261108T030000Z.tar.age" "$(printf '%s\n' "$doomed" | grep '20261108T030000Z' | sort)"
+check "r10 outranks r9 (numeric, not text, order)" "flowdesk_20261106T030000Z.r9.tar.age" "$(printf '%s\n' "$doomed" | grep '20261106')"
+check "a backup with only its plain name is untouched" 0 "$(printf '%s\n' "$doomed" | grep -c '20261107')"
+check "probe files and malformed names are never named" 0 "$(printf '%s\n' "$doomed" | grep -cE 'probe|\.r\.tar|\.rx\.')"
+rm -rf "$tmp"
+
 echo "-- the recipients file"
 r=$(mktemp)
 printf '# only a comment\n# age1abc\n' > "$r"
