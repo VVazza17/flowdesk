@@ -1,0 +1,8 @@
+# The age PUBLIC keys that scheduled backups are encrypted to. One per line, each starting "age1".
+# A public key is safe to commit: it can encrypt, never decrypt. The matching private key never lives on
+# this machine (it is made on the desktop and kept in the password manager). Setup: docs/BACKUP.md
+#
+# Until a real key is here the backup refuses to run and records a failure. It never writes an
+# unencrypted copy instead.
+#
+# age1....

@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Response
 from app import settings
 from app.deps import get_deployment_mode, get_now, get_probes, get_started_at
 from app.services import health as svc
+from app.tasks.names import BACKUP, BACKUP_COPY
 
 log = structlog.get_logger(__name__)
 
@@ -74,9 +75,21 @@ async def providers(
 
 
 @router.get("/data")
-async def data(response: Response, probes: Probes, mode: Mode) -> dict[str, Any]:
-    state, failure = await _from_postgres(response, "data", probes.data_state)
-    if failure is not None or state is None:
+async def data(
+    response: Response,
+    probes: Probes,
+    now: Annotated[datetime, Depends(get_now)],
+    mode: Mode,
+) -> dict[str, Any]:
+    async def load() -> tuple[dict[str, list[dict[str, Any]]], dict[str, datetime | None]]:
+        state = await probes.data_state()
+        # The newest *success* of each backup step, which the latest-run rows cannot give.
+        successes = {name: await probes.last_task_success(name) for name in (BACKUP, BACKUP_COPY)}
+        return state, successes
+
+    loaded, failure = await _from_postgres(response, "data", load)
+    if failure is not None or loaded is None:
         return failure or {"status": "unavailable", "error": "NoResult"}
-    body = svc.assemble_data(state)
+    state, successes = loaded
+    body = svc.assemble_data(state, now, successes, settings.backup_stale_after())
     return body if mode == "private" else svc.redact_data(body)

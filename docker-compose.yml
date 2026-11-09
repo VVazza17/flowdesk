@@ -9,6 +9,12 @@ x-api-env: &api-env
   # The API judges the worker canary's staleness, Beat schedules it: one variable feeds both, so they
   # cannot disagree about how often it runs (app/settings.py).
   CANARY_INTERVAL_SECONDS: ${CANARY_INTERVAL_SECONDS:-60}
+  # How old the last backup may be before /health/data calls it stale (it never touches /health/ready).
+  BACKUP_STALE_AFTER_HOURS: ${BACKUP_STALE_AFTER_HOURS:-36}
+
+# The Postgres image is defined once, here. The backup container is built FROM it so its pg_dump is the
+# server's own version, and records it in each manifest (the version trap, docs/BACKUP.md).
+x-postgres-image: &postgres-image timescale/timescaledb:2.31.0-pg16
 
 x-api-base: &api-base
   build: ./backend
@@ -27,7 +33,7 @@ services:
   postgres:
     # DECISION: exact tag, not latest-pg16. Verified with `docker buildx imagetools inspect`
     # to publish linux/amd64 and linux/arm64 (§13 targets an Oracle ARM VM).
-    image: timescale/timescaledb:2.31.0-pg16
+    image: *postgres-image
     environment:
       POSTGRES_USER: ${POSTGRES_USER:?set in .env}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
@@ -117,6 +123,62 @@ services:
       disable: true
     restart: unless-stopped
 
+  # Scheduled, encrypted backups with an off-box copy (M2 slice 2, IDEA-029). A container, like the
+  # heartbeat sender, so that what it does is recorded in task_runs and visible on /health/data: a host
+  # scheduler would be a second system none of our machinery sees. No ports, no profile, no depends_on
+  # (Postgres being down is a failed attempt that is retried, not a reason to refuse to start).
+  # What it needs from you, all in .env and all outside git: docs/BACKUP.md.
+  backup:
+    build:
+      context: ./infra/backup
+      args:
+        POSTGRES_IMAGE: *postgres-image
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:?set in .env}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      PGDATABASE: ${POSTGRES_DB:?set in .env}
+      POSTGRES_IMAGE: *postgres-image
+      TZ: ${BACKUP_TZ:-America/New_York}
+      BACKUP_AT: ${BACKUP_AT:-03:00}
+      BACKUP_RETRY_MINUTES: ${BACKUP_RETRY_MINUTES:-15}
+      BACKUP_KEEP_DAILY: ${BACKUP_KEEP_DAILY:-14}
+      BACKUP_KEEP_WEEKLY: ${BACKUP_KEEP_WEEKLY:-8}
+      # Blank host = no off-box copy: recorded as not_configured on /health/data, never as a success.
+      BACKUP_SSH_HOST: ${BACKUP_SSH_HOST:-}
+      BACKUP_SSH_USER: ${BACKUP_SSH_USER:-}
+      BACKUP_SSH_PORT: ${BACKUP_SSH_PORT:-22}
+      BACKUP_SSH_PATH: ${BACKUP_SSH_PATH:-.}
+      BACKUP_PING_URL: ${BACKUP_PING_URL:-}
+    volumes:
+      # The encrypted backups kept locally. `docker compose down -v` wipes them with the database; the
+      # off-box copy is what survives that.
+      - backups:/backups
+      # Long syntax, because a Windows path like C:/Users/... breaks the short form's colon parsing. The
+      # default is an empty committed file, so an unset variable mounts nothing useful and ssh reports
+      # "no SSH key" instead of Docker creating a directory by that name.
+      - type: bind
+        source: ${BACKUP_SSH_KEY_FILE:-./infra/backup/unset}
+        target: /mnt/ssh_key
+        read_only: true
+      - type: bind
+        source: ${BACKUP_SSH_KNOWN_HOSTS_FILE:-./infra/backup/unset}
+        target: /mnt/known_hosts
+        read_only: true
+      - type: bind
+        source: ${BACKUP_RECIPIENTS_FILE:-./infra/backup/recipients.txt}
+        target: /etc/backup/recipients.txt
+        read_only: true
+    # Plaintext dumps exist only in /tmp for the length of one backup, and /tmp is memory. The base image
+    # declares its data directory a volume; this stops Docker creating an anonymous one for it.
+    tmpfs:
+      - /tmp
+      - /var/lib/postgresql/data
+    # The image's own healthcheck belongs to a database server. The signal for this service is task_runs.
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+
   heartbeat:
     # External dead-man sender (ADR-0008). No profile: it runs under private and public alike. Not
     # in §13's service list (IDEA-031). No ports: it only makes outbound calls, which is the point
@@ -136,3 +198,4 @@ services:
 
 volumes:
   pgdata:
+  backups:

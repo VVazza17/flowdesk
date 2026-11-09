@@ -11,13 +11,20 @@ from sqlalchemy import insert, update
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.models.ops import TaskRun
+from app.tasks.names import STATUS_FAILED, STATUS_RUNNING, STATUS_SKIPPED, STATUS_SUCCEEDED
 
-# DECISION: §8 gives task_runs.status no vocabulary (IDEA-022), so this is the stopgap, TEXT with no
-# CHECK like the other ops tables. `completed_at` is when the run finished, whichever way it ended;
-# only status = 'succeeded' counts as a completion for health.
-STATUS_RUNNING = "running"
-STATUS_SUCCEEDED = "succeeded"
-STATUS_FAILED = "failed"
+__all__ = [
+    "STATUS_FAILED",
+    "STATUS_RUNNING",
+    "STATUS_SKIPPED",
+    "STATUS_SUCCEEDED",
+    "run_recorded",
+    "utcnow",
+]
+
+# DECISION: §8 gives task_runs.status no vocabulary (IDEA-022), so the values in app.tasks.names
+# are the stopgap, TEXT with no CHECK like the other ops tables. `completed_at` is when the run
+# finished, whichever way it ended; only status = 'succeeded' counts as a completion for health.
 
 # error_message can carry connection strings or provider text. It is stored for the operator and is
 # never selected into a /health/* body (assemble_data reports error_class only).

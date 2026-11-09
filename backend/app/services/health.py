@@ -16,7 +16,7 @@ from typing import Any, Protocol
 
 import structlog
 
-from app.tasks.names import CANARY
+from app.tasks.names import BACKUP, BACKUP_COPY, CANARY, STATUS_SKIPPED
 
 log = structlog.get_logger(__name__)
 
@@ -249,8 +249,70 @@ def assemble_providers(
     return {"status": status, "feeds": feeds}
 
 
-def assemble_data(state: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
-    """Pipeline state as recorded; no verdict.
+def classify_backup_task(
+    latest: dict[str, Any] | None,
+    last_success: datetime | None,
+    now: datetime,
+    stale_after: timedelta,
+) -> dict[str, Any]:
+    """One backup step's state, from its newest task_runs row and its newest success.
+
+    `now` is passed in: no clock in the logic.
+
+    ok               a run succeeded within `stale_after`
+    stale            it did, but longer ago than that: runs stopped working or stopped happening
+    never_succeeded  it has run and failed, and has never once succeeded
+    not_configured   the newest run was `skipped`: the step is switched off (no destination set)
+    no_runs          no row at all: the container has not tried yet
+
+    `last_attempt_failed` is separate from the state on purpose: an off-box copy that failed last
+    night is `ok` for as long as an earlier copy is recent enough, and still worth seeing.
+    """
+    out: dict[str, Any] = {
+        "last_success_at": _iso(last_success),
+        "stale_after_seconds": int(stale_after.total_seconds()),
+        "last_attempt_failed": bool(latest and latest.get("status") == "failed"),
+        "last_error_class": latest.get("error_class") if latest else None,
+    }
+    if latest is None and last_success is None:
+        out["state"] = "no_runs"
+    elif latest is not None and latest.get("status") == STATUS_SKIPPED:
+        out["state"] = "not_configured"
+    elif last_success is None:
+        out["state"] = "never_succeeded"
+    else:
+        age = now - last_success
+        out["age_seconds"] = int(age.total_seconds())
+        out["state"] = "ok" if age <= stale_after else "stale"
+    return out
+
+
+def assemble_backups(
+    tasks: list[dict[str, Any]],
+    successes: dict[str, datetime | None],
+    now: datetime,
+    stale_after: timedelta,
+) -> dict[str, Any]:
+    """The two backup steps side by side: `backup` (dump, encrypt, keep locally), `copy` (off-box).
+
+    They are separate so a sleeping destination reads as a failed copy and not as a failed backup.
+    This reports states; it never changes the HTTP status, and it is not in /health/ready, because a
+    stale backup can wait until morning and must not page (docs/BACKUP.md).
+    """
+    by_name = {t["task_name"]: t for t in tasks}
+    return {
+        key: classify_backup_task(by_name.get(name), successes.get(name), now, stale_after)
+        for key, name in (("backup", BACKUP), ("copy", BACKUP_COPY))
+    }
+
+
+def assemble_data(
+    state: dict[str, list[dict[str, Any]]],
+    now: datetime,
+    successes: dict[str, datetime | None],
+    backup_stale_after: timedelta,
+) -> dict[str, Any]:
+    """Pipeline state as recorded. The runs are reported without a verdict; `backups` has states.
 
     # DECISION: this reports and does not judge. §8 gives ingestion_runs/task_runs/backfill_runs
     # no status vocabulary (IDEA-022), so any "failed" test here would be invented.
@@ -260,7 +322,8 @@ def assemble_data(state: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
     # IDEA-024 is resolved the other way, the `backfills` key here and its probe move.
     """
     empty = not any(state.get(k) for k in ("ingestion", "backfills", "tasks"))
-    return {"status": "no_runs" if empty else "reported", **state}
+    backups = assemble_backups(state.get("tasks", []), successes, now, backup_stale_after)
+    return {"status": "no_runs" if empty else "reported", **state, "backups": backups}
 
 
 def redact_providers(body: dict[str, Any]) -> dict[str, Any]:

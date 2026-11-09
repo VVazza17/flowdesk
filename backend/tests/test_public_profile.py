@@ -225,6 +225,9 @@ class SecretProbes:
     async def provider_rows(self) -> list[FeedRow]:
         return [FeedRow("p", "f", None, NOW, SECRET)]
 
+    async def last_task_success(self, task_name: str) -> datetime | None:
+        return None  # /health/data asks for the backup steps' newest successes
+
     async def data_state(self) -> dict[str, list[dict[str, Any]]]:
         return {
             "ingestion": [{"provider": "p", "feed": "f", "status": "failed", "error": SECRET}],

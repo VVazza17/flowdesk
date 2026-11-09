@@ -23,6 +23,8 @@ cleanup() {
   docker rm -f "$API" "$TARGET" >/dev/null 2>&1 || true
   docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
     -c "DROP DATABASE IF EXISTS \"$SRC\" WITH (FORCE)" >/dev/null 2>&1 || true
+  # Put the writers back (see where they are stopped, below).
+  docker compose start worker beat backup >/dev/null 2>&1 || true
   rm -rf "$TMP_ROOT"
   exit "$rc"
 }
@@ -121,6 +123,12 @@ until docker exec "$TARGET" pg_isready -q -h 127.0.0.1 -U "$POSTGRES_USER" -d "$
   [ $SECONDS -lt $deadline ] || fail "target container not ready after ${WAIT_TIMEOUT}s"
   sleep 1
 done
+
+# DECISION: the background writers are paused for the rest of this smoke. It asserts the REAL database is
+# unchanged, and since M2 the stack writes to it on its own: the worker's canary every minute (slice 1) and
+# the backup service's task_runs rows (slice 2). Left running, a tick between the dump and a comparison
+# would fail the round trip at random. The exit trap starts them again.
+docker compose stop worker beat backup >/dev/null
 
 main_before=$(fingerprint main "$POSTGRES_DB")
 

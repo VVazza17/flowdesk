@@ -707,7 +707,7 @@ Resolve before the first premium-module template is written (§7.5).
 
 ## IDEA-029: Nightly backups have no owner, no retention rule and no off-box copy
 
-**Status:** Open. Design settled 2026-11-08, built in M2 slice 2. Must be closed before M2 slice 6 persists its first scheduled bar (corrected 2026-11-08: this line said "before M2 writes its first persistent observation"; see the section below).
+**Status:** Open. Design settled 2026-11-08 and built in M2 slice 2 (the `backup` service, `docs/BACKUP.md`), but **not closed**: it closes when a real unattended dump lands on the real desktop and restores from there. Must be closed before M2 slice 6 persists its first scheduled bar (corrected 2026-11-08: this line said "before M2 writes its first persistent observation"; see the section below).
 **Raised:** 2026-11-04 (M1 slice 9)
 
 ### The proposal

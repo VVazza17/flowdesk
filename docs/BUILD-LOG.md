@@ -707,3 +707,51 @@ dev-only dependency so mypy stays strict without an ignore.
 **Not done, deliberately.** Sweeping `running` rows whose process died (nothing long-running exists yet; slice
 10), and protecting the canary from being starved by a long task (revisit with the first one). Both are written
 up in `docs/HEALTH.md` under "What it does not catch yet". The smoke is not in CI, like smokes 6, 7 and 10.
+
+## 2026-11-09 — M2 slice 2: scheduled encrypted backups (built, NOT closed)
+
+**Built.** A `backup` compose service (`infra/backup/`, built FROM the same Postgres image so `pg_dump` is the
+server's version). A shell scheduler, not Celery Beat, writing the same `task_runs` table. Two independent
+steps: `ops.backup` (dump, `pg_restore --list` check, manifest, tar, `age` to the committed public key, kept in
+the `backups` volume, 14 daily + 8 weekly retention) and `ops.backup_copy` (rsync over SSH, `--ignore-existing`,
+strict host-key checking against a pinned `known_hosts`, then a ping to `BACKUP_PING_URL`). A sleeping destination
+is a failed copy, never a failed backup, and the copy catches up by itself. Catch-up after sleep is one rule: due
+when the newest backup is older than the latest slot. Fails closed with no real key in `recipients.txt` (the
+committed placeholder), which is the state of the dev stack today. `/health/data` gains `backups.backup` and
+`backups.copy` with states; neither touches `/health/ready` (Kyle's call). `infra/restore-backup.sh` decrypts with
+the private key (host `age` or the one in the image) and hands the pair to `restore.sh` unchanged.
+
+**Verified** (`infra/smoke-m2-slice2.sh`, against a throwaway sshd whose `authorized_keys` line is the documented
+one): encrypted file is an age file with no plaintext header and no plaintext left behind; the copy lands; a second
+copy sends nothing; the landed file restores with the private key only and not with an SSH key; the restricted key
+is refused a shell, a pull and `..` **by rrsync's own messages** (so a probe failing for another reason cannot pass),
+and an absolute path is anchored inside the directory; no recipient writes nothing and records `NoRecipient`; a
+stopped destination fails the copy but not the backup; the scheduler backs up once, copies after the destination
+returns and pings; unconfigured is `not_configured`. Lint, mypy, 230 tests, smokes 6, 7, 8, 9, 10 and M2 slice 1 pass.
+
+**Not verified, and why the slice is open.** Nothing here has touched the real desktop. IDEA-029 closes only when a
+real unattended dump lands there and restores from there (`docs/BACKUP.md`, "Closing the slice"). The desktop's OS
+and whether its SSH server runs are unknown; rrsync needs a Unix-style receiver (Windows would need WSL or an sftp
+variant, neither built).
+
+**Found along the way.**
+- **Smoke 9 had been broken since slice 1** and I did not rerun it then. It fingerprints the real database before
+  and after, and the canary writes `task_runs` every minute, so the comparison failed (and was racy). Fixed by
+  pausing the worker, Beat and backup service for its duration; the exit trap restarts them.
+- `docker.exe` needs Windows paths for `docker cp` under `MSYS_NO_PATHCONV=1`; busybox has no `httpd` applet
+  (`busybox-extras`); a paused container's `Status` is `paused` but `Running` is true (slice 1).
+- The backup image is not covered by the CI vulnerability scan, which builds `backend/` only. Its apk packages float.
+
+**Transport decision, 2026-11-09 (Kyle): this commit is the rsync/rrsync build as verified; the copy step is
+replaced in the next change.** The desktop turned out to be Windows. rsync and rrsync need a Unix-style receiver,
+which Windows does not have, so the receiving side moves to **sftp over Windows OpenSSH Server**, and the
+write-only restriction moves from rrsync to **NTFS permissions on a dedicated local account**.
+
+Why not WSL2 (the other way to keep rsync): sshd inside WSL2 does not start by itself after a reboot; it needs a
+Task Scheduler entry to bring it up. A backup destination that silently stops accepting backups after a reboot is
+the failure you only find out about when you need the backup. OpenSSH Server on Windows is a native service with
+start type Automatic, so it comes back on its own.
+
+What survives unchanged: the container and its scheduler, local-first encryption, retention, fail-closed with no
+recipient, catch-up after sleep, `task_runs` and `/health/data`, `restore-backup.sh`, the missed-run ping. What
+moves is `run-copy.sh` and the receiving-side setup in `docs/BACKUP.md`.

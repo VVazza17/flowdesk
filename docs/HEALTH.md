@@ -107,6 +107,30 @@ these tables no status vocabulary (IDEA-022). The one exception is `task_runs`, 
 `running` / `succeeded` / `failed` (a stopgap, also under IDEA-022), and the worker check reads `succeeded`.
 `tasks[]` therefore shows the canary's latest run, and `error_class` only (never `error_message`).
 
+### `backups` (M2 slice 2)
+
+`GET /health/data` also carries a `backups` object with the two steps of the scheduled backup, side by side
+(`docs/BACKUP.md`). Unlike the run lists, these have **states**, because "the last backup is three days old" is
+a fact worth stating:
+
+| `state` | Meaning |
+|---|---|
+| `ok` | A run succeeded within `stale_after_seconds` (36 h, `BACKUP_STALE_AFTER_HOURS`) |
+| `stale` | It did, but longer ago than that |
+| `never_succeeded` | It has run and failed, and has never succeeded (e.g. `last_error_class` = `NoRecipient`) |
+| `not_configured` | The newest run was `skipped`: no off-box destination is set. Never a success. |
+| `no_runs` | No row at all: the container has not tried yet |
+
+`backups.backup` is the dump, encrypt and keep-locally step. `backups.copy` is the off-box copy. They are
+separate so that a sleeping desktop reads as `copy.last_attempt_failed: true` with `last_error_class:
+Unreachable` while `backup` stays `ok`. A copy whose last attempt failed is still `ok` while an earlier copy is
+recent enough. Error classes: `NoRecipient`, `DumpFailed`, `DumpUnreadable`, `EncryptFailed`, `ReadFailed`
+(backup); `Unreachable`, `RsyncFailed`, `ConfigInvalid`, `NothingToCopy` (copy).
+
+**This never touches `/health/ready` or the HTTP status.** A stale backup can wait until morning, and anything
+that degrades `ready` pages (ADR-0008 section 4). The page comes from the external monitor noticing the copy's
+pings stop. Both steps appear under `tasks[]` too, as the latest run per task.
+
 **Assumption pending IDEA-024:** backfill progress is read from `backfill_runs` (§16 line 1109).
 §10 line 1003 says it comes from `providers_health`. If IDEA-024 resolves that way, the
 `backfills` key and its query move.
@@ -131,4 +155,5 @@ and `/openapi.json` return 404. Verified by `infra/smoke-slice7.sh` and
 
 - Killing a provider (also in the M1 exit gate, moved to M2's gate by IDEA-032): no provider exists until slice
   4 builds the framework. The worker half is done (slice 1, above).
-- A stale backup on `/health/data`: slice 2.
+- Whether the backup has ever been restored on the real desktop: only the closing drill in `docs/BACKUP.md`
+  tells you; `backups` says whether runs succeed, not whether the files can be read.

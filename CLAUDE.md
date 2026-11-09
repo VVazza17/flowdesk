@@ -48,14 +48,18 @@ records M1 slice 10's heartbeat decisions.
   on any deployed instance (quarterly, and after a provider notice).
 - **Any new `degraded` condition on `/health/ready` also pages the owner** (ADR-0008 section 4). The sender
   pings only on exactly `ok`.
-- **Nothing takes backups automatically yet** (IDEA-029). The scripts exist; no scheduler, retention or
-  off-box copy does. A plain `pg_restore` silently damages hypertables: use `infra/restore.sh`. Settled for
-  M2 slice 2 (2026-11-08): a local dump first, then an encrypted rsync-over-SSH copy to Kyle's desktop as a
-  separate step, so a sleeping desktop is a failed copy and not a failed backup, with catch-up on wake; the
-  key lives in Kyle's password manager and never only on the laptop (the key and the backups never share a
-  single point of failure); 14 dailies plus 8 weeklies, to be revisited when the data volume is real. A stale
-  backup shows on `/health/data` and fires the missed-run signal. It never degrades `/health/ready`, because
-  it can wait until morning and would page.
+- **Scheduled backups are built (M2 slice 2) but the slice is not closed** (IDEA-029). The `backup` compose
+  service dumps nightly (03:00 `America/New_York`, with catch-up after sleep), encrypts with `age` to the
+  public key in `infra/backup/recipients.txt`, keeps 14 dailies plus 8 weeklies locally, and then copies to
+  Kyle's desktop with rsync over a write-only restricted SSH key, as a separate step, so a sleeping desktop is
+  a failed copy and not a failed backup. With no real age key in `recipients.txt` it records `NoRecipient`
+  and writes nothing: **the placeholder is committed, and backups fail closed until Kyle adds the key.** The
+  age private key is made on the desktop and kept in the password manager, never on the laptop. A stale
+  backup shows on `/health/data` (`backups`) and never degrades `/health/ready`; the page is the external
+  monitor missing the copy's pings (`BACKUP_PING_URL`). Proven against a stand-in sshd by
+  `infra/smoke-m2-slice2.sh`. **It closes only when a real unattended dump lands on the real desktop and
+  restores from there** (`docs/BACKUP.md`, "Closing the slice"). A plain `pg_restore` silently damages
+  hypertables: use `infra/restore.sh`, or `infra/restore-backup.sh` for a scheduled backup.
 - **The base image is pinned by digest** (M2 slice 0, 2026-11-08). The `FROM` line in `backend/Dockerfile` is
   the one definition. The CI tooling container, `lock-deps.sh` and the smokes read it through
   `infra/base-image.sh`, and lint fails on a second definition. The base no longer updates itself: the daily
@@ -74,7 +78,8 @@ records M1 slice 10's heartbeat decisions.
   must not pass until killing the worker and a provider each produce a documented health state (add them to
   `docs/HEALTH.md`). The frozen §16 still says the old thing until a correction release. M2 is in progress (slices 0 and 1 done 2026-11-08: the base-image pin, and the Celery worker and Beat with a
   health check keyed on a canary task's recent completions, so a wedged worker degrades `/health/ready` and
-  pages; the worker half of IDEA-032 is therefore done, the provider half is slice 4's; the slice plan
+  pages; the worker half of IDEA-032 is therefore done, the provider half is slice 4's; slice 2, the
+  scheduled backups, is built but open until the desktop drill; the slice plan
   and the decisions behind it are in `docs/BUILD-LOG.md`). M2 builds yfinance, FRED and a fake provider only
   (IDEA-037); the slice 9 number is vacant.
 
@@ -113,8 +118,9 @@ Tracked in `docs/SPEC-DEFECTS.md` (IDEA-013 … IDEA-038). Eight block a milesto
 - **IDEA-029 → blocks M2 slice 6, the first irrecoverable observation.** Backups have no scheduler, retention
   or off-box copy. What a lost machine would erase for good is what only a live run captures: bars as traded
   at the time, and `c_total_return` as it stood on a given day. FRED vintages are not at risk; they can be
-  re-fetched with `output_type=4` (ADR-0003). Slice 2 builds the backups and must close, with a restore drill
-  from the off-box copy, before slice 6 persists its first scheduled bar.
+  re-fetched with `output_type=4` (ADR-0003). Slice 2 has built the backups; it must still close, with a
+  restore drill from the real off-box copy on the real desktop, before slice 6 persists its first scheduled
+  bar. The smoke does not satisfy that.
 - **IDEA-023 → blocks M2 slice 7.** `providers_health` has no quarantine columns, but §6 says quarantine
   counts feed it.
 - **IDEA-034 → blocks M2 slice 6.** `bars` has no `provider/feed/venue_scope` and no provenance or revision
@@ -209,8 +215,10 @@ bash infra/smoke-slice8.sh        # slice 8: every gate green, then each goes re
 bash infra/smoke-slice9.sh        # slice 9: hypertable + aggregate + policies survive a restore; 15 breaks go red
 bash infra/smoke-slice10.sh       # slice 10: pings only on ready=ok, each outage silences them; uses a fake monitor
 bash infra/smoke-m2-slice1.sh     # M2 slice 1: worker stopped/paused, Beat stopped, fresh start, Redis down -> documented states
+bash infra/smoke-m2-slice2.sh     # M2 slice 2: encrypt, restricted-key copy to a stand-in sshd, restore with the private key only
 bash infra/backup.sh              # dump + manifest into dumps/. Restoring and the version trap: docs/BACKUP.md
 bash infra/restore.sh dumps/<name>.dump --db <new-or-empty-db>   # refuses a non-empty target
+bash infra/restore-backup.sh <name>.tar.age --identity <age key> --db <new-or-empty-db>   # a scheduled backup, on the desktop
 bash infra/ci-checks.sh lint      # also: test | audit | license | arm64. Same code ci.yml runs
 bash infra/lock-deps.sh           # after editing backend/requirements*.txt; regenerates the locks
 docker compose down               # add -v to wipe the pgdata volume; inactive profiles are skipped,

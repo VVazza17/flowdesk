@@ -85,3 +85,18 @@ def canary_interval_seconds() -> int:
 
 def worker_stale_after() -> timedelta:
     return timedelta(seconds=canary_interval_seconds() * WORKER_STALE_MULTIPLIER)
+
+
+def backup_stale_after() -> timedelta:
+    """How old the last successful backup (or copy) may be before /health/data calls it stale.
+
+    DECISION: 36 hours. The backup runs daily; the extra twelve hours absorb a laptop that slept
+    through its slot and caught up on waking. It is a statement on /health/data, not a page: a stale
+    backup must not degrade /health/ready. The page comes from the external monitor noticing that
+    the copy's pings stopped (docs/BACKUP.md).
+    """
+    raw = os.environ.get("BACKUP_STALE_AFTER_HOURS", "").strip() or "36"
+    hours = float(raw)
+    if hours <= 0:
+        raise ValueError(f"BACKUP_STALE_AFTER_HOURS must be positive, got {raw!r}")
+    return timedelta(hours=hours)

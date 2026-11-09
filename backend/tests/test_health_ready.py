@@ -60,7 +60,8 @@ class FakeProbes:
     async def last_task_success(self, task_name: str) -> datetime | None:
         if self.worker_error:
             raise self.worker_error
-        return self.last_success
+        # Only the canary has a history here; every other task (the backup steps) has never run.
+        return self.last_success if task_name == "ops.canary" else None
 
     async def data_state(self) -> dict[str, list[dict[str, Any]]]:
         if self.postgres:
@@ -305,7 +306,12 @@ def test_providers_postgres_down_is_503_unavailable() -> None:
 def test_data_empty_is_no_runs() -> None:
     r = client_for(FakeProbes()).get("/health/data")
     assert r.status_code == 200
-    assert r.json() == {"status": "no_runs", "ingestion": [], "backfills": [], "tasks": []}
+    body = r.json()
+    assert body["status"] == "no_runs"
+    assert (body["ingestion"], body["backfills"], body["tasks"]) == ([], [], [])
+    # Backup steps that have never run say so, not omitted. Detail: test_backup_health.py.
+    assert body["backups"]["backup"]["state"] == "no_runs"
+    assert body["backups"]["copy"]["state"] == "no_runs"
 
 
 def test_data_reports_without_judging() -> None:
