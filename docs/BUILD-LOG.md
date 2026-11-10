@@ -883,7 +883,27 @@ and sit within hours of the line on other days. That is the "mute it" pattern. (
    noticed in two days. Costs one failed 20 s connect every 30 min while away.
 2. *Destination reachable from anywhere (Tailscale).* Copies then succeed wherever the laptop has internet, so
    the 12 h grace is realistic again, and the failure modes left are the real ones (desktop asleep, key expired).
-   Details and what changes: see the reply recorded in the session; summary below.
+   What it changes:
+   - *Code and compose:* nothing. `BACKUP_SSH_HOST` is only a string; the 20 s `ConnectTimeout` covers a relayed
+     first connection.
+   - *`.env`:* `BACKUP_SSH_HOST=<desktop>.<tailnet>.ts.net` (or the desktop's 100.x address, which is stable per
+     device). `known_hosts` is regenerated with `ssh-keyscan` using that exact string; the sshd host key itself does
+     not change. If a container cannot resolve the name, use the 100.x address or give the service
+     `dns: [100.100.100.100]`; neither is tested.
+   - *Runbook:* "same address" (step 3, the DHCP reservation) is replaced by the tailnet name. Add: Tailscale on both
+     machines; Run unattended on the desktop; disable key expiry on the desktop (and decide for the laptop), or the
+     copy dies silently at 180 days; the desktop must not sleep while plugged in, because it is now the dominant
+     failure; the sshd firewall rule is scoped to `100.64.0.0/10` on the profile the Tailscale adapter gets, and the
+     LAN rule is removed, so port 22 is closed to the LAN as well as the internet; a tailnet ACL allowing only
+     laptop -> desktop:22; verify from inside the container, not just the host.
+   - *Risk model (reverses the "useless off my network" premise for one case):* a stolen laptop carries both the key
+     and tailnet membership, so from anywhere it reaches the desktop's `Authenticated Users`-writable folders until
+     the device is removed in the admin console. A new runbook step ("laptop lost: remove it from the tailnet
+     first"). With Tailscale the ACL/survey work is no longer optional.
+   - *Monitor:* 12 h grace becomes realistic again. `/health/data` staleness (36 h) is unchanged.
+   - *Cost and flags:* $0 within the Personal plan, so `ZERO_COST_MODE` is not touched. It is also free of a code
+     flag: if Tailscale goes away, point `BACKUP_SSH_HOST` back at the LAN name. A deploy on the Oracle ARM VM would
+     join the same tailnet and use the same config.
 
 **Tailscale, facts checked 2026-11-10:** Personal plan is $0, non-commercial, up to 6 users, unlimited user devices,
 ACLs and MagicDNS included (tailscale.com/pricing). Node keys expire after 180 days by default and an expired device
