@@ -40,6 +40,12 @@ copy_delay=$RETRY_BASE
 next_backup_try=0
 next_copy_try=0
 copy_pending=1   # on start: a restart is also a catch-up, and rsync only sends what is missing
+# DECISION: HostKeyChanged (exit 76) tells the monitor once per occurrence, held here in memory like the other
+# flags, and does not lean on the provider to deduplicate. An occurrence ends with the next successful copy. The
+# flag is set only when the monitor ACCEPTED the signal, so a signal lost to a bad network is tried again on the
+# next attempt. A container restart forgets it and may signal once more. Not AuthRefused (misconfiguration, fires
+# legitimately while the desktop is set up) and not /health/ready (ADR-0008 section 4).
+hostkey_signalled=0
 
 while [ "$stop" -eq 0 ]; do
   now=$(date +%s)
@@ -70,7 +76,16 @@ while [ "$stop" -eq 0 ]; do
     if [ "$rc" -eq 0 ]; then
       copy_pending=0
       copy_delay=$RETRY_BASE
+      hostkey_signalled=0
     else
+      if [ "$rc" -eq "$EX_HOSTKEY" ] && [ "$hostkey_signalled" -eq 0 ] && [ -n "${BACKUP_PING_URL:-}" ]; then
+        if signal_monitor_fail "$BACKUP_PING_URL"; then
+          hostkey_signalled=1
+          jlog warning copy_fail_signalled "detail=HostKeyChanged: the monitor was told, once, until a copy succeeds"
+        else
+          jlog warning copy_fail_signal_failed "detail=HostKeyChanged, and the monitor did not accept the failure signal; will try again"
+        fi
+      fi
       next_slot=$(( $(last_slot_epoch "$now" "$(local_seconds_of_day)" "$slot") + 86400 ))
       read -r next_copy_try copy_delay < <(retry_plan "$rc" "$now" "$copy_delay" "$RETRY_BASE" "$RETRY_CAP" "$RETRY_LONG_CAP" "$next_slot")
       if [ "$rc" -eq "$EX_CONFIG" ]; then

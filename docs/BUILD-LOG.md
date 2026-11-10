@@ -1005,3 +1005,28 @@ long cap 600 s: a missing key was tried 1 time, an unreachable host 9, a refused
 - Not tested against Windows OpenSSH Server's wording (the stand-in is OpenSSH 10.2 on Linux, and the message text
   comes from the *client*, which is what is classified, but the server's `Permission denied (...)` method list will
   differ). `verify-destination.sh` on the real desktop is still the check.
+
+### M2 slice 2: a changed host key pages at once; a bare IP is refused (2026-11-10)
+
+This supersedes the first two "Not done" bullets above.
+
+- **`HostKeyChanged` now tells the monitor immediately**, by POSTing to `BACKUP_PING_URL` + `/fail`, and not through
+  `/health/ready` (readiness is about serving requests, and degrading it pages: ADR-0008 section 4). It is sent **at
+  most once per occurrence**, held in the scheduler's memory (`backup-loop.sh`, `hostkey_signalled`) like the
+  one-per-slot flag, because the provider's deduplication was never verified. An occurrence ends with the next
+  successful copy; a container restart forgets it; a signal the monitor did not accept is retried. Each attempt is a
+  new process, so `run-copy.sh` exits 76 for this class and the scheduler does the telling.
+- **"No <type> host key is known for ..." is `ConfigInvalid`** (exit 78), not `HostKeyChanged`: nothing was pinned, so
+  nothing can be impersonating it, and the drill would have paged. Exception, decided here: OpenSSH prints the same
+  line when the host has pinned keys but the server offers a different key type, which is a mismatch. So
+  `classify_ssh_failure` asks `ssh-keygen -F` whether `known_hosts` holds the host (as `[host]:port` off port 22);
+  if so it is `HostKeyChanged`. `AuthRefused` does not signal: it fires legitimately during desktop setup.
+- **A bare IP in `BACKUP_SSH_HOST` is refused** by `run-copy.sh` (`ConfigInvalid`) and `verify-destination.sh`, so the
+  false `HostKeyChanged` on a foreign network cannot be configured in. A hosts-file or `extra_hosts` entry that maps
+  the name to the IP would defeat it; the code cannot see that, and `docs/HEALTH.md` says so.
+- **Smoke, run 2026-11-10: passed.** 11 changed-key failures produced exactly 1 signal; 5 refused-key and 1
+  unpinned-host failures produced none. The first run failed usefully: the stand-in monitor's static files answer a POST
+  with 501, so the signal was (correctly) retried every attempt; the sink now has a CGI endpoint that answers 200.
+- **Still unproven:** that the real provider accepts `POST .../fail` on the check's ping URL (healthchecks.io
+  documents it), that the container resolves the desktop's name at home, and everything against Windows OpenSSH
+  Server. All three are the desktop drill's.

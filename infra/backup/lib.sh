@@ -85,7 +85,10 @@ next_delay() {
 # Two exit codes, borrowed from sysexits.h, tell the scheduler how to retry. Everything else that fails exits 1.
 #   75 EX_TEMPFAIL  a retry soon can change the outcome (the laptop comes home; Postgres finishes restarting)
 #   78 EX_CONFIG    no number of attempts fixes it: a file nobody has edited, a setting nobody has changed
+#   76 EX_PROTOCOL  a pinned host key did not match. Retried like any long-cap failure; it has its own number only so
+#                   the scheduler can tell the monitor once (backup-loop.sh), since each attempt is a new process
 EX_TRANSIENT=75
+EX_HOSTKEY=76
 EX_CONFIG=78
 
 # Which exit code a failure class gets.   exit_code_for_class CLASS
@@ -97,19 +100,25 @@ EX_CONFIG=78
 exit_code_for_class() {
   case $1 in
     Unreachable) echo "$EX_TRANSIENT" ;;
+    HostKeyChanged) echo "$EX_HOSTKEY" ;;
     NoRecipient | ConfigInvalid | BadDatabaseName) echo "$EX_CONFIG" ;;
     *) echo 1 ;;
   esac
 }
 
 # What an ssh/sftp failure was, from its exit code and the text it wrote to stderr (a file).
-#   classify_ssh_failure RC STDERR_FILE      prints a class
+#   classify_ssh_failure RC STDERR_FILE [KNOWN_HOSTS_FILE HOST PORT]      prints a class
 #
 # sftp exits 255 when ssh itself failed, 124 when our `timeout` killed it, and anything else when the SFTP
 # session ran and an operation failed. Only 255 is read for text.
-#   HostKeyChanged  the host key is not the pinned one, or no pinned key exists for this name. Either way this
-#                   machine cannot tell the desktop from something else, and that is a security signal, not
-#                   an outage.
+#   HostKeyChanged  a key IS pinned for this host and what answered did not match it. Something other than the
+#                   desktop may have answered: a security signal, not an outage.
+#   ConfigInvalid   "No <type> host key is known for <host>" and NOTHING is pinned for the host: setup state, the
+#                   key was never pinned, so nothing can be impersonating it. The pinning step in docs/BACKUP.md.
+#                   DECISION: OpenSSH prints the same line when the host HAS pinned keys but the server offers a
+#                   type that is not among them, which is a mismatch. So the optional known_hosts arguments
+#                   decide: if ssh-keygen finds the host in the file, it is HostKeyChanged. Without them the
+#                   line reads as setup state.
 #   AuthRefused     the server answered and refused the key.
 #   Unreachable     everything else: resolution failures, timeouts, no route, connection refused and closed,
 #                   AND any message not recognised. DECISION: OpenSSH's wording is not a stable interface, so
@@ -119,19 +128,61 @@ exit_code_for_class() {
 # phrase quoted in the middle of some other message does not count. This needs ssh at LogLevel=ERROR: with -q
 # every failure collapses to "Connection closed" and nothing here could tell them apart.
 classify_ssh_failure() {
-  local rc=$1 file=$2
+  local rc=$1 file=$2 kh=${3:-} host=${4:-} port=${5:-22}
   case $rc in
     255) ;;
     124) echo Unreachable; return 0 ;;
     *) echo SftpFailed; return 0 ;;
   esac
-  if grep -Eq '^Host key verification failed\.|^@ +WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!|^Host key for .+ has changed|^No [A-Za-z0-9-]+ host key is known for ' "$file" 2> /dev/null; then
+  # Checked first: this line is followed by "Host key verification failed.", which would otherwise match below.
+  if grep -Eq '^No [A-Za-z0-9-]+ host key is known for ' "$file" 2> /dev/null; then
+    if [ -n "$kh" ] && [ -n "$host" ]; then
+      [ "$port" = 22 ] || host="[$host]:$port"
+      if ssh-keygen -F "$host" -f "$kh" > /dev/null 2>&1; then echo HostKeyChanged; return 0; fi
+    fi
+    echo ConfigInvalid
+  elif grep -Eq '^Host key verification failed\.|^@ +WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!|^Host key for .+ has changed' "$file" 2> /dev/null; then
     echo HostKeyChanged
   elif grep -Eq '^[^ ]+: Permission denied \(' "$file" 2> /dev/null; then
     echo AuthRefused
   else
     echo Unreachable
   fi
+}
+
+# Is HOST a bare IP address rather than a name?   host_is_bare_ip HOST   (true = bare IP)
+# DECISION: BACKUP_SSH_HOST must be a name, because HostKeyChanged pages the owner at once (run-copy.sh). A private
+# IP is not an identity: on another network the same address belongs to someone else's machine, the pinned key
+# does not match, and the owner is paged for going to work. A name that resolves only at home is Unreachable
+# everywhere else, which is the quiet answer. So: anything with a colon (IPv6, bracketed or not) or made only of
+# digits and dots (IPv4, in any spelling) is refused.
+host_is_bare_ip() {
+  case $1 in
+    '') return 1 ;;
+    *:* | \[*) return 0 ;;
+    *[!0-9.]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+# Said wherever a bare IP is refused.
+bare_ip_message() { # HOST
+  printf 'BACKUP_SSH_HOST is a bare IP address (%s). Use a hostname that resolves only on your home network. On any other network that address can belong to a stranger'"'"'s machine, which reads as a changed host key and pages you. A name that does not resolve away from home is just Unreachable, the quiet answer. A hosts-file or extra_hosts entry that maps the name to the IP defeats this and is the same thing as a bare IP.' "$1"
+}
+
+# Tell the monitor now. POSTs to the ping URL's /fail. Prints nothing (the URL is a credential); returns 0 only if the
+# monitor accepted it.   signal_monitor_fail URL
+signal_monitor_fail() {
+  curl -fsS -m 10 --retry 2 -o /dev/null -d HostKeyChanged "$(fail_ping_url "$1")" 2> /dev/null
+}
+
+# The monitor's failure endpoint for a ping URL: /fail appended to the path, ahead of any query string.
+#   fail_ping_url https://hc-ping.com/<uuid>  ->  https://hc-ping.com/<uuid>/fail
+fail_ping_url() {
+  local u=$1 base query=""
+  base=${u%%\?*}
+  [ "$base" = "$u" ] || query="?${u#*\?}"
+  printf '%s/fail%s' "${base%/}" "$query"
 }
 
 # After a failed attempt: when to try again, and the delay to carry into the next failure. Prints

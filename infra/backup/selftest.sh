@@ -105,9 +105,20 @@ Connection closed'
 check "a changed host key" HostKeyChanged "$(cls 255 "$changed")"
 check "only the last line of that banner (what a 300-byte tail keeps)" HostKeyChanged "$(cls 255 'Host key verification failed.
 Connection closed')"
-check "no pinned key for this name (unverifiable)" HostKeyChanged "$(cls 255 'No ED25519 host key is known for sink and you have requested strict checking.
+check "no key pinned for this name is setup state, not an impersonation" ConfigInvalid "$(cls 255 'No ED25519 host key is known for sink and you have requested strict checking.
 Host key verification failed.
 Connection closed')"
+kh=$(mktemp); ssh-keygen -q -t ed25519 -N "" -f "$kh.k"; echo "sink $(cut -d' ' -f1,2 "$kh.k.pub")" > "$kh"; echo "[sink]:2222 $(cut -d' ' -f1,2 "$kh.k.pub")" >> "$kh"
+nokey='No RSA host key is known for sink and you have requested strict checking.
+Host key verification failed.
+Connection closed'
+f=$(mktemp); printf '%s
+' "$nokey" > "$f"
+check "that same line, but a key IS pinned for the host (other key type offered): a mismatch" HostKeyChanged "$(classify_ssh_failure 255 "$f" "$kh" sink 22)"
+check "a key is pinned for sink, none for elsewhere: setup state" ConfigInvalid "$(classify_ssh_failure 255 "$f" "$kh" elsewhere 22)"
+check "a non-default port is looked up as [host]:port" HostKeyChanged "$(classify_ssh_failure 255 "$f" "$kh" sink 2222)"
+check "the right host but a port nothing is pinned for: setup state" ConfigInvalid "$(classify_ssh_failure 255 "$f" "$kh" sink 2200)"
+rm -f "$f" "$kh" "$kh.k" "$kh.k.pub"
 check "a host that does not resolve" Unreachable "$(cls 255 'ssh: Could not resolve hostname nosuchhost.invalid: Name does not resolve
 Connection closed')"
 check "connection refused" Unreachable "$(cls 255 'ssh: connect to host sink port 2222: Connection refused
@@ -123,10 +134,21 @@ check "no text at all (what -q leaves)" Unreachable "$(cls 255 'Connection close
 check "a phrase quoted mid-line is not a class" Unreachable "$(cls 255 'note: the log said Host key verification failed. and then Permission denied (x)')"
 check "an SFTP-level refusal (exit 1) is not an ssh failure" SftpFailed "$(cls 1 'remote readdir: Permission denied')"
 
+echo "-- the destination must be a name, not a bare IP"
+for h in 192.168.1.20 10.0.0.5 127.0.0.1 3232235797 ::1 fe80::1 '[fe80::1]' 2001:db8::1; do holds "$h is a bare IP" host_is_bare_ip "$h"; done
+for h in desktop desktop.home.arpa DESKTOP-4F2K.local sink nosuchhost.invalid 1password.example host-192-168-1-20; do fails "$h is a name" host_is_bare_ip "$h"; done
+fails "empty is not judged here (the empty check is separate)" host_is_bare_ip ''
+
+echo "-- the monitor's failure endpoint"
+check "plain" https://hc-ping.com/abc/fail "$(fail_ping_url https://hc-ping.com/abc)"
+check "trailing slash" https://hc-ping.com/abc/fail "$(fail_ping_url https://hc-ping.com/abc/)"
+check "before a query string" 'https://hc.example/ping/abc/fail?rid=1' "$(fail_ping_url 'https://hc.example/ping/abc?rid=1')"
+
 echo "-- how a failure is retried: exit codes and the two caps"
 check "Unreachable is transient" 75 "$(exit_code_for_class Unreachable)"
+check "HostKeyChanged has its own code, so the scheduler can signal once" 76 "$(exit_code_for_class HostKeyChanged)"
 for c in NoRecipient ConfigInvalid BadDatabaseName; do check "$c is configuration" 78 "$(exit_code_for_class $c)"; done
-for c in DumpFailed DumpUnreadable EncryptFailed ReadFailed NoTimescale AuthRefused HostKeyChanged SftpFailed SizeMismatch NothingToCopy something-new; do
+for c in DumpFailed DumpUnreadable EncryptFailed ReadFailed NoTimescale AuthRefused SftpFailed SizeMismatch NothingToCopy something-new; do
   check "$c takes the long cap" 1 "$(exit_code_for_class $c)"
 done
 # retry_plan RC NOW DELAY BASE TRANSIENT_CAP LONG_CAP NEXT_SLOT -> "NEXT_TRY NEW_DELAY"

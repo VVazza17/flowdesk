@@ -44,9 +44,12 @@ trap 'rm -f "$errlog"' EXIT
 fail() { # CLASS MESSAGE
   jlog error copy_failed "error_class=$1" "detail=$2"
   task_finish "$id" failed "$1" "$2" || true
-  exit "$(exit_code_for_class "$1")"   # 75 / 78 / 1: how the scheduler should retry (lib.sh)
+  # HostKeyChanged exits 76 and the SCHEDULER tells the monitor, once per occurrence (backup-loop.sh): each
+  # attempt is a new process and cannot remember that it already did.
+  exit "$(exit_code_for_class "$1")"   # 75 / 76 / 78 / 1: how the scheduler should retry (lib.sh)
 }
 
+! host_is_bare_ip "$BACKUP_SSH_HOST" || fail ConfigInvalid "$(bare_ip_message "$BACKUP_SSH_HOST")"
 [ -n "${BACKUP_SSH_USER:-}" ] || fail ConfigInvalid "BACKUP_SSH_USER is empty"
 [ -s "$KEY" ] || fail ConfigInvalid "no SSH key: set BACKUP_SSH_KEY_FILE in .env to a private key file"
 [ -s "$KNOWN_HOSTS" ] || fail ConfigInvalid "no known_hosts: set BACKUP_SSH_KNOWN_HOSTS_FILE in .env (see docs/BACKUP.md)"
@@ -73,7 +76,7 @@ sftp_run() { timeout 900 sftp "${sftp_opts[@]}" -b - "$target" 2> "$errlog"; }
 
 classify_and_fail() { # RC WHAT
   local rc=$1 what=$2 cls
-  cls=$(classify_ssh_failure "$rc" "$errlog")
+  cls=$(classify_ssh_failure "$rc" "$errlog" "$KNOWN_HOSTS" "$BACKUP_SSH_HOST" "${BACKUP_SSH_PORT:-22}")
   fail "$cls" "$what failed (exit $rc): $(tail -c 300 "$errlog")"
 }
 

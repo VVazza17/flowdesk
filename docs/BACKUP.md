@@ -247,7 +247,7 @@ ssh-keygen -t ed25519 -N "" -C flowdesk-backup -f ~/.ssh/flowdesk_backup
 ### Configuration (`.env`, all gitignored)
 
 ```
-BACKUP_SSH_HOST=<desktop hostname or IP>
+BACKUP_SSH_HOST=<desktop hostname that resolves only on the home network; a bare IP is refused>
 BACKUP_SSH_USER=flowdesk-backup
 BACKUP_SSH_PORT=22
 BACKUP_SSH_PATH=/C:/FlowdeskBackups
@@ -556,8 +556,10 @@ backoff is 15, 30, then the cap; with the old 360-minute cap the first success a
 changes fix that together: `BACKUP_RETRY_CAP_MINUTES` is **30** (wired through compose; it applies to a
 destination that cannot be reached, below), so a copy lands within half an hour of getting home; and the grace is sized to the longest
 absence you expect, not to a single day. The trade is slower news of a real failure: a copy that has broken
-for good (a key refused, a changed host key) is paged about two days later, not one. `/health/data` shows it
-sooner (below).
+for good (a key refused) is paged about two days later, not one. `/health/data` shows it sooner (below). A
+changed host key (a pinned key that did not match) is the exception: the scheduler POSTs to `BACKUP_PING_URL/fail`
+once per occurrence, so the monitor alerts at once (`docs/HEALTH.md`). Check that your provider accepts `/fail` on the check's ping URL
+(healthchecks.io does) before relying on it.
 
 While the laptop is away, expect about twenty failed `ops.backup_copy` rows in `task_runs` per workday. That is
 normal and does not change `backups.copy.state` (see `docs/HEALTH.md`). Expect an alert when the laptop is

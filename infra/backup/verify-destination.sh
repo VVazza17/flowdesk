@@ -21,6 +21,7 @@ KNOWN_HOSTS=${BACKUP_SSH_KNOWN_HOSTS:-/run/backup/known_hosts}
 for v in BACKUP_SSH_HOST BACKUP_SSH_USER BACKUP_SSH_PATH; do
   [ -n "${!v:-}" ] || { echo "FAIL: $v is empty (set it in .env)"; exit 1; }
 done
+if host_is_bare_ip "$BACKUP_SSH_HOST"; then echo "FAIL: $(bare_ip_message "$BACKUP_SSH_HOST")"; exit 1; fi
 [ -s "$KEY" ] && [ -s "$KNOWN_HOSTS" ] || { echo "FAIL: no SSH key or known_hosts mounted (BACKUP_SSH_KEY_FILE, BACKUP_SSH_KNOWN_HOSTS_FILE)"; exit 1; }
 
 rdir=${BACKUP_SSH_PATH%/}

@@ -142,13 +142,26 @@ used to be `Unreachable` are told apart:
 |---|---|---|
 | `Unreachable` | name does not resolve, timed out, no route, connection refused or closed, **or any text not recognised** | The destination is away or asleep. Expected on a weekday. Also the fallback: OpenSSH's wording is not a stable interface, so an unrecognised message never becomes a confident class. |
 | `AuthRefused` | `Permission denied (...)` | The server answered and refused the key. Never a normal Tuesday. |
-| `HostKeyChanged` | `Host key verification failed`, `REMOTE HOST IDENTIFICATION HAS CHANGED`, `No <type> host key is known for ...` | The host key is not the pinned one, or none is pinned for this name. Treat it as a security signal until you know why: the desktop was reinstalled, or something else answered. |
+| `HostKeyChanged` | `REMOTE HOST IDENTIFICATION HAS CHANGED`, `Host key for <host> has changed`, or `No <type> host key is known for ...` when `known_hosts` DOES hold a key for the host (the server offered a different key type) | A pinned host key did not match. Treat it as a security signal until you know why: the desktop was reinstalled, or something else answered. |
+| `ConfigInvalid` (from ssh) | `No <type> host key is known for ...` and nothing is pinned for the host | Setup state: the key was never pinned (`docs/BACKUP.md`), so nothing can be impersonating it. Does not page. |
 
-**`AuthRefused` and `HostKeyChanged` are visible here and in the container's logs; nothing pages on them
-sooner than the monitor does** (48 hours). Making them page sooner would mean degrading `/health/ready`
-(ADR-0008 section 4), which is a decision, not part of this. One way to see a false `HostKeyChanged`: on another
-network the same private IP can belong to someone else's machine. Use a hostname that only resolves at home, not a
-raw IP, for `BACKUP_SSH_HOST`.
+**`AuthRefused` is visible here and in the container's logs; nothing pages on it sooner than the monitor does**
+(48 hours). A refused key is misconfiguration and fires legitimately while the desktop is being set up.
+
+**`HostKeyChanged` pages at once, through the monitor and not through `/health/ready`.** The copy step POSTs to
+`BACKUP_PING_URL` + `/fail` (the monitor's failure endpoint) when the scheduler sees one, so the alert does not
+wait out the 48 hours. **At most once per occurrence:** the scheduler remembers it has told the monitor and does
+not depend on the provider to deduplicate; the next successful copy ends the occurrence, and a container restart
+forgets it. A signal the monitor did not accept is retried on the next attempt. Readiness is about serving
+requests, and degrading it pages (ADR-0008 section 4), so `/health/ready` is untouched. The log lines are
+`copy_fail_signalled` and `copy_fail_signal_failed`. An unpinned host is not this class (table above), so setting
+up the desktop does not page.
+
+**That makes `BACKUP_SSH_HOST` a name, never a bare IP, and the code enforces it.** On another network the same
+private IP can belong to someone else's machine, which would read as a changed host key and page for going to
+work. `run-copy.sh` and `verify-destination.sh` refuse a bare IP (`ConfigInvalid`, exit 78). With a name that
+resolves only at home, being away is `Unreachable` and the signal stays trustworthy. A hosts-file or `extra_hosts`
+entry that maps the name to the IP brings the problem back.
 
 **This never touches `/health/ready` or the HTTP status.** A stale backup can wait until morning, and anything
 that degrades `ready` pages (ADR-0008 section 4). The page comes from the external monitor noticing the copy's

@@ -85,7 +85,7 @@ RUN apk add --no-cache openssh-server openssh-sftp-server busybox-extras \
  && adduser -D -s /bin/false fd \
  && echo "fd:$(head -c 24 /dev/urandom | base64)" | chpasswd \
  && mkdir -p /srv/backups /srv/www /home/fd/.ssh \
- && echo ok > /srv/www/ping \
+ && echo ok > /srv/www/ping  && mkdir -p /srv/www/cgi-bin  && printf '#!/bin/sh\necho "Content-type: text/plain"\necho\necho ok\n' > /srv/www/cgi-bin/hb  && chmod +x /srv/www/cgi-bin/hb \
  && chown fd:fd /srv/backups \
  && ssh-keygen -A > /dev/null
 COPY authorized_keys /home/fd/.ssh/authorized_keys
@@ -392,17 +392,56 @@ out=$(bk -- bash -c '
   run unknown    BACKUP_SSH_KNOWN_HOSTS=/tmp/kh_unknown
   run noresolve  BACKUP_SSH_HOST=nosuchhost.invalid
   run closedport BACKUP_SSH_PORT=2222
+  run bareip     BACKUP_SSH_HOST=192.168.1.20
   run reachable  X=1' || true)
 expect_case() { # NAME EXIT CLASS
   printf '%s\n' "$out" | grep -qx "CASE $1 exit=$2 class=$3" || { printf '%s\n' "$out" >&2; fail "case $1: wanted exit=$2 class=$3"; }
 }
 expect_case refused 1 AuthRefused
-expect_case changed 1 HostKeyChanged
-expect_case unknown 1 HostKeyChanged
+expect_case changed 76 HostKeyChanged
+expect_case unknown 78 ConfigInvalid
 expect_case noresolve 75 Unreachable
 expect_case closedport 75 Unreachable
+expect_case bareip 78 ConfigInvalid
 expect_case reachable 0 ""
-echo "ok: refused key -> AuthRefused, changed or unpinned host key -> HostKeyChanged, no such host and a closed port -> Unreachable (exit 75), a healthy copy -> exit 0"
+echo "ok: refused key -> AuthRefused, a changed host key -> HostKeyChanged (exit 76), an unpinned one -> ConfigInvalid (exit 78), no such host and a closed port -> Unreachable (exit 75), a bare IP -> ConfigInvalid (exit 78), a healthy copy -> exit 0"
+
+echo "== the probe refuses a bare IP"
+out=$(bk -- bash -c 'o=$(env BACKUP_SSH_HOST=192.168.1.20 /opt/backup/verify-destination.sh); echo "exit=$?"; echo "$o"' || true)
+printf '%s
+' "$out" | grep -q '^exit=1$' || { echo "$out" >&2; fail "the probe should refuse a bare IP"; }
+printf '%s
+' "$out" | grep -q 'bare IP' || fail "the probe should say why it refused"
+echo "ok: refused, with the reason"
+
+echo "== a changed host key tells the monitor ONCE (POST <ping url>/fail); a refused key and an unpinned host never do"
+for c in "$LOOP-hk" "$LOOP-rf" "$LOOP-up"; do docker rm -f "$c" > /dev/null 2>&1 || true; done
+# Every attempt fails at once and retries every ~2 s, so a signal on every failure would show as many requests.
+# The sink's /cgi-bin/hb answers 200 to a POST, as a real monitor does (its static files answer 501).
+hk_env=(--no-deps -T -e "PGDATABASE=$SCRATCH" -e BACKUP_DIR=/tmp/smoke -e BACKUP_SSH_HOST=sink -e BACKUP_SSH_USER=fd -e "BACKUP_SSH_PATH=$RDIR"
+  -e BACKUP_AT=00:00 -e BACKUP_TICK_SECONDS=1 -e BACKUP_RETRY_SECONDS=2 -e BACKUP_RETRY_CAP_SECONDS=2 -e BACKUP_RETRY_LONG_CAP_SECONDS=2)
+docker compose run -d --name "$LOOP-hk" "${hk_env[@]}" -e BACKUP_PING_URL=http://sink:8080/cgi-bin/hb/hk -e BACKUP_SSH_KNOWN_HOSTS=/tmp/kh   backup bash -c 'mkdir -p /tmp/smoke && ssh-keygen -q -t ed25519 -N "" -f /tmp/o && echo "sink $(cut -d" " -f1,2 /tmp/o.pub)" > /tmp/kh && exec /opt/backup/backup-loop.sh' > /dev/null 2> "$work/err.log"
+docker compose run -d --name "$LOOP-rf" "${hk_env[@]}" -e BACKUP_PING_URL=http://sink:8080/cgi-bin/hb/rf -e BACKUP_SSH_KEY=/tmp/badkey   backup bash -c 'mkdir -p /tmp/smoke && ssh-keygen -q -t ed25519 -N "" -f /tmp/badkey && exec /opt/backup/backup-loop.sh' > /dev/null 2> "$work/err.log"
+docker compose run -d --name "$LOOP-up" "${hk_env[@]}" -e BACKUP_PING_URL=http://sink:8080/cgi-bin/hb/up -e BACKUP_SSH_KNOWN_HOSTS=/tmp/kh   backup bash -c 'mkdir -p /tmp/smoke && ssh-keygen -q -t ed25519 -N "" -f /tmp/o && echo "elsewhere $(cut -d" " -f1,2 /tmp/o.pub)" > /tmp/kh && exec /opt/backup/backup-loop.sh' > /dev/null 2> "$work/err.log"
+sleep 20
+sinklog=$(docker logs "$SINK" 2>&1)
+n_hk=$(docker logs "$LOOP-hk" 2>&1 | grep -c '"event":"copy_failed".*"error_class":"HostKeyChanged"' || true)
+n_up_cls=$(docker logs "$LOOP-up" 2>&1 | grep -c '"error_class":"ConfigInvalid"' || true)
+n_rf_cls=$(docker logs "$LOOP-rf" 2>&1 | grep -c '"error_class":"AuthRefused"' || true)
+[ "$n_hk" -ge 4 ] || { docker logs "$LOOP-hk" 2>&1 | tail -n 12 >&2; fail "the changed-key loop should have failed at least 4 times in 20 s, got $n_hk"; }
+[ "$n_rf_cls" -ge 3 ] || fail "the refused-key loop should have failed as AuthRefused at least 3 times, got $n_rf_cls"
+[ "$n_up_cls" -ge 1 ] || fail "the unpinned-host loop should have failed as ConfigInvalid"
+n_sig=$(printf '%s
+' "$sinklog" | grep -c 'url:/cgi-bin/hb/hk/fail' || true)
+[ "$n_sig" = "1" ] || { printf '%s
+' "$sinklog" | tail -n 20 >&2; fail "$n_hk changed-key failures should have signalled the monitor exactly once, got $n_sig"; }
+! printf '%s
+' "$sinklog" | grep -q 'url:/cgi-bin/hb/rf' || fail "a refused key reached the monitor, and only a changed host key may"
+! printf '%s
+' "$sinklog" | grep -q 'url:/cgi-bin/hb/up' || fail "an unpinned host reached the monitor, and only a changed host key may"
+docker logs "$LOOP-hk" 2>&1 | grep -qE '"event":"copy_fail_signal(led|_failed)"' || fail "the signal was sent but the scheduler logged nothing about it"
+for c in "$LOOP-hk" "$LOOP-rf" "$LOOP-up"; do docker rm -f "$c" > /dev/null; done
+echo "ok: $n_hk changed-key failures, exactly $n_sig signal to the monitor; $n_rf_cls refused-key and $n_up_cls unpinned-host failures, none"
 
 echo "== each failure is retried as it deserves: transient soon, the rest slowly, configuration not at all"
 for c in "$LOOP-cfg" "$LOOP-tr" "$LOOP-lg"; do docker rm -f "$c" > /dev/null 2>&1 || true; done
