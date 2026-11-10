@@ -1039,3 +1039,28 @@ so a pinned-key mismatch is `HostKeyChanged` and an unpinned host is `ConfigInva
 the same `-q` and are fixed. Swept `infra/` and the docs for every ssh/sftp/scp/ssh-keyscan call: `run-copy.sh` was
 already right; `ssh-keygen -q` (key generation, no network) is left alone. The smoke now runs the probe against a
 changed key, an unpinned host, a refused key and an unresolvable name and asserts each class. Smoke passed.
+
+## 2026-11-10 — M2 slice 3 planning: reference tables, universes, calendars
+
+**Decided (Kyle).** Design only; nothing built yet. The schema choices are recorded in IDEA-033.
+- **Vocabulary.** `universe_membership` is a validity range, not an observation. It uses only `available_at` and
+  `source`, with ADR-0003's meaning. The tripwire is written into IDEA-034.
+- **Closure gap.** Logged as IDEA-040, not fixed. The seeder is insert-only: a ticker dropped from config is
+  reported as drift and no interval is closed. A nullable `closed_available_at` looks like the cheap path and is
+  recorded, not chosen. Nothing in M2 can trigger it.
+- **Seeded `valid_from` is the seed date.** An empty result is honest and a wrong one is not (a 2012 query should
+  not claim XLRE, which did not exist). **Consequence: no historical query against these universes returns
+  anything before the seed date.** Revisit at slice 6. Membership in a self-defined universe is a stipulation, not
+  an observation, so once first-bar dates exist a membership start can legitimately be declared from them.
+- **`BREADTH_UNIVERSE` is created empty.** §6.2 says "S&P 500 constituents" and gives no list, and M2 has no
+  constituent provider. Seeding it would mean inventing about 500 tickers.
+- **Calendars.** `trading_sessions` is a table. Sessions and holiday/early-close fixtures are slice 3; session math
+  is a follow-on. The `exchange_calendars` dependency exists either way.
+- **`config.py` vs `settings.py`:** §6.2 says `config.py`, the repo has `settings.py`. That is a `# DECISION:`
+  comment, not a defect.
+- **Logged:** IDEA-040 (closure gap), IDEA-041 (12 vs 14 vs "11 sector ETFs", a plain contradiction, not a drift row). IDEA-033 and IDEA-034
+  carry the decisions above.
+- **`provider_mappings` uniqueness (approved):** Index A on `(symbol_id, provider, id_kind)`, Index B on
+  `(provider, id_kind, external_id)` excluding `cik` (GOOG and GOOGL share one CIK), both `WHERE retired_at IS
+  NULL`, plus CHECKs on `id_kind` and the CIK form. The CHECK is a deliberate exception, recorded in IDEA-022.
+

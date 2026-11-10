@@ -15,6 +15,10 @@ parked features that stayed in `docs/IDEAS.md`.
 **Definition** (from IDEA-015's broader-pattern note): a revision or renumbering happened somewhere in the spec,
 and a dependent reference or definition elsewhere was never updated to match.
 
+**Membership rule (Kyle, 2026-11-10): an entry joins this list only when a revision event can be named.** A
+contradiction with no nameable revision behind it is logged as a plain contradiction (IDEA-038, IDEA-041) and is
+not a row. IDEA-013 is grandfathered: row 1 keeps its existing caveat, and no row is renumbered.
+
 **This list is the count.** Do not recount from the per-entry "Nth instance" sentences: they were written at
 different times, each from a partial list, and two of them are wrong (see the last paragraph). A new entry appends
 a row here and takes the next number. The number is the row's position, which is the order the instances were
@@ -495,6 +499,15 @@ vocabulary question has arrived for that table. The stopgap, in `backend/app/tas
 only `succeeded` counts as a completion for health; `attempt` starts at 1. `ingestion_runs` and `backfill_runs`
 are still unwritten, so their triggers stand for slices 4 and 10.
 
+**Addendum, 2026-11-10 (M2 slice 3): a deliberate exception to the no-CHECK convention.** The ops tables take
+`TEXT` with no CHECK because §8 gives no vocabulary and we do not invent one. `provider_mappings.id_kind`
+(IDEA-033) is the exception, and it is deliberate: its unique indexes depend on the value. Index A, one active
+value per `(symbol_id, provider, id_kind)`, applies to every kind. Index B, one active symbol per
+`(provider, id_kind, external_id)`, excludes `cik`, because several symbols share one issuer (GOOG and GOOGL).
+An open-ended `id_kind` would let a new many-to-one kind inherit the wrong rule without anyone deciding it, so
+`CHECK (id_kind IN ('ticker','cik'))` makes adding a kind a migration that must decide its uniqueness. A second
+CHECK enforces the zero-padded 10-digit CIK form. The convention stands everywhere else.
+
 ---
 
 ## IDEA-023: `providers_health` has no quarantine columns, but §6 says quarantine counts feed it
@@ -913,6 +926,20 @@ the delist date live (columns on `symbols`, or the provider-mappings table).
 ### Unfreeze triggers
 A spec correction release. Nothing blocks M2 before slice 3.
 
+### Slice 3 planning decisions (2026-11-10, Kyle)
+Each carries a `# DECISION:` comment in the migration. Recorded here so the correction release has them.
+- **CIK lives in `provider_mappings`** (`provider='sec_edgar'`, `id_kind='cik'`), not on `symbols`. **This departs from
+  §6.5's literal text**, "`symbols` stores CIK as the durable key" (spike 4, line 339). IDEA-033 allowed either home.
+- `symbols` drops the global `ticker UNIQUE` (a reassigned ticker needs two rows); gains nullable `exchange_mic`,
+  `currency_code` and `delisted_on` (§6.12's delist date). `active` stays per §8.
+- `trading_sessions` is a table, because `signals/` cannot call a calendar library, so sessions must arrive as data,
+  and because it pins what a past run saw. The `exchange_calendars` dependency exists with or without the table;
+  the table only moves where it is called.
+- `universe_membership` keeps the spec's `entity_id` name and points at `symbols.id`.
+- `provider_mappings` uniqueness is per `id_kind` (approved 2026-11-10): Index A on `(symbol_id, provider,
+  id_kind)` for every kind, Index B on `(provider, id_kind, external_id)` excluding `cik`, both `WHERE retired_at
+  IS NULL`. See IDEA-022's addendum for why `id_kind` is CHECK-constrained.
+
 ---
 
 ## IDEA-034: `bars` has no provider/feed/venue_scope and no provenance or revision columns
@@ -953,6 +980,11 @@ disagree.
   `source`. IDEA-038 (the `effective_ts` / `effective_at` contradiction) is the first input. `macro_metrics` is the
   first table built to it. `bars` must conform to it at slice 6 and does not re-decide it. If planning extends the
   list (for instance `ingestion_run_id` or `provider/feed/venue_scope`), this entry is updated to say so.
+- **Tripwire (Kyle, 2026-11-10, M2 slice 3 planning): `universe_membership` consumes two of these names.** It is a
+  validity range, not an observation: `valid_from`/`valid_to` are its effective interval, so it has no
+  `effective_at`, `ingested_at` or `revision`. It does use `available_at` and `source`, with ADR-0003's meaning.
+  Slice 5 may not rename or redefine `available_at` or `source` without a migration to `universe_membership`.
+  (Its one gap, that a row records when the interval started being known and not when it ended, is IDEA-040.)
 - **Waits for slice 6 planning:** the `bars`-specific decisions. These are where `c_total_return` revisions live
   (revision columns on `bars`, or a separate revision table), how `provider/feed/venue_scope` is stored, and
   IDEA-035's version home. These are decided together, since the version home and the revision storage both
@@ -1123,3 +1155,75 @@ spelling, and the two forms appear to have been written together in v4.0's point
 a plain contradiction between two spellings of one concept, like IDEA-033. (The `macro_metrics(metric, ts, value)`
 form on line 330 is different: it is a stale statement left behind by the vintage redesign. I have not counted it
 separately, and if it should be a drift row, that is a one-line addition to the list.)
+
+---
+
+## IDEA-040: `universe_membership` records when an interval became known, not when it ended
+
+**Status:** Open. Blocks nothing in M2: the slice 3 seeder is insert-only, so nothing writes a closure. It must be
+settled before any code path sets `valid_to` from a non-config source (constituent history, M6 breadth).
+**Raised:** 2026-11-10 (M2 slice 3 planning)
+
+### The proposal
+The v4.9.10 paragraph (§16, line 1111) gives `universe_membership(entity_id, universe_id, valid_from, valid_to,
+source, available_at)`, with one `available_at` per row. That says when the start of the interval became known.
+It does not say when the end did. If a removal is learned late and applied by setting `valid_to` in place, a query
+for "membership on date D, as known at K" sees the removal for every K before it was learned. That is the
+look-ahead leak the paragraph exists to close, reintroduced through the closing of the interval.
+
+### Why it is appealing
+N/A. Flagged spec gap, not a proposed feature.
+
+### Why it is parked
+The frozen spec cannot be edited in place. Kyle's call (2026-11-10): log it, do not pick a fix.
+
+### The version that would be legitimate
+A correction release stating how a closure's knowledge time is kept. **Not chosen**, but recorded so whoever
+resolves it does not start cold: a nullable `closed_available_at` on the same row looks like the cheap path. It is
+one column and one predicate (an interval counts as closed at K only if `closed_available_at <= K`), and it leaves
+the key and the existing rows alone. The heavier alternative is closures as separate superseding rows, which needs
+the `revision` semantics that the membership table otherwise does not use.
+
+### Unfreeze triggers
+A spec correction release, or the first code path that sets `valid_to` from a non-config source.
+
+### Drift class
+Not a row on the canonical list. No revision event is behind it: the gap is in the line as written.
+
+---
+
+## IDEA-041: The rotation universe is 12 ETFs in §3, fourteen in §6.2, and "11 sector ETFs" elsewhere
+
+**Status:** Open. Does not block. Slice 3 seeds §6.2's list, the only place that names tickers.
+**Raised:** 2026-11-10 (M2 slice 3 planning)
+
+### The proposal
+§3 line 117 (Phased Roadmap, not §2) says "Sector Rotation Engine (12-ETF universe + benchmark)". §6.2's
+`ROTATION_UNIVERSE` lists fourteen: XLK, SMH, IGV, XLF, XLE, XLI, XLV, XLY, XLP, XLU, XLB, XLRE, IWM, ARKK.
+§6.12 (line 392) and §7.1 (lines 406 and 408) say "11 sector ETFs". The §6.2 list holds ten XL-prefixed funds and
+no XLC, so eleven sector ETFs cannot be drawn from it as written.
+
+### Why it is appealing
+N/A. Flagged spec contradiction, not a proposed feature.
+
+### Why it is parked
+The frozen spec cannot be edited in place.
+
+### The version that would be legitimate
+A correction release fixing the count in §3 and stating which funds the "11 sector ETFs" are (and whether XLC
+belongs in `ROTATION_UNIVERSE`). The seed does not add XLC: that would be inventing a member.
+
+### Unfreeze triggers
+The next spec correction release, or a rotation or breadth slice that needs the sector set (§7.1 sector-level
+breadth) to be exact.
+
+### Likely resolution (inference, not verified)
+The likeliest fix is that §6.2 is missing XLC (Communication Services), since the SPDR sector family has been
+eleven funds since 2018. That would reconcile "11 sector ETFs" with the sector list, and leave the other
+differences (SMH, IGV, IWM, ARKK, and the 12-vs-14 count in §3) to be explained separately. I have not
+checked this against anything but the ticker list and my own recollection of the SPDR family.
+
+### Drift class
+Not a row on the canonical list. I found no changelog entry that changes the count, so no revision event can be
+named, and by the membership rule above it is a plain contradiction, like IDEA-038. (Logged first as row 13;
+removed 2026-11-10 on Kyle's ruling.)
