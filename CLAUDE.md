@@ -170,7 +170,8 @@ Do not resolve these unilaterally. Flag and wait.
 
 No new modules, signals, or integrations until M0–M2 are built and six months of outcome data
 exist. An idea goes in `docs/IDEAS.md` with an unfreeze trigger — not in the code, not in the
-spec. Twelve are parked there (IDEA-001 … IDEA-012).
+spec. Thirteen are parked there (IDEA-001 … IDEA-012, and IDEA-039: Tailscale for the backup copy, triggered by
+the first deployed instance).
 
 The doc's own rationale: *every remaining risk in this project is an execution risk, and design
 elaboration is the most comfortable way to avoid execution.*

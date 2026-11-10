@@ -128,6 +128,19 @@ recent enough. Error classes: `NoRecipient`, `DumpFailed`, `DumpUnreadable`, `En
 (backup); `Unreachable`, `SftpFailed`, `SizeMismatch`, `ConfigInvalid`, `NothingToCopy` (copy). An interrupted upload is not an error
 class: it is stepped over (`docs/BACKUP.md`).
 
+**The expected state while the laptop is away from the destination.** The destination is on the home LAN, so
+on a weekday daytime every copy attempt fails and retries every 30 minutes (`BACKUP_RETRY_CAP_MINUTES`): about
+twenty failed `ops.backup_copy` rows a day. `/health/data` shows `copy.state: ok` (the last success is recent),
+`last_attempt_failed: true` and `last_error_class: Unreachable`. That combination, on a weekday, is normal.
+`tasks[]` carries only the newest row per task, so the many failed rows do not bury or crowd anything in this
+response. `copy.state` going `stale` (36 h) is the real signal here, and the page behind it is the monitor.
+
+**Known limit: `Unreachable` is too wide.** `run-copy.sh` maps every ssh exit 255 to `Unreachable`, and 255 is
+also what ssh returns for a refused key and for a changed host key. So a copy that has broken for good at home
+reads exactly like a normal Tuesday until it goes `stale`. Splitting the classes (so those two read differently
+from "host away") is proposed in `docs/BUILD-LOG.md` (2026-11-10) and is not built. `error_message` holds the
+detail but this endpoint never returns it.
+
 **This never touches `/health/ready` or the HTTP status.** A stale backup can wait until morning, and anything
 that degrades `ready` pages (ADR-0008 section 4). The page comes from the external monitor noticing the copy's
 pings stop. Both steps appear under `tasks[]` too, as the latest run per task.

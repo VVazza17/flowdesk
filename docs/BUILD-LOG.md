@@ -916,3 +916,38 @@ route containers through a sidecar and say Docker uses its own DNS unless told o
 **Prune retention edge (Kyle's direction, recorded in `docs/BACKUP.md` "Retention on the destination"):** a backup
 whose only destination objects are short should not count as that day's backup. The copy would drop a tiny sidecar
 after verifying the size; prune counts only backups that have one. Not built.
+
+## 2026-11-10 — M2 slice 2, follow-up: Option 1 chosen; the retry cap is wired; Tailscale parked as IDEA-039
+
+**Decision (Kyle):** the alarm matches the LAN-only destination. `BACKUP_RETRY_CAP_MINUTES` is wired through
+`docker-compose.yml` (default **30**, `.env.example` documents it), and the missed-copy check is **period 1 day,
+grace 24 h** (`docs/BACKUP.md`). Reason: Tailscale would reverse the premise the ACL decision rests on (a stolen
+laptop carries tailnet membership as well as the key), pulling the `Authenticated Users` work forward to solve a
+problem Kyle does not have; he needs copies from his desk at night. Tailscale is **parked as IDEA-039** in
+`docs/IDEAS.md`, trigger: the first deployed instance (the Oracle ARM VM, §13). The Docker Desktop MagicDNS
+question is recorded there as the first thing to test.
+
+**Side effect to know about:** the cap is shared. `backup-loop.sh` uses `RETRY_CAP` for the dump retries as well as
+the copy retries, so a persistently failing dump (today: the committed placeholder `recipients.txt` gives
+`NoRecipient` until a real key is added) now retries every 30 minutes, about 48 failed `ops.backup` rows a day
+instead of about 6, and a `DumpFailed` repeats `pg_dump` that often. Splitting the cap (a separate
+`BACKUP_COPY_RETRY_CAP_MINUTES`) is a one-variable change; not done, since the instruction was the one variable.
+
+**Does a workday away bury a real failure? Checked in the code; the answer is "mostly no, with one real hole".**
+- *What the twenty rows do.* About 20 failed `ops.backup_copy` rows per workday (15 min, then 30 min steps across
+  ~9.75 h). `/health/data` reports `backups.copy` from the age of the newest *success* (`ok` within 36 h) and the
+  newest run's status, and `tasks[]` carries only the newest row per task. So a normal weekday reads
+  `state: ok`, `last_attempt_failed: true`, `last_error_class: Unreachable`; the row count does not appear in the
+  response and does not change the state. Documented in `docs/HEALTH.md` and `docs/BACKUP.md` as the expected state.
+- *The hole.* `run-copy.sh` `classify_and_fail` maps every ssh exit 255 (and timeout 124) to `Unreachable`. 255 is
+  also what ssh returns for a key the server refuses and for a changed host key. So a copy that has broken for good
+  while the laptop is at home produces the same `last_attempt_failed: true` + `Unreachable` as a normal Tuesday,
+  and `error_message` (which has the real stderr) is never returned by `/health/data`. The signal that remains is
+  `copy.state` turning `stale` at 36 h and the monitor at 48 h. That is the backstop working, and slower than the
+  failure deserves. **Documented as a known limit; not fixed.**
+- *Proposed fix (needs a go-ahead; touches `run-copy.sh`, `selftest.sh`, the smoke, `HEALTH.md`, `BACKUP.md`).*
+  Classify from ssh's stderr instead of the exit code alone: `Permission denied` -> `AuthRefused`; `REMOTE HOST
+  IDENTIFICATION HAS CHANGED` / `Host key verification failed` -> `HostKeyChanged`; `Could not resolve hostname`,
+  `timed out`, `No route to host`, `Connection refused` and the 124 timeout -> `Unreachable` (unchanged meaning:
+  "host away"). The first two are never a normal Tuesday and can be paged on sooner than 48 h. The smoke already has
+  stand-in sshd containers to provoke each case. Order of work: add the classes, then the smoke cases, then the docs.

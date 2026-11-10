@@ -545,11 +545,23 @@ A stale backup does **not** degrade `/health/ready`. It can wait until morning, 
 
 After each **successful off-box copy**, the container pings `BACKUP_PING_URL`. Make a **second** check at the
 same provider as the heartbeat (`docs/HEARTBEAT.md`), separate from the heartbeat's, with **period 1 day and
-grace 12 hours**. If the pings stop for any reason (laptop asleep, desktop down, key broken, container dead)
-the provider alerts you. Like the heartbeat URL, it is a credential: `.env` only.
+grace 24 hours** (it alerts after 48 hours without a copy). If the pings stop for any reason (laptop asleep,
+desktop down, key broken, container dead) the provider alerts you. Like the heartbeat URL, it is a credential:
+`.env` only.
 
-On a laptop that sleeps, expect the occasional alert on the morning after a night it was asleep; that is the
-signal working, not a fault. A grace longer than 12 hours trades it for slower news of a real failure.
+**Why 24 hours and not 12.** The destination is on the home LAN, so the copy succeeds only when the laptop is
+home. On a weekday the laptop is away for most of the day, and the copy retries while it is gone. The retry
+backoff is 15, 30, then the cap; with the old 360-minute cap the first success after getting home could be
+~22:00, and a weekend ping at 09:00 followed by a Monday ping at 22:00 is 37 hours, past a 36-hour line. Two
+changes fix that together: `BACKUP_RETRY_CAP_MINUTES` is **30** (wired through compose; both the backup and the
+copy use it), so a copy lands within half an hour of getting home; and the grace is sized to the longest
+absence you expect, not to a single day. The trade is slower news of a real failure: a copy that has broken
+for good (a key refused, a changed host key) is paged about two days later, not one. `/health/data` shows it
+sooner (below).
+
+While the laptop is away, expect about twenty failed `ops.backup_copy` rows in `task_runs` per workday. That is
+normal and does not change `backups.copy.state` (see `docs/HEALTH.md`). Expect an alert when the laptop is
+away from home longer than the grace, or asleep at home through it; that is the signal working.
 
 ### Closing the slice
 

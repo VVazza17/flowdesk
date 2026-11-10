@@ -1,7 +1,7 @@
 # FlowDesk — Parked Ideas
 
 Flagged spec defects (contradictions, stale cross-references) live in
-`docs/SPEC-DEFECTS.md`, not here — see that file for IDEA-013 onward.
+`docs/SPEC-DEFECTS.md`, not here — see that file for IDEA-013 onward (IDEA-039 is a parked idea and lives here).
 
 The architecture is frozen (v4.9.x). Ideas land here, not in the spec. Each entry states
 what it is, why it's parked, and **the specific evidence that would justify unfreezing for
@@ -556,6 +556,45 @@ Not specified in the spec.
 Not stated individually. Structurally depends on §7.15(b2) already running and accumulating event
 history, per that section's own "only possible because" framing — but the spec does not state
 this as a formal prerequisite for IDEA-012.
+
+## IDEA-039: Tailscale as the backup copy's path off the home network
+
+**Status:** Parked
+**Raised:** 2026-11-10
+
+### The proposal
+Join the backup source and the desktop destination to a tailnet (Tailscale, free Personal plan), so
+`BACKUP_SSH_HOST` is a MagicDNS name or a 100.x address and the SFTP copy works from anywhere the source has
+internet. Port 22 stays closed to the LAN and the internet.
+
+### Why it is appealing
+It gives a stable hostname (no DHCP reservation), lets a machine that is not in the house copy home, and keeps
+the missed-copy monitor honest without sizing its grace to an away pattern. Nothing in the code changes:
+`BACKUP_SSH_HOST` is only a string. Checked 2026-11-10: the Personal plan is $0, non-commercial, 6 users, unlimited
+user devices, ACLs and MagicDNS included; node keys expire at 180 days unless expiry is disabled per machine.
+
+### Why it is parked
+On the laptop it reverses the premise the ACL decision rests on: a stolen laptop carries tailnet membership as
+well as the key, so the `Authenticated Users` work (`docs/BACKUP.md`, "What the account can reach") stops being
+optional. Kyle needs copies from his desk at night, not from anywhere, so that work would be pulled forward to
+solve a problem he does not have. The monitor is sized to the LAN instead (cap 30 min, period 1 day, grace 24 h).
+
+### The version that would be legitimate
+A tailnet for the deployed instance only, with an ACL allowing that machine to reach the desktop on TCP 22 and
+nothing else, key expiry disabled on the desktop, the sshd firewall rule scoped to `100.64.0.0/10`, and a
+runbook step "machine lost: remove it from the tailnet first".
+
+### Unfreeze triggers
+**The first deployed instance: the Oracle ARM VM of §13.** A machine that is not in the house needs a path off
+itself, and the tailnet is the obvious one. By then the ACL survey (`infra/backup/acl-survey.ps1`) will have
+been done anyway.
+
+**First thing to test when the trigger fires:** whether a Docker Desktop container resolves MagicDNS names and
+routes to 100.x addresses through the host's Tailscale. Unverified: Tailscale's own documentation routes
+containers through a sidecar and says Docker uses its own DNS unless told otherwise. Check `getent hosts
+<name>.<tailnet>.ts.net` and an `sftp` to the 100.x address from inside the `backup` container; fall back to the
+100.x address or `dns: [100.100.100.100]` on the service. (On the Linux VM the container question differs; test
+there too.) Also check how "Run unattended" behaves on the desktop's Windows release.
 
 ---
 

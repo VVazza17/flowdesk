@@ -142,6 +142,11 @@ services:
       TZ: ${BACKUP_TZ:-America/New_York}
       BACKUP_AT: ${BACKUP_AT:-03:00}
       BACKUP_RETRY_MINUTES: ${BACKUP_RETRY_MINUTES:-15}
+      # DECISION: 30, not the script's own 360. A laptop that leaves home for the workday burns through a
+      # 6-hour backoff, so the first copy after it returns could be hours late and the missed-copy monitor
+      # (period 1 day, grace 24 h) would sit near its line. 30 minutes means a copy lands within half an hour of
+      # getting home. Shared by the backup and the copy retries (backup-loop.sh); docs/BACKUP.md.
+      BACKUP_RETRY_CAP_MINUTES: ${BACKUP_RETRY_CAP_MINUTES:-30}
       BACKUP_KEEP_DAILY: ${BACKUP_KEEP_DAILY:-14}
       BACKUP_KEEP_WEEKLY: ${BACKUP_KEEP_WEEKLY:-8}
       # Blank host = no off-box copy: recorded as not_configured on /health/data, never as a success.
