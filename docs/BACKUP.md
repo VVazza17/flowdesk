@@ -601,6 +601,15 @@ upload was interrupted and not yet retried), an older complete backup from the s
 one backup a day that needs a manual extra backup and an unlucky weekly run, and the retry completes the newer
 one. It is the reason to prune weekly and not continuously.
 
+**Fix direction (recorded, not built).** A backup whose only objects on the destination are short should not count
+as that day's backup. The copy would, after verifying the destination size equals the local size, create a tiny
+sidecar next to the object (for example `<db>_<stamp>.rN.tar.age.ok`), and `prune.sh` would count only backups that
+have one. Write-once permits this, because creating a new file is the one thing it allows. Things to settle when
+it is built: the sidecar must be created only after the size check, never before; `retention_delete` and
+`name_epoch` must treat `.ok` files as part of the backup they name and not as backups themselves; and a complete
+object that predates the sidecar convention needs a rule (treat as complete, or have the next copy add the
+sidecar).
+
 What would run it: a job on the desktop, as an administrator or SYSTEM (who have Delete), weekly, applying the
 same rule with `infra/backup/prune.sh`. That script was run under Git Bash on Windows (GNU awk), 45 files in,
 18 left, and it leaves anything not named like `<db>_<UTC stamp>.tar.age` alone, including the probe files. The

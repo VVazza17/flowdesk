@@ -861,3 +861,38 @@ Partly answerable, and the exposure is bigger than I said.**
   and `CLAUDE.md` now say so. What would close it: a chroot (the real fix; reported flaky on Windows, so a guarded
   trial with a config backup and `sshd -t`), or removing `Authenticated Users` from the top-level folders that
   matter, or accepting it with the port off the internet. Undecided; the desktop's real layout is the input.
+
+## 2026-11-10 — M2 slice 2, follow-up: the missed-copy alarm on a laptop that leaves home; Tailscale priced (nothing installed)
+
+**Context (Kyle):** the destination is LAN-only, so a leaked key is useless off the home network, which makes
+"accept the gap" (the unchrooted account) defensible and the ACL work optional. The cost: copies succeed only when
+the laptop is home, on weekdays it is at work or school.
+
+**Finding: the 12 h grace is borderline for a reason that can be fixed, and it is not "the monitor is wrong".**
+The ping is sent after a successful copy. Copy retries back off 15, 30, 60, 120, 240, then 360 minutes
+(`backup-loop.sh`), and the cap is 360 minutes. A laptop that spends 08:15-18:00 away has burned through the backoff
+by the time it returns, so the first success lands as late as ~22:00, not at 18:00. A weekend ping at ~09:00
+followed by a Monday ~22:00 ping is 37 h, past period 1 day + grace 12 h (36 h). So it would page on some Mondays
+and sit within hours of the line on other days. That is the "mute it" pattern. (The cap is also not wired through
+`docker-compose.yml`; only `BACKUP_RETRY_MINUTES` is, so it cannot be changed from `.env` today.)
+
+**Options, as laid out to Kyle (undecided):**
+1. *Alarm matches the away pattern.* Wire `BACKUP_RETRY_CAP_MINUTES` through compose and set it to ~30 so a
+   success lands within half an hour of getting home, and size the check to the longest *expected* absence:
+   period 1 day, grace 24 h (pages at 48 h). Trade: slower news of a real failure, and a laptop lost on a trip is
+   noticed in two days. Costs one failed 20 s connect every 30 min while away.
+2. *Destination reachable from anywhere (Tailscale).* Copies then succeed wherever the laptop has internet, so
+   the 12 h grace is realistic again, and the failure modes left are the real ones (desktop asleep, key expired).
+   Details and what changes: see the reply recorded in the session; summary below.
+
+**Tailscale, facts checked 2026-11-10:** Personal plan is $0, non-commercial, up to 6 users, unlimited user devices,
+ACLs and MagicDNS included (tailscale.com/pricing). Node keys expire after 180 days by default and an expired device
+drops off the tailnet; expiry can be disabled per machine on every plan (tailscale.com/kb/1028/key-expiry).
+Windows needs "Run unattended" for the node to be up before anyone logs in (tailscale.com/kb/1088/run-unattended);
+forum reports of it misbehaving exist and may predate current releases. **Not verified:** whether a Docker Desktop
+container resolves MagicDNS names or routes to 100.x addresses through the host's Tailscale; Tailscale's own docs
+route containers through a sidecar and say Docker uses its own DNS unless told otherwise.
+
+**Prune retention edge (Kyle's direction, recorded in `docs/BACKUP.md` "Retention on the destination"):** a backup
+whose only destination objects are short should not count as that day's backup. The copy would drop a tiny sidecar
+after verifying the size; prune counts only backups that have one. Not built.
