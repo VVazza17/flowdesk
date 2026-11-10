@@ -1030,3 +1030,12 @@ This supersedes the first two "Not done" bullets above.
 - **Still unproven:** that the real provider accepts `POST .../fail` on the check's ping URL (healthchecks.io
   documents it), that the container resolves the desktop's name at home, and everything against Windows OpenSSH
   Server. All three are the desktop drill's.
+
+**Addendum, same day: the `-q` sweep.** `verify-destination.sh` still ran sftp with `-q` (silencing ssh's error text,
+so every connect failure read "Connection closed") and its `size_of` discarded stderr. It now uses
+`LogLevel=ERROR`, classifies a failed connect or upload with `classify_ssh_failure` (with `known_hosts`, host and port,
+so a pinned-key mismatch is `HostKeyChanged` and an unpinned host is `ConfigInvalid`), and prints the class and its
+`docs/HEALTH.md` meaning beside the failure, plus what ssh said. The smoke's own `remote_size` and `SFTP` helpers had
+the same `-q` and are fixed. Swept `infra/` and the docs for every ssh/sftp/scp/ssh-keyscan call: `run-copy.sh` was
+already right; `ssh-keygen -q` (key generation, no network) is left alone. The smoke now runs the probe against a
+changed key, an unpinned host, a refused key and an unresolvable name and asserts each class. Smoke passed.

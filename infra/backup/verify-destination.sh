@@ -26,7 +26,9 @@ if host_is_bare_ip "$BACKUP_SSH_HOST"; then echo "FAIL: $(bare_ip_message "$BACK
 
 rdir=${BACKUP_SSH_PATH%/}
 target="${BACKUP_SSH_USER}@${BACKUP_SSH_HOST}"
-sftp_opts=(-q -F /dev/null -i "$KEY" -P "${BACKUP_SSH_PORT:-22}"
+# LogLevel=ERROR and not -q: -q silences ssh's own error text, so a changed host key could not be told from a sleeping
+# desktop (classify_ssh_failure, lib.sh). The class printed on a failure is the one docs/HEALTH.md documents.
+sftp_opts=(-o LogLevel=ERROR -F /dev/null -i "$KEY" -P "${BACKUP_SSH_PORT:-22}"
   -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$KNOWN_HOSTS"
   -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
 
@@ -37,19 +39,39 @@ probe="flowdesk-probe-$stamp.tar.age"
 head -c 100 /dev/urandom > "$work/a"
 head -c 200 /dev/urandom > "$work/b"
 
-try() { printf '%s\n' "$1" | timeout 120 sftp "${sftp_opts[@]}" -b - "$target" > "$work/out" 2> "$work/err"; }
-size_of() { # NAME -> bytes on the destination, or empty
-  printf 'ls -l "%s"\n' "$rdir" | timeout 120 sftp "${sftp_opts[@]}" -b - "$target" 2> /dev/null |
+try() { # sets last_rc, and returns it
+  printf '%s\n' "$1" | timeout 120 sftp "${sftp_opts[@]}" -b - "$target" > "$work/out" 2> "$work/err"
+  last_rc=$?
+  return "$last_rc"
+}
+# "<Class>: what it means" for the failure of the LAST try. Same class names and meanings as docs/HEALTH.md.
+why() {
+  local cls
+  cls=$(classify_ssh_failure "$last_rc" "$work/err" "$KNOWN_HOSTS" "$BACKUP_SSH_HOST" "${BACKUP_SSH_PORT:-22}")
+  case $cls in
+    HostKeyChanged) echo "HostKeyChanged: a pinned host key did not match. Something other than the desktop may have answered; do not proceed until you know why" ;;
+    ConfigInvalid) echo "ConfigInvalid: no host key is pinned for this host. Pin it first (docs/BACKUP.md), comparing the fingerprint on the desktop" ;;
+    AuthRefused) echo "AuthRefused: the server answered and refused the key (the account or authorized_keys on the desktop)" ;;
+    Unreachable) echo "Unreachable: the desktop is away or asleep, the name does not resolve here, or the port is blocked" ;;
+    SftpFailed) echo "SftpFailed: connected and authenticated, but the SFTP operation failed (path or permissions)" ;;
+    *) echo "$cls" ;;
+  esac
+}
+# What ssh said, flattened to one line.   said FILE
+said() { tail -c 300 "$1" | tr '\n' ' '; }
+size_of() { # NAME -> bytes on the destination, or empty; ssh's text goes to $work/size_err
+  printf 'ls -l "%s"\n' "$rdir" | timeout 120 sftp "${sftp_opts[@]}" -b - "$target" 2> "$work/size_err" |
     awk -v n="$1" 'NF >= 9 { b = $NF; sub(/^.*[\/\\]/, "", b); if (b == n) print $(NF-4) }'
 }
 bad=0
 row() { printf '%-44s %s\n' "$1" "$2"; }
 
-try "ls -l \"$rdir\"" || { row "connect and list $rdir" "FAIL: $(tail -c 200 "$work/err")"; exit 1; }
+try "ls -l \"$rdir\"" || { row "connect and list $rdir" "FAIL (exit $last_rc)"; echo "  $(why)"; echo "  ssh said: $(said "$work/err")"; exit 1; }
 row "connect and list $rdir" "ok"
 
-try "put \"$work/a\" \"$rdir/$probe\"" || { row "create a new file" "FAIL: $(tail -c 200 "$work/err")"; exit 1; }
-[ "$(size_of "$probe")" = "100" ] || { row "create a new file" "FAIL: uploaded 100 bytes, destination reports '$(size_of "$probe")'"; exit 1; }
+try "put \"$work/a\" \"$rdir/$probe\"" || { row "create a new file" "FAIL (exit $last_rc)"; echo "  $(why)"; echo "  ssh said: $(said "$work/err")"; exit 1; }
+got=$(size_of "$probe")
+[ "$got" = "100" ] || { row "create a new file" "FAIL: uploaded 100 bytes, destination reports '$got'"; echo "  ssh said: $(said "$work/size_err")"; exit 1; }
 row "create a new file (100 bytes, size confirmed)" "ok"
 
 if try "put \"$work/b\" \"$rdir/$probe\""; then

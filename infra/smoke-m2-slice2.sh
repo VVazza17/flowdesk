@@ -143,8 +143,8 @@ export BACKUP_RECIPIENTS_FILE="$(winpath "$work/k/recipients.txt")"
 cat > "$work/helpers.sh" << 'HELPEREOF'
 remote_size() { # HOST NAME
   echo "ls -l \"$BACKUP_SSH_PATH\"" |
-    sftp -q -F /dev/null -i /run/backup/id_key -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
-      -o UserKnownHostsFile=/run/backup/known_hosts -o ConnectTimeout=10 -b - "fd@$1" 2> /dev/null |
+    sftp -o LogLevel=ERROR -F /dev/null -i /run/backup/id_key -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+      -o UserKnownHostsFile=/run/backup/known_hosts -o ConnectTimeout=10 -b - "fd@$1" |
     awk -v n="$2" 'NF >= 9 { b = $NF; sub(/^.*[\/\\]/, "", b); if (b == n) print $(NF-4) }'
 }
 HELPEREOF
@@ -158,7 +158,7 @@ bk() { # [extra docker compose run flags] -- command...
     "${flags[@]+"${flags[@]}"}" backup "$@" 2> "$work/err.log"
 }
 # Common sftp options for the probes that talk to a sink by hand from inside a one-off.
-SFTP='sftp -q -F /dev/null -i /run/backup/id_key -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/run/backup/known_hosts -o ConnectTimeout=10'
+SFTP='sftp -o LogLevel=ERROR -F /dev/null -i /run/backup/id_key -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/run/backup/known_hosts -o ConnectTimeout=10'
 
 echo "== a backup is encrypted and kept locally; the copy reaches the sink; a second copy sends nothing"
 out=$(bk -- bash -c '
@@ -413,6 +413,24 @@ printf '%s
 printf '%s
 ' "$out" | grep -q 'bare IP' || fail "the probe should say why it refused"
 echo "ok: refused, with the reason"
+
+echo "== the probe names what went wrong, with the class HEALTH.md documents (the first thing run on the real desktop)"
+out=$(bk -- bash -c '
+  ssh-keygen -q -t ed25519 -N "" -f /tmp/badkey
+  ssh-keygen -q -t ed25519 -N "" -f /tmp/otherhost
+  echo "sink $(cut -d" " -f1,2 /tmp/otherhost.pub)" > /tmp/kh_changed
+  echo "elsewhere $(cut -d" " -f1,2 /tmp/otherhost.pub)" > /tmp/kh_unknown
+  probe() { name=$1; shift; o=$(env "$@" /opt/backup/verify-destination.sh 2>&1); rc=$?
+    echo "CASE $name exit=$rc says=$(printf "%s" "$o" | grep -o "^  [A-Za-z]*:" | head -1 | tr -d " :")"; }
+  probe changed   BACKUP_SSH_KNOWN_HOSTS=/tmp/kh_changed
+  probe unpinned  BACKUP_SSH_KNOWN_HOSTS=/tmp/kh_unknown
+  probe refused   BACKUP_SSH_KEY=/tmp/badkey
+  probe noresolve BACKUP_SSH_HOST=nosuchhost.invalid' || true)
+for c in "changed HostKeyChanged" "unpinned ConfigInvalid" "refused AuthRefused" "noresolve Unreachable"; do
+  set -- $c
+  printf '%s\n' "$out" | grep -qx "CASE $1 exit=1 says=$2" || { printf '%s\n' "$out" >&2; fail "probe case $1: wanted exit=1 and the class $2"; }
+done
+echo "ok: changed key -> HostKeyChanged, unpinned -> ConfigInvalid, refused key -> AuthRefused, no such host -> Unreachable"
 
 echo "== a changed host key tells the monitor ONCE (POST <ping url>/fail); a refused key and an unpinned host never do"
 for c in "$LOOP-hk" "$LOOP-rf" "$LOOP-up"; do docker rm -f "$c" > /dev/null 2>&1 || true; done
