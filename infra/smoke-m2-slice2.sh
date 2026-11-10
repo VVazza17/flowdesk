@@ -38,7 +38,7 @@ psql_pg() { docker compose exec -T postgres psql -X -q -U "$POSTGRES_USER" -v ON
 cleanup() {
   local rc=$?
   # shellcheck disable=SC2086
-  docker rm -f $SINKS "$LOOP" > /dev/null 2>&1 || true
+  docker rm -f $SINKS "$LOOP" "$LOOP-cfg" "$LOOP-tr" "$LOOP-lg" > /dev/null 2>&1 || true
   psql_pg -d postgres -c "DROP DATABASE IF EXISTS $SCRATCH WITH (FORCE)" > /dev/null 2>&1 || true
   psql_pg -d postgres -c "DROP DATABASE IF EXISTS $RESTORED WITH (FORCE)" > /dev/null 2>&1 || true
   psql_pg -d postgres -c "DROP DATABASE IF EXISTS ${RESTORED}_r WITH (FORCE)" > /dev/null 2>&1 || true
@@ -299,7 +299,7 @@ echo "== no recipient key: the backup fails closed, writes nothing, and says why
 out=$(bk -v "$(winpath "$PWD/infra/backup/recipients.txt"):/placeholder:ro" -e BACKUP_RECIPIENTS_FILE=/placeholder -- bash -c '
   mkdir -p /tmp/smoke; /opt/backup/run-backup.sh; echo "exit=$?"; echo "files=$(ls /tmp/smoke | wc -l)"' || true)
 printf '%s\n' "$out" | grep -q '"error_class":"NoRecipient"' || { echo "$out" >&2; fail "expected a NoRecipient failure"; }
-printf '%s\n' "$out" | grep -q '^exit=1$' || fail "a backup with no recipient should exit 1"
+printf '%s\n' "$out" | grep -q '^exit=78$' || fail "a backup with no recipient is a configuration failure and should exit 78"
 printf '%s\n' "$out" | grep -q '^files=0$' || fail "a backup with no recipient wrote a file"
 echo "ok: refused, nothing written"
 
@@ -308,6 +308,7 @@ out=$(bk -e BACKUP_SSH_PATH= -- bash -c '
   mkdir -p /tmp/smoke; /opt/backup/run-backup.sh >/dev/null; /opt/backup/run-copy.sh; echo "exit=$?"' || true)
 printf '%s\n' "$out" | grep -q '"error_class":"ConfigInvalid"' || { echo "$out" >&2; fail "expected ConfigInvalid for an empty BACKUP_SSH_PATH"; }
 printf '%s\n' "$out" | grep -q 'BACKUP_SSH_PATH is empty' || fail "the message should name BACKUP_SSH_PATH"
+printf '%s\n' "$out" | grep -q '^exit=78$' || fail "an empty BACKUP_SSH_PATH is a configuration failure and should exit 78"
 echo "ok: refused"
 
 echo "== the destination is unreachable: the backup still succeeds, only the copy fails"
@@ -316,7 +317,7 @@ out=$(bk -- bash -c '
   mkdir -p /tmp/smoke; /opt/backup/run-backup.sh; echo "backup-exit=$?"; /opt/backup/run-copy.sh; echo "copy-exit=$?"
   echo "kept=$(ls /tmp/smoke | wc -l)"' || true)
 printf '%s\n' "$out" | grep -q '^backup-exit=0$' || { echo "$out" >&2; fail "the backup should succeed with the destination down"; }
-printf '%s\n' "$out" | grep -q '^copy-exit=1$' || fail "the copy should fail with the destination down"
+printf '%s\n' "$out" | grep -q '^copy-exit=75$' || fail "a copy that cannot reach the destination is transient and should exit 75"
 printf '%s\n' "$out" | grep -q '"error_class":"Unreachable"' || { echo "$out" >&2; fail "expected an Unreachable failure"; }
 printf '%s\n' "$out" | grep -q '^kept=1$' || fail "the local backup should be kept"
 echo "ok: a failed copy is not a failed backup"
@@ -376,6 +377,61 @@ n_on_sink=$(docker exec "$SINK" sh -c "ls -1 $RDIR | grep -c 'tar.age\$'")
 docker rm -f "$LOOP" > /dev/null
 echo "ok: backed up once, copied after the destination returned, pinged the monitor"
 
+echo "== ssh failures are told apart: a refused key and a changed host key are not a sleeping desktop"
+out=$(bk -- bash -c '
+  mkdir -p /tmp/smoke; /opt/backup/run-backup.sh > /dev/null
+  ssh-keygen -q -t ed25519 -N "" -f /tmp/badkey
+  ssh-keygen -q -t ed25519 -N "" -f /tmp/otherhost
+  echo "sink $(cut -d" " -f1,2 /tmp/otherhost.pub)" > /tmp/kh_changed
+  echo "elsewhere $(cut -d" " -f1,2 /tmp/otherhost.pub)" > /tmp/kh_unknown
+  run() { name=$1; shift; o=$(env "$@" /opt/backup/run-copy.sh 2>&1); rc=$?
+    cls=$(printf "%s" "$o" | sed -n "s/.*\"error_class\":\"\([A-Za-z]*\)\".*/\1/p" | head -1)
+    echo "CASE $name exit=$rc class=$cls"; }
+  run refused    BACKUP_SSH_KEY=/tmp/badkey
+  run changed    BACKUP_SSH_KNOWN_HOSTS=/tmp/kh_changed
+  run unknown    BACKUP_SSH_KNOWN_HOSTS=/tmp/kh_unknown
+  run noresolve  BACKUP_SSH_HOST=nosuchhost.invalid
+  run closedport BACKUP_SSH_PORT=2222
+  run reachable  X=1' || true)
+expect_case() { # NAME EXIT CLASS
+  printf '%s\n' "$out" | grep -qx "CASE $1 exit=$2 class=$3" || { printf '%s\n' "$out" >&2; fail "case $1: wanted exit=$2 class=$3"; }
+}
+expect_case refused 1 AuthRefused
+expect_case changed 1 HostKeyChanged
+expect_case unknown 1 HostKeyChanged
+expect_case noresolve 75 Unreachable
+expect_case closedport 75 Unreachable
+expect_case reachable 0 ""
+echo "ok: refused key -> AuthRefused, changed or unpinned host key -> HostKeyChanged, no such host and a closed port -> Unreachable (exit 75), a healthy copy -> exit 0"
+
+echo "== each failure is retried as it deserves: transient soon, the rest slowly, configuration not at all"
+for c in "$LOOP-cfg" "$LOOP-tr" "$LOOP-lg"; do docker rm -f "$c" > /dev/null 2>&1 || true; done
+# Base 2 s, transient cap 2 s, long cap 600 s. Without the split, all three would retry every ~2 s.
+loop_env=(--no-deps -T -e "PGDATABASE=$SCRATCH" -e BACKUP_DIR=/tmp/smoke -e BACKUP_SSH_USER=fd -e "BACKUP_SSH_PATH=$RDIR"
+  -e BACKUP_AT=00:00 -e BACKUP_TICK_SECONDS=1 -e BACKUP_RETRY_SECONDS=2 -e BACKUP_RETRY_CAP_SECONDS=2 -e BACKUP_RETRY_LONG_CAP_SECONDS=600)
+# configuration: the committed placeholder has no key -> NoRecipient -> exit 78 -> one attempt, then wait for the next slot
+docker compose run -d --name "$LOOP-cfg" "${loop_env[@]}" -e BACKUP_SSH_HOST=sink \
+  -v "$(winpath "$PWD/infra/backup/recipients.txt"):/placeholder:ro" -e BACKUP_RECIPIENTS_FILE=/placeholder \
+  backup bash -c 'mkdir -p /tmp/smoke && exec /opt/backup/backup-loop.sh' > /dev/null 2> "$work/err.log"
+# transient: the host does not resolve -> Unreachable -> exit 75 -> retried at the short cap
+docker compose run -d --name "$LOOP-tr" "${loop_env[@]}" -e BACKUP_SSH_HOST=nosuchhost.invalid \
+  backup bash -c 'mkdir -p /tmp/smoke && exec /opt/backup/backup-loop.sh' > /dev/null 2> "$work/err.log"
+# long: the key is refused -> AuthRefused -> exit 1 -> backs off 2, 4, 8, 16 s toward the long cap
+docker compose run -d --name "$LOOP-lg" "${loop_env[@]}" -e BACKUP_SSH_HOST=sink -e BACKUP_SSH_KEY=/tmp/badkey \
+  backup bash -c 'mkdir -p /tmp/smoke && ssh-keygen -q -t ed25519 -N "" -f /tmp/badkey && exec /opt/backup/backup-loop.sh' > /dev/null 2> "$work/err.log"
+sleep 16
+n_cfg=$(docker logs "$LOOP-cfg" 2>&1 | grep -c '"event":"backup_failed"' || true)
+n_tr=$(docker logs "$LOOP-tr" 2>&1 | grep -c '"event":"copy_failed"' || true)
+n_lg=$(docker logs "$LOOP-lg" 2>&1 | grep -c '"event":"copy_failed"' || true)
+docker logs "$LOOP-cfg" 2>&1 | grep -q '"event":"backup_not_retried"' || { docker logs "$LOOP-cfg" >&2; fail "a configuration failure should say it is not being retried"; }
+docker logs "$LOOP-tr" 2>&1 | grep -q '"error_class":"Unreachable"' || fail "the transient loop should be failing as Unreachable"
+docker logs "$LOOP-lg" 2>&1 | grep -q '"error_class":"AuthRefused"' || fail "the long loop should be failing as AuthRefused"
+for c in "$LOOP-cfg" "$LOOP-tr" "$LOOP-lg"; do docker rm -f "$c" > /dev/null; done
+[ "$n_cfg" = "1" ] || fail "configuration failure: wanted exactly 1 attempt in 16 s, got $n_cfg"
+[ "$n_tr" -ge 5 ] || fail "transient failure: wanted at least 5 attempts in 16 s at a 2 s cap, got $n_tr"
+[ "$n_lg" -ge 2 ] && [ "$n_lg" -le 4 ] || fail "long-cap failure: wanted 2 to 4 attempts in 16 s (2, 4, 8 s backoff), got $n_lg"
+echo "ok: in 16 s a missing key was tried $n_cfg time, an unreachable host $n_tr times, a refused key $n_lg times"
+
 echo "== no destination configured: the copy is recorded as skipped, never as a success"
 bk -e BACKUP_SSH_HOST= -- bash -c 'mkdir -p /tmp/smoke; /opt/backup/run-backup.sh >/dev/null; /opt/backup/run-copy.sh; echo "exit=$?"' > "$work/nc.out" || true
 grep -q '"event":"copy_not_configured"' "$work/nc.out" || { cat "$work/nc.out" >&2; fail "expected copy_not_configured"; }
@@ -384,4 +440,4 @@ h=$(health)
 [ "$h" = "backup=ok copy=not_configured copy_failed=False copy_error=NotConfigured" ] || fail "unexpected backup health: $h"
 echo "ok: $h"
 
-echo "OK: M2 slice 2 smoke passed (encrypted, kept locally, copied over SFTP, restored with the private key only; no shell/delete/rename; an interrupted upload is stepped over by a new retry object on every policy, and a short object never restores; the probe tells no-delete from write-once and fails an open destination; fails closed with no recipient or path; a down destination fails the copy and not the backup; the scheduler catches up and pings; unconfigured is reported as such)"
+echo "OK: M2 slice 2 smoke passed (encrypted, kept locally, copied over SFTP, restored with the private key only; no shell/delete/rename; an interrupted upload is stepped over by a new retry object on every policy, and a short object never restores; the probe tells no-delete from write-once and fails an open destination; fails closed with no recipient or path; a down destination fails the copy and not the backup; the scheduler catches up and pings; a refused key, a changed host key and an unreachable host are told apart and retried as each deserves; unconfigured is reported as such)"

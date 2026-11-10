@@ -553,8 +553,8 @@ desktop down, key broken, container dead) the provider alerts you. Like the hear
 home. On a weekday the laptop is away for most of the day, and the copy retries while it is gone. The retry
 backoff is 15, 30, then the cap; with the old 360-minute cap the first success after getting home could be
 ~22:00, and a weekend ping at 09:00 followed by a Monday ping at 22:00 is 37 hours, past a 36-hour line. Two
-changes fix that together: `BACKUP_RETRY_CAP_MINUTES` is **30** (wired through compose; both the backup and the
-copy use it), so a copy lands within half an hour of getting home; and the grace is sized to the longest
+changes fix that together: `BACKUP_RETRY_CAP_MINUTES` is **30** (wired through compose; it applies to a
+destination that cannot be reached, below), so a copy lands within half an hour of getting home; and the grace is sized to the longest
 absence you expect, not to a single day. The trade is slower news of a real failure: a copy that has broken
 for good (a key refused, a changed host key) is paged about two days later, not one. `/health/data` shows it
 sooner (below).
@@ -562,6 +562,31 @@ sooner (below).
 While the laptop is away, expect about twenty failed `ops.backup_copy` rows in `task_runs` per workday. That is
 normal and does not change `backups.copy.state` (see `docs/HEALTH.md`). Expect an alert when the laptop is
 away from home longer than the grace, or asleep at home through it; that is the signal working.
+
+### How a failure is retried
+
+Retries are split by **whether another attempt can help**, not by which step failed. The failing script says so
+with its exit code (`exit_code_for_class` in `infra/backup/lib.sh`, the codes borrowed from `sysexits.h`), and the
+scheduler (`retry_plan`) applies it. Every retry starts at 15 minutes and doubles up to the cap that applies.
+
+| Failure | Exit | Retried | Why |
+|---|---|---|---|
+| `Unreachable` (copy), or `task_runs` not writable | 75 | up to **30 minutes** (`BACKUP_RETRY_CAP_MINUTES`) | The laptop coming home, or Postgres finishing a restart, changes the outcome. |
+| `NoRecipient`, `ConfigInvalid`, `BadDatabaseName` | 78 | **not before the next slot** | No number of attempts fixes a file or setting nobody has edited. One row a day, not one every few hours. |
+| Everything else: `DumpFailed`, `DumpUnreadable`, `EncryptFailed`, `ReadFailed`, `NoTimescale`, `AuthRefused`, `HostKeyChanged`, `SftpFailed`, `SizeMismatch` | 1 | up to **6 hours** (`BACKUP_RETRY_LONG_CAP_MINUTES`) | `pg_dump` is expensive and half an hour rarely changes the answer. `AuthRefused` and `HostKeyChanged` are here on purpose: the fix may be made on the desktop, which this machine cannot see, so it keeps trying, slowly. |
+
+"Not before the next slot" is held in the scheduler's memory only: nothing is persisted, so **restarting the
+container (`docker compose restart backup`) retries at once**. That is also how a changed key, known_hosts or
+`.env` value is picked up. It is the right thing to do after adding the real age key to `recipients.txt`, because
+that file is read live but the scheduler is not told it changed. Before this split, a dev stack with the
+committed placeholder key wrote about 48 failed `ops.backup` rows a day (the shared 30-minute cap); now it writes
+one a day.
+
+The class comes from ssh's own error text, with the connection logged at `LogLevel=ERROR` and **not `-q`**: with
+`-q` every failure is just `Connection closed`. The patterns are anchored to the start of a line and were
+captured from OpenSSH 10.2, the version in the image; `infra/backup/selftest.sh` pins them. **Any message not
+recognised is `Unreachable`**, the mildest wrong answer, because OpenSSH's wording is not a stable interface.
+Re-run `bash infra/smoke-m2-slice2.sh` after an image bump: it provokes each class against a real sshd.
 
 ### Closing the slice
 
@@ -594,7 +619,10 @@ That tests the configuration. It does not satisfy step 3.
    flowdesk-backup@<host>` should say `This service allows sftp connections only.` or at least ask for nothing
    and close, not time out.
 3. **Will the desktop keep the same address?** Use a DHCP reservation on the router or a stable hostname. An
-   address that changes breaks the pinned `known_hosts` and looks like a dead desktop.
+   address that changes breaks the pinned `known_hosts`, which now reads as `HostKeyChanged` (a changed host
+   key), not as a dead desktop. Prefer a hostname that resolves only on your home network over a raw private IP:
+   on another network the same IP can belong to someone else's machine, and that would also read as
+   `HostKeyChanged`.
 4. **Is it awake when the copy runs?** It need not be: a failed copy is retried. But a desktop that is mostly
    asleep means the monitor will alert on most mornings.
 5. **Disk space** on the backup drive, and see the retention section below.

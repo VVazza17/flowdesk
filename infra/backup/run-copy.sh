@@ -35,7 +35,7 @@ fi
 
 if ! id=$(task_start ops.backup_copy) || [ -z "$id" ]; then
   jlog error copy_bookkeeping_failed "detail=could not write task_runs; is Postgres up?"
-  exit 1
+  exit "$EX_TRANSIENT"   # nothing was recorded, so nothing is noise; Postgres coming back is what fixes it
 fi
 
 errlog=$(mktemp /tmp/copy.XXXXXX)
@@ -44,7 +44,7 @@ trap 'rm -f "$errlog"' EXIT
 fail() { # CLASS MESSAGE
   jlog error copy_failed "error_class=$1" "detail=$2"
   task_finish "$id" failed "$1" "$2" || true
-  exit 1
+  exit "$(exit_code_for_class "$1")"   # 75 / 78 / 1: how the scheduler should retry (lib.sh)
 }
 
 [ -n "${BACKUP_SSH_USER:-}" ] || fail ConfigInvalid "BACKUP_SSH_USER is empty"
@@ -60,18 +60,20 @@ rdir=${BACKUP_SSH_PATH%/}
 target="${BACKUP_SSH_USER}@${BACKUP_SSH_HOST}"
 # StrictHostKeyChecking=yes against a pinned known_hosts: a changed or unknown host is a failure, never a prompt
 # and never a silent accept. BatchMode: nothing may ever wait for input. -F /dev/null: ignore any ssh config.
-sftp_opts=(-q -F /dev/null -i "$KEY" -P "${BACKUP_SSH_PORT:-22}"
+# LogLevel=ERROR and not -q: -q silences ssh's own error text, and then every failure reads "Connection closed",
+# so a changed host key could not be told from a sleeping desktop (classify_ssh_failure, lib.sh).
+sftp_opts=(-o LogLevel=ERROR -F /dev/null -i "$KEY" -P "${BACKUP_SSH_PORT:-22}"
   -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$KNOWN_HOSTS"
   -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
 
 # Run sftp commands from stdin; stdout is the answer, stderr goes to $errlog. `timeout` bounds a hung
 # destination. sftp exits 255 when ssh itself failed: the host is asleep or unreachable, the key was refused, or
-# the host key changed.
+# the host key changed; the text on stderr says which.
 sftp_run() { timeout 900 sftp "${sftp_opts[@]}" -b - "$target" 2> "$errlog"; }
 
 classify_and_fail() { # RC WHAT
   local rc=$1 what=$2 cls
-  if [ "$rc" -eq 255 ] || [ "$rc" -eq 124 ]; then cls=Unreachable; else cls=SftpFailed; fi
+  cls=$(classify_ssh_failure "$rc" "$errlog")
   fail "$cls" "$what failed (exit $rc): $(tail -c 300 "$errlog")"
 }
 

@@ -87,4 +87,55 @@ printf 'not a key\n' > "$r"
 fails "garbage is not a recipient" recipients_ok "$r"
 rm -f "$r"
 
+echo "-- what an ssh failure was (text captured from OpenSSH 10.2, the version in the image)"
+cls() { # RC TEXT -> the class
+  local f; f=$(mktemp); printf '%s\n' "$2" > "$f"; classify_ssh_failure "$1" "$f"; rm -f "$f"
+}
+check "a refused key" AuthRefused "$(cls 255 'fd@sink: Permission denied (publickey,keyboard-interactive).
+Connection closed')"
+check "a refused key on Windows OpenSSH's method list" AuthRefused "$(cls 255 'flowdesk-backup@desktop: Permission denied (publickey,password,keyboard-interactive).')"
+changed='@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @
+@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+IT IS POSSIBLE THAT SOMEONE IS DOING SOMETHING NASTY!
+Offending ED25519 key in /run/backup/known_hosts:1
+Host key for sink has changed and you have requested strict checking.
+Host key verification failed.
+Connection closed'
+check "a changed host key" HostKeyChanged "$(cls 255 "$changed")"
+check "only the last line of that banner (what a 300-byte tail keeps)" HostKeyChanged "$(cls 255 'Host key verification failed.
+Connection closed')"
+check "no pinned key for this name (unverifiable)" HostKeyChanged "$(cls 255 'No ED25519 host key is known for sink and you have requested strict checking.
+Host key verification failed.
+Connection closed')"
+check "a host that does not resolve" Unreachable "$(cls 255 'ssh: Could not resolve hostname nosuchhost.invalid: Name does not resolve
+Connection closed')"
+check "connection refused" Unreachable "$(cls 255 'ssh: connect to host sink port 2222: Connection refused
+Connection closed')"
+check "no route" Unreachable "$(cls 255 'ssh: connect to host 192.168.1.9 port 22: No route to host')"
+check "a connect timeout" Unreachable "$(cls 255 'ssh: connect to host 10.255.255.1 port 22: Operation timed out
+Connection closed')"
+check "our own timeout killing a hung sftp (exit 124)" Unreachable "$(cls 124 '')"
+check "a dropped session" Unreachable "$(cls 255 'Connection reset by 192.168.1.9 port 22
+Connection closed')"
+check "wording nobody has seen: falls back to Unreachable, never a confident class" Unreachable "$(cls 255 'ssh: something an unborn OpenSSH said')"
+check "no text at all (what -q leaves)" Unreachable "$(cls 255 'Connection closed')"
+check "a phrase quoted mid-line is not a class" Unreachable "$(cls 255 'note: the log said Host key verification failed. and then Permission denied (x)')"
+check "an SFTP-level refusal (exit 1) is not an ssh failure" SftpFailed "$(cls 1 'remote readdir: Permission denied')"
+
+echo "-- how a failure is retried: exit codes and the two caps"
+check "Unreachable is transient" 75 "$(exit_code_for_class Unreachable)"
+for c in NoRecipient ConfigInvalid BadDatabaseName; do check "$c is configuration" 78 "$(exit_code_for_class $c)"; done
+for c in DumpFailed DumpUnreadable EncryptFailed ReadFailed NoTimescale AuthRefused HostKeyChanged SftpFailed SizeMismatch NothingToCopy something-new; do
+  check "$c takes the long cap" 1 "$(exit_code_for_class $c)"
+done
+# retry_plan RC NOW DELAY BASE TRANSIENT_CAP LONG_CAP NEXT_SLOT -> "NEXT_TRY NEW_DELAY"
+d=900; seq=""; for _ in 1 2 3 4 5; do p=$(retry_plan 75 1000 "$d" 900 1800 21600 99999); d=${p#* }; seq="$seq$d "; done
+check "transient backs off 15, 30, 30, 30 minutes (cap 30)" "1800 1800 1800 1800 1800 " "$seq"
+d=900; seq=""; for _ in 1 2 3 4 5 6 7; do p=$(retry_plan 1 1000 "$d" 900 1800 21600 99999); d=${p#* }; seq="$seq$d "; done
+check "everything else backs off to 6 hours" "1800 3600 7200 14400 21600 21600 21600 " "$seq"
+check "the first retry waits the base delay" "1900 1800" "$(retry_plan 75 1000 900 900 1800 21600 99999)"
+check "a configuration failure waits for the next slot, not a backoff" "99999 900" "$(retry_plan 78 1000 14400 900 1800 21600 99999)"
+check "a transient failure after long waits is brought down to the short cap" "2800 1800" "$(retry_plan 75 1000 21600 900 1800 21600 99999)"
+
 exit $bad

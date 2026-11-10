@@ -125,8 +125,8 @@ a fact worth stating:
 separate so that a sleeping desktop reads as `copy.last_attempt_failed: true` with `last_error_class:
 Unreachable` while `backup` stays `ok`. A copy whose last attempt failed is still `ok` while an earlier copy is
 recent enough. Error classes: `NoRecipient`, `DumpFailed`, `DumpUnreadable`, `EncryptFailed`, `ReadFailed`
-(backup); `Unreachable`, `SftpFailed`, `SizeMismatch`, `ConfigInvalid`, `NothingToCopy` (copy). An interrupted upload is not an error
-class: it is stepped over (`docs/BACKUP.md`).
+(backup); `Unreachable`, `AuthRefused`, `HostKeyChanged`, `SftpFailed`, `SizeMismatch`, `ConfigInvalid`,
+`NothingToCopy` (copy). An interrupted upload is not an error class: it is stepped over (`docs/BACKUP.md`).
 
 **The expected state while the laptop is away from the destination.** The destination is on the home LAN, so
 on a weekday daytime every copy attempt fails and retries every 30 minutes (`BACKUP_RETRY_CAP_MINUTES`): about
@@ -135,11 +135,20 @@ twenty failed `ops.backup_copy` rows a day. `/health/data` shows `copy.state: ok
 `tasks[]` carries only the newest row per task, so the many failed rows do not bury or crowd anything in this
 response. `copy.state` going `stale` (36 h) is the real signal here, and the page behind it is the monitor.
 
-**Known limit: `Unreachable` is too wide.** `run-copy.sh` maps every ssh exit 255 to `Unreachable`, and 255 is
-also what ssh returns for a refused key and for a changed host key. So a copy that has broken for good at home
-reads exactly like a normal Tuesday until it goes `stale`. Splitting the classes (so those two read differently
-from "host away") is proposed in `docs/BUILD-LOG.md` (2026-11-10) and is not built. `error_message` holds the
-detail but this endpoint never returns it.
+**Reading the copy's `last_error_class`.** `run-copy.sh` reads ssh's own error text, so the failures that all
+used to be `Unreachable` are told apart:
+
+| `last_error_class` | What ssh said | What it means |
+|---|---|---|
+| `Unreachable` | name does not resolve, timed out, no route, connection refused or closed, **or any text not recognised** | The destination is away or asleep. Expected on a weekday. Also the fallback: OpenSSH's wording is not a stable interface, so an unrecognised message never becomes a confident class. |
+| `AuthRefused` | `Permission denied (...)` | The server answered and refused the key. Never a normal Tuesday. |
+| `HostKeyChanged` | `Host key verification failed`, `REMOTE HOST IDENTIFICATION HAS CHANGED`, `No <type> host key is known for ...` | The host key is not the pinned one, or none is pinned for this name. Treat it as a security signal until you know why: the desktop was reinstalled, or something else answered. |
+
+**`AuthRefused` and `HostKeyChanged` are visible here and in the container's logs; nothing pages on them
+sooner than the monitor does** (48 hours). Making them page sooner would mean degrading `/health/ready`
+(ADR-0008 section 4), which is a decision, not part of this. One way to see a false `HostKeyChanged`: on another
+network the same private IP can belong to someone else's machine. Use a hostname that only resolves at home, not a
+raw IP, for `BACKUP_SSH_HOST`.
 
 **This never touches `/health/ready` or the HTTP status.** A stale backup can wait until morning, and anything
 that degrades `ready` pages (ADR-0008 section 4). The page comes from the external monitor noticing the copy's

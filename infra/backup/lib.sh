@@ -80,6 +80,82 @@ next_delay() {
   echo "$d"
 }
 
+# --- what a failure means, and whether another attempt can help ---------------------------------------
+#
+# Two exit codes, borrowed from sysexits.h, tell the scheduler how to retry. Everything else that fails exits 1.
+#   75 EX_TEMPFAIL  a retry soon can change the outcome (the laptop comes home; Postgres finishes restarting)
+#   78 EX_CONFIG    no number of attempts fixes it: a file nobody has edited, a setting nobody has changed
+EX_TRANSIENT=75
+EX_CONFIG=78
+
+# Which exit code a failure class gets.   exit_code_for_class CLASS
+# DECISION: split by whether a retry can help, not by step. Only a destination that cannot be reached is
+# transient. NoRecipient, ConfigInvalid and BadDatabaseName are configuration. Everything else gets the long
+# retry cap, deliberately including DumpFailed (pg_dump is expensive and a half hour rarely changes the answer)
+# and AuthRefused / HostKeyChanged: the fix for those may be made on the desktop, which this machine cannot see,
+# so it keeps trying, slowly, and a container restart tries at once.
+exit_code_for_class() {
+  case $1 in
+    Unreachable) echo "$EX_TRANSIENT" ;;
+    NoRecipient | ConfigInvalid | BadDatabaseName) echo "$EX_CONFIG" ;;
+    *) echo 1 ;;
+  esac
+}
+
+# What an ssh/sftp failure was, from its exit code and the text it wrote to stderr (a file).
+#   classify_ssh_failure RC STDERR_FILE      prints a class
+#
+# sftp exits 255 when ssh itself failed, 124 when our `timeout` killed it, and anything else when the SFTP
+# session ran and an operation failed. Only 255 is read for text.
+#   HostKeyChanged  the host key is not the pinned one, or no pinned key exists for this name. Either way this
+#                   machine cannot tell the desktop from something else, and that is a security signal, not
+#                   an outage.
+#   AuthRefused     the server answered and refused the key.
+#   Unreachable     everything else: resolution failures, timeouts, no route, connection refused and closed,
+#                   AND any message not recognised. DECISION: OpenSSH's wording is not a stable interface, so
+#                   an unrecognised message must never produce a confident wrong class; "host away" is the
+#                   mildest wrong answer and the monitor still pages when copies stop.
+# The patterns are anchored to the start of a line, as OpenSSH prints them (checked against OpenSSH 10.2), so a
+# phrase quoted in the middle of some other message does not count. This needs ssh at LogLevel=ERROR: with -q
+# every failure collapses to "Connection closed" and nothing here could tell them apart.
+classify_ssh_failure() {
+  local rc=$1 file=$2
+  case $rc in
+    255) ;;
+    124) echo Unreachable; return 0 ;;
+    *) echo SftpFailed; return 0 ;;
+  esac
+  if grep -Eq '^Host key verification failed\.|^@ +WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!|^Host key for .+ has changed|^No [A-Za-z0-9-]+ host key is known for ' "$file" 2> /dev/null; then
+    echo HostKeyChanged
+  elif grep -Eq '^[^ ]+: Permission denied \(' "$file" 2> /dev/null; then
+    echo AuthRefused
+  else
+    echo Unreachable
+  fi
+}
+
+# After a failed attempt: when to try again, and the delay to carry into the next failure. Prints
+# "NEXT_TRY_EPOCH NEW_DELAY".   retry_plan RC NOW DELAY BASE TRANSIENT_CAP LONG_CAP NEXT_SLOT_EPOCH
+#   78: not retried before the next scheduled slot (one row a day, not one every few hours). Held in the
+#       scheduler's memory only, so restarting the container, which is also how a changed key or setting is
+#       picked up, tries again at once. Nothing is persisted.
+#   75: backs off 15, 30, ... up to TRANSIENT_CAP.
+#   else: the same, up to LONG_CAP.
+# A delay already above the cap in force is brought down to it, so a short-cap failure after long waits does
+# not inherit them.
+retry_plan() {
+  local rc=$1 now=$2 delay=$3 base=$4 cap=$5 long=$6 next_slot=$7 limit wait
+  if [ "$rc" -eq "$EX_CONFIG" ]; then
+    echo "$next_slot $base"
+    return 0
+  fi
+  limit=$long
+  [ "$rc" -ne "$EX_TRANSIENT" ] || limit=$cap
+  wait=$delay
+  [ "$wait" -le "$limit" ] || wait=$limit
+  echo "$((now + wait)) $(next_delay "$wait" "$base" "$limit")"
+}
+
 # --- retention --------------------------------------------------------------------------------------
 
 # Reads backup file names on stdin and prints the ones to delete. Keeps the newest backup of each of the

@@ -19,7 +19,11 @@ BACKUP_DIR=${BACKUP_DIR:-/backups}
 TICK=${BACKUP_TICK_SECONDS:-30}
 # The *_SECONDS variants exist for the smoke test, which cannot wait minutes. Production uses the minutes.
 RETRY_BASE=${BACKUP_RETRY_SECONDS:-$(( ${BACKUP_RETRY_MINUTES:-15} * 60 ))}
-RETRY_CAP=${BACKUP_RETRY_CAP_SECONDS:-$(( ${BACKUP_RETRY_CAP_MINUTES:-360} * 60 ))}
+# Two caps, by whether a retry can help (lib.sh, exit_code_for_class): a destination that cannot be reached is
+# retried soon (RETRY_CAP, 30 minutes) because the laptop coming home changes the outcome; the rest back off to
+# the long cap (6 hours). Failures nothing but an edit can fix (exit 78) are not retried before the next slot.
+RETRY_CAP=${BACKUP_RETRY_CAP_SECONDS:-$(( ${BACKUP_RETRY_CAP_MINUTES:-30} * 60 ))}
+RETRY_LONG_CAP=${BACKUP_RETRY_LONG_CAP_SECONDS:-$(( ${BACKUP_RETRY_LONG_CAP_MINUTES:-360} * 60 ))}
 
 if ! slot=$(slot_seconds "${BACKUP_AT:-03:00}"); then
   jlog error backup_config_invalid "detail=BACKUP_AT must be HH:MM (24-hour), got ${BACKUP_AT:-}"
@@ -42,26 +46,38 @@ while [ "$stop" -eq 0 ]; do
 
   last=$(latest_backup_epoch "$BACKUP_DIR")
   if backup_due "$now" "$(local_seconds_of_day)" "$slot" "$last" && [ "$now" -ge "$next_backup_try" ]; then
-    if "$here/run-backup.sh"; then
+    "$here/run-backup.sh"
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
       backup_delay=$RETRY_BASE
       next_backup_try=0
       copy_pending=1
       next_copy_try=0
     else
-      next_backup_try=$((now + backup_delay))
-      backup_delay=$(next_delay "$backup_delay" "$RETRY_BASE" "$RETRY_CAP")
-      jlog warning backup_will_retry "in_seconds=$((next_backup_try - now))"
+      next_slot=$(( $(last_slot_epoch "$now" "$(local_seconds_of_day)" "$slot") + 86400 ))
+      read -r next_backup_try backup_delay < <(retry_plan "$rc" "$now" "$backup_delay" "$RETRY_BASE" "$RETRY_CAP" "$RETRY_LONG_CAP" "$next_slot")
+      if [ "$rc" -eq "$EX_CONFIG" ]; then
+        jlog warning backup_not_retried "detail=a configuration problem; no retry before the next slot. Fix it, then docker compose restart backup to retry now"
+      else
+        jlog warning backup_will_retry "in_seconds=$((next_backup_try - now))"
+      fi
     fi
   fi
 
   if [ "$copy_pending" -eq 1 ] && [ "$now" -ge "$next_copy_try" ] && ls "$BACKUP_DIR"/*.tar.age > /dev/null 2>&1; then
-    if "$here/run-copy.sh"; then
+    "$here/run-copy.sh"
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
       copy_pending=0
       copy_delay=$RETRY_BASE
     else
-      next_copy_try=$((now + copy_delay))
-      copy_delay=$(next_delay "$copy_delay" "$RETRY_BASE" "$RETRY_CAP")
-      jlog warning copy_will_retry "in_seconds=$((next_copy_try - now))"
+      next_slot=$(( $(last_slot_epoch "$now" "$(local_seconds_of_day)" "$slot") + 86400 ))
+      read -r next_copy_try copy_delay < <(retry_plan "$rc" "$now" "$copy_delay" "$RETRY_BASE" "$RETRY_CAP" "$RETRY_LONG_CAP" "$next_slot")
+      if [ "$rc" -eq "$EX_CONFIG" ]; then
+        jlog warning copy_not_retried "detail=a configuration problem; no retry before the next slot. Fix it, then docker compose restart backup to retry now"
+      else
+        jlog warning copy_will_retry "in_seconds=$((next_copy_try - now))"
+      fi
     fi
   fi
 

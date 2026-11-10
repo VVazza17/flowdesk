@@ -18,7 +18,7 @@ db=${PGDATABASE:?PGDATABASE is not set}
 
 if ! id=$(task_start ops.backup) || [ -z "$id" ]; then
   jlog error backup_bookkeeping_failed "detail=could not write task_runs; is Postgres up?"
-  exit 1
+  exit "$EX_TRANSIENT"   # nothing was recorded, so nothing is noise; Postgres coming back is what fixes it
 fi
 
 work=$(mktemp -d /tmp/backup.XXXXXX)
@@ -28,7 +28,7 @@ fail() { # CLASS MESSAGE
   jlog error backup_failed "error_class=$1" "detail=$2"
   task_finish "$id" failed "$1" "$2" || true
   rm -f "$BACKUP_DIR"/*.partial
-  exit 1
+  exit "$(exit_code_for_class "$1")"   # 78 for NoRecipient / BadDatabaseName, else 1 (lib.sh)
 }
 
 recipients_ok "$RECIPIENTS" \

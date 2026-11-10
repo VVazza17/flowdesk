@@ -951,3 +951,57 @@ instead of about 6, and a `DumpFailed` repeats `pg_dump` that often. Splitting t
   `timed out`, `No route to host`, `Connection refused` and the 124 timeout -> `Unreachable` (unchanged meaning:
   "host away"). The first two are never a normal Tuesday and can be paged on sooner than 48 h. The smoke already has
   stand-in sshd containers to provoke each case. Order of work: add the classes, then the smoke cases, then the docs.
+
+## 2026-11-10 — M2 slice 2, follow-up: ssh failures are classified; the retry cap is split by whether a retry can help
+
+**Kyle asked for:** `Permission denied` -> `AuthRefused`; a changed or unverifiable host key -> `HostKeyChanged`;
+resolution failures, timeouts, no route and connection refused stay `Unreachable`; anything unrecognised falls back to
+`Unreachable`. And the cap split by whether a retry can help: copy transients 30 minutes, `DumpFailed` the long cap,
+`NoRecipient` and `ConfigInvalid` not retried (or the long cap, if one-per-slot needed new state).
+
+**Finding that changed the plan: the production `-q` made the classifier impossible.** `sftp -q` silences ssh's error
+text. Run from the image against a stand-in sshd, **every** failure (wrong key, changed host key, unpinned host,
+no such host, refused port, timeout) printed only `Connection closed`. So the earlier worry, that the stored detail
+was just the tail of the stderr, understated it: the detail was empty of information, and no pattern match could
+have worked. `run-copy.sh` now uses `-o LogLevel=ERROR`. With that, OpenSSH 10.2 prints (captured, and pinned in
+`selftest.sh`): `fd@sink: Permission denied (publickey,keyboard-interactive).`; `WARNING: REMOTE HOST IDENTIFICATION
+HAS CHANGED!` ... `Host key verification failed.`; `No ED25519 host key is known for sink and you have requested strict
+checking.` ... `Host key verification failed.`; `ssh: Could not resolve hostname ...`; `ssh: connect to host ... port
+2222: Connection refused`; `ssh: connect to host ... Operation timed out`. (My first test run also used a key with
+the wrong mode from a Windows bind mount and got a misleading result; production copies the key to mode 600 in
+`entrypoint.sh`, and the second run did the same.)
+
+**Built.**
+- `classify_ssh_failure RC FILE` (lib.sh): only exit 255 is read for text; 124 is `Unreachable`; other exits are
+  `SftpFailed`. Patterns are anchored at the start of a line, so a phrase quoted mid-message does not count. Host-key
+  patterns are checked before `Permission denied`. No match is `Unreachable`.
+- Exit codes (sysexits): 75 `EX_TEMPFAIL` for `Unreachable` and for "task_runs not writable" (nothing was recorded, so
+  nothing is noise); 78 `EX_CONFIG` for `NoRecipient`, `ConfigInvalid`, `BadDatabaseName`; 1 for the rest.
+- `retry_plan` (lib.sh) and the scheduler: 75 backs off to `BACKUP_RETRY_CAP_MINUTES` (30), 1 to the new
+  `BACKUP_RETRY_LONG_CAP_MINUTES` (360), 78 waits for the next slot. A delay already above the cap in force is brought
+  down to it.
+- **One-per-slot did not need persistent state.** It is a variable in the scheduler's memory (`next_try = next slot`).
+  A restart clears it, which is also exactly when a changed key or setting is re-read, so the cost is: after editing
+  `recipients.txt` (read live) the scheduler does not notice until the next slot or `docker compose restart backup`.
+  The log line says so. Rows from the placeholder-key dev stack: about 48 a day under the shared 30-minute cap
+  (previous commit), now 1 a day.
+- `AuthRefused` and `HostKeyChanged` take the **long** cap, not 78 and not 30. My call, not specified: a retry cannot
+  help from this machine, but the fix may be on the desktop (authorised_keys, restoring its host key), which this
+  machine cannot see; so it keeps trying, slowly. A restart retries at once.
+
+**Tested.** `selftest.sh`: 65 assertions, including the captured OpenSSH text, the traps (mid-line phrase,
+no text, unseen wording, an SFTP-level `Permission denied` at exit 1) and the backoff sequences. The smoke
+(`infra/smoke-m2-slice2.sh`) provokes each class against the stand-in sshd: bad key, changed key, unpinned host,
+no such host, closed port, healthy; then runs three scheduler containers for 16 s at base 2 s / transient cap 2 s /
+long cap 600 s: a missing key was tried 1 time, an unreachable host 9, a refused key 4 (2, 4, 8 s backoff).
+
+**Not done, said plainly.**
+- `HostKeyChanged` shows on `/health/data` (`last_error_class`) and in the logs. **Nothing pages on it sooner than
+  the 48-hour monitor.** Paging sooner means degrading `/health/ready` (ADR-0008 section 4); that is a decision for
+  Kyle, not made here.
+- A false `HostKeyChanged` is possible on a foreign network if `BACKUP_SSH_HOST` is a raw private IP that another
+  network assigns to someone else's machine. Documented (`docs/HEALTH.md`, `docs/BACKUP.md`): use a hostname that
+  only resolves at home.
+- Not tested against Windows OpenSSH Server's wording (the stand-in is OpenSSH 10.2 on Linux, and the message text
+  comes from the *client*, which is what is classified, but the server's `Permission denied (...)` method list will
+  differ). `verify-destination.sh` on the real desktop is still the check.
