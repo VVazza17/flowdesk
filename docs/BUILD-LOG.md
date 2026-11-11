@@ -1140,3 +1140,70 @@ the kind-and-class-only design stand either way.
 **Verified.** Lint, mypy, 329 tests; `ci-checks.sh` licence and audit with `tenacity` in the locks (via smoke 8, which passes); smokes 3, 4, 6, 7, 8, M2 slice 1, M2 slice 3 and the new M2 slice 4 pass. Not covered: any real provider, and arm64 for the new code beyond smoke 8's import check.
 
 **Found while verifying.** (1) Smoke 6 failed on a stray `fake` feed: a fake task message still queued in Redis ran after the flag was turned off. The task is now a no-op unless `FAKE_PROVIDER_ENABLED`, with a test. (2) The slice 4 smoke failed once, straight after smoke 6, because `/health/ready` was degraded by a canary smoke 6 had left stale; it now waits for `ready` to be `ok` before it starts, and passed three runs in a row before and after. (3) **Unverified risk, not observed:** the canary shares the worker and its queue with ingest tasks, and a retrying task sleeps while holding a worker slot. A provider that is down for many feeds could in principle starve the canary and degrade `ready`, which would contradict the readiness rule in practice. Nothing here triggers it (one fake feed). Revisit with slice 5 or 6, when real feeds share the worker: a separate queue for the canary is the likely fix, and it is a decision for Kyle.
+
+## 2026-11-11 — M2 slice 5 plan: FRED and macro vintages (approved, not started)
+
+Plan only; no code yet. ADR-0003 binds the slice: availability filtering on row existence, vintages never
+overwritten, the widened-window 400 as a bug, `"."` kept as a gap, per-series staleness.
+
+**Decisions (Kyle, 2026-11-11).**
+- **Canary starvation is Step 0, before any scheduled feed.** One worker at `--concurrency=2` on one queue means a
+  long backfill can starve the canary, and `/health/ready` would degrade and page as a dead worker. Fix: an `ops`
+  queue and a `worker-ops` service (`-Q ops -c 1`) for the canary alone; the existing worker takes `-Q ingest`;
+  `task_default_queue="ingest"` so a new task defaults to the queue where starvation is survivable; ingest prefetch
+  1. A test first shows the starvation going red, then the fix turns it green.
+- **Option (b): a second canary on the ingest queue**, with a threshold sized to the longest allowed task. Reason
+  to record: without it a wedged ingest worker would surface only as stale feeds, which the readiness rule says
+  never pages. That is machinery failure disguised as source failure, and it breaks the rule in the case it was
+  written for. Adds a degraded condition, so it pages (ADR-0008 section 4). Smokes M2-1 and M2-4 name which worker
+  they stop; HEALTH.md and the comment at `settings.py` ("Revisit when long tasks share the worker") change.
+- **Vocabulary** (also in SPEC-DEFECTS IDEA-034 and IDEA-038): `effective_at`, `available_at`, `ingested_at`,
+  `revision`, `source`, plus `ingestion_run_id`. `macro_metrics.effective_at` is a **DATE**. §7 has no SQL join of
+  `macro_metrics` to `bars`; macro and bars are aligned by date in ThemeScore, Scenario Replay and the Market Graph,
+  which must use the session date and never `CAST(ts AS date)`. `value` is nullable: `"."` is a stored gap.
+- **Data age on `/health/data`**, from `max(available_at)` per series; `providers_health` stays poll health.
+  Thresholds come from each series' own backfilled `available_at - effective_at` history, sized as **generous
+  multiples of observed lag**, not tight fits: a release-schedule change is not predicted by history.
+
+**Steps.** 0 canary isolation · 1 migration 0005 (`macro_metrics`) · 2 FRED client and error mapping (the three
+400s by message, 429 as `rate_limited`, 423/500 as `transient` and logged, key redaction in httpx's URL logging,
+offset paging) · 3 backfill (`output_type=4`, widened window) and daily poll at 08:00 ET, revision only on change ·
+4 point-in-time read in `services/`, tested against the GDPC1 oracle (23,526.085 on 2025-05-01, one 2025 quarter
+then) · 5 per-series data age · 6 smoke, HEALTH.md, `.env.example` (`FRED_API_KEY`).
+
+**To verify before the backfill is designed.** FRED caps vintage dates per request (series_observations page: 2000
+for JSON, lower for daily series); the M0 spike only covered GDPC1 and DGS10, so a widened window on the other
+daily series may need chunking. Also which request shapes trigger the "No vintage dates" 400.
+
+**FRED rate limit: documented, not measured. NOT YET CONFIRMED FROM THE PAGE ITSELF.** Source:
+https://fred.stlouisfed.org/docs/api/fred/errors.html, read 2026-11-11 through a fetch tool that passes pages
+through a small model (curl and PowerShell from this machine were refused: connection reset, then timeout). Its
+quotation, which is not byte-verified:
+
+> 429 Too Many Requests (Up to 120 requests per minute are allowed before being served a 429 error code.
+> Not complying with the throttling can result in a temporary block.)
+
+The page lists 423 and 500 with no explanation and does not mention `Retry-After`. A 6,000/day figure appears in
+third-party guides and in no official source found. **The FRED entry in `RATE_BUDGETS` (1 request per second, 60 a
+minute) is not to be committed until Kyle has read that sentence on the page and replaced the line above with the
+verified text.** No 429 has been observed; the client will log status and headers on the first natural one.
+The slice 4 retry placeholders (`RetryPolicy`, `runner.py`) are replaced by a per-provider override for FRED;
+its numbers carry the same label.
+
+**Decisions added after approval (Kyle, 2026-11-11).**
+- **The ingest canary's false-alarm gap is closed with `heartbeat_at`, not queue priority.** Priority cannot
+  help a canary waiting behind a task that already started, and it ties the guarantee to Redis transport
+  behaviour that cannot be verified from here. The ingest worker counts as alive if a task completed recently
+  **or** one is running with a fresh `heartbeat_at`; queue position stops mattering. This is the same mechanism
+  as the sweep for rows left `running` when the time limit kills a task (`tasks/runs.py`, deferred to "the
+  first long task, slice 10"). Step 3's FRED backfill is the first long task, so that trigger fired early:
+  both are built together at step 3. Step 0 ships without them, so until then the threshold can false-alarm
+  (HEALTH.md, "The ingest worker check").
+- **FRED client User-Agent (Kyle, 2026-11-11; belongs to step 2).** The client sets an explicit User-Agent from
+  `FRED_USER_AGENT`, defaulting to a generic `FlowDesk` string with no personal contact; httpx's default is not
+  relied on. Pattern: §6.5's EDGAR rule (mandatory contact UA, fail loudly at startup), except FRED documents no UA
+  requirement, so a missing value falls back to the default and does not stop startup. The theory that FRED filters
+  on UA is unconfirmed: curl with a Chrome-style UA was reset too (2026-11-11), so the reset may be this
+  machine's network. Either way a 401/403 maps to a non-retryable kind and is never `transient`; a connection reset
+  cannot be told from a network blip, so it stays `transient`, bounded by the 4 attempts and Beat's next firing,
+  and a feed that never succeeds goes stale (`first_seen_at`).

@@ -1012,6 +1012,13 @@ disagree.
   `effective_at`, `ingested_at` or `revision`. It does use `available_at` and `source`, with ADR-0003's meaning.
   Slice 5 may not rename or redefine `available_at` or `source` without a migration to `universe_membership`.
   (Its one gap, that a row records when the interval started being known and not when it ended, is IDEA-040.)
+- **Settled at slice 5 planning (Kyle, 2026-11-11):** `effective_at` = the period the value describes;
+  `available_at` = when it became knowable (exact for FRED first prints, the poll date for later revisions, per
+  ADR-0003 §3); `ingested_at` = when we wrote the row, never used for point-in-time filtering; `revision` = 0 for
+  the first print, +1 per detected change, per `(metric, effective_at)`; `source` = the provider id. The list is
+  extended with `ingestion_run_id` (already in §8 `macro_metrics`). Names and meanings bind every observation
+  table; types do not: `macro_metrics.effective_at` is a DATE (a period), where `bars` keeps an instant. IDEA-038
+  is resolved by this entry. `universe_membership`'s use of `available_at` and `source` is unaffected.
 - **Waits for slice 6 planning:** the `bars`-specific decisions. These are where `c_total_return` revisions live
   (revision columns on `bars`, or a separate revision table), how `provider/feed/venue_scope` is stored, and
   IDEA-035's version home. These are decided together, since the version home and the revision storage both
@@ -1175,6 +1182,14 @@ plays which role.
 
 ### Unfreeze triggers
 The slice 5 planning decision on the shared provenance vocabulary, then a spec correction release.
+
+**Settled by decision (Kyle, 2026-11-11, M2 slice 5 planning).** The column is `effective_at`; §8's `effective_ts`
+and §6.4 line 330's `ts` are superseded by that name, pending a correction release. On `macro_metrics` it is a
+**DATE**, not a TIMESTAMPTZ: a midnight-UTC Q1 observation renders as the previous year in any zone west of UTC.
+The vocabulary binds names and meanings, not types; a bar is an instant and a macro observation is a period. The
+spec states no SQL join between `macro_metrics` and `bars` on this column. It does align the two by date in three
+places (ThemeScore's macro-linked members, §7 Scenario Replay, the Market Graph); that alignment must go through
+the session date from `trading_sessions`, never `CAST(ts AS date)`, which is UTC.
 
 ### Drift class
 Not a row on the canonical list. I found no revision event behind it: the changelog records no rename of either
