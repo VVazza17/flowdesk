@@ -15,6 +15,7 @@ import structlog
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app import settings
+from app.ingest.runner import register_feeds
 from app.logging import configure_logging
 from app.services.reference_seed import EXCHANGES, seed_reference
 from app.services.sessions import sync_sessions
@@ -32,6 +33,9 @@ async def run() -> None:
         end = datetime.now(UTC).date() + timedelta(days=settings.SESSIONS_HORIZON_DAYS)
         calendars = sorted({row[4] for row in EXCHANGES})
         sessions = await sync_sessions(engine, calendars, start, end)
+        # Every declared feed gets a providers_health row now, so one that never runs is visible
+        # as overdue instead of absent (IDEA-026).
+        feeds = await register_feeds(engine, settings.feed_stale_after())
     finally:
         await engine.dispose()
     log.info(
@@ -42,6 +46,7 @@ async def run() -> None:
         symbols=seeded.symbols,
         memberships=seeded.memberships,
         sessions_inserted=sessions.inserted,
+        feeds_registered=feeds,
         drift=len(seeded.drift) + len(sessions.drift),
     )
     for message in (*seeded.drift, *sessions.drift):

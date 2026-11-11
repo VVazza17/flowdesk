@@ -508,6 +508,15 @@ An open-ended `id_kind` would let a new many-to-one kind inherit the wrong rule 
 `CHECK (id_kind IN ('ticker','cik'))` makes adding a kind a migration that must decide its uniqueness. A second
 CHECK enforces the zero-padded 10-digit CIK form. The convention stands everywhere else.
 
+**Addendum, 2026-11-11 (M2 slice 4): `ingestion_runs` is now written.** This is the trigger the entry named
+("before M2 first writes `ingestion_runs`"). Stopgap, in `app/ingest/runner.py`: `status` is `running` /
+`succeeded` / `failed` (TEXT, no CHECK, the same values as `task_runs`); `finished_at` is set when a run ends
+either way; **one row per run, however many attempts it took**; `error` is `<kind>:<Class>: <text>` with
+credentials scrubbed; `rows_read` is what the provider returned and `rows_written` is rows created or changed,
+never attempted (a verification signal for the gate's idempotency clause: an identical re-ingest writes 0).
+Adding a value later (a `partial` for a batch some of whose symbols failed, which slice 6 may want) costs
+nothing because there is no CHECK. `backfill_runs` status and its uniqueness rule are still open (slice 10).
+
 ---
 
 ## IDEA-023: `providers_health` has no quarantine columns, but §6 says quarantine counts feed it
@@ -646,6 +655,16 @@ Resolve before M2 registers the first real feed, so the migration adding the col
 any row exists. Related but distinct: IDEA-023 is a contradiction (line 374 sends quarantine
 counts to a table with no columns for them); this entry is a missing field that no section
 contradicts.
+
+**Addendum, 2026-11-11 (M2 slice 4): resolved for the build by owner decision.** Migration 0004 adds
+`providers_health.first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now()`, a departure from §8's column list (like
+the CIK in `provider_mappings`). The table was empty, so nothing needed backfilling. Set when the feed is first
+registered: the seed registers every feed declared in `FEED_STALE_AFTER`, and `run_feed` registers on first
+touch, so a feed that is scheduled but never runs is visible. `never_succeeded` escalates to `stale`
+(`never_succeeded: true`) once `now - first_seen_at` passes that feed's **own stale threshold**. There is no
+second "grace period" threshold: a feed that has missed its whole staleness window is broken by the same
+standard as one that succeeded once and stopped. A feed with no threshold cannot be judged and stays
+`never_succeeded`. The frozen §8 still lacks the column until a correction release.
 
 ---
 
@@ -1235,3 +1254,37 @@ checked this against anything but the ticker list and my own recollection of the
 Not a row on the canonical list. I found no changelog entry that changes the count, so no revision event can be
 named, and by the membership rule above it is a plain contradiction, like IDEA-038. (Logged first as row 13;
 removed 2026-11-10 on Kyle's ruling.)
+
+---
+
+## IDEA-042: §6.11 and §11 both specify retries, and neither says how the two mechanisms compose
+
+**Status:** Recorded at M2 slice 4 planning (2026-11-11). Handled for the build as below. Needs a spec correction release. Blocks nothing.
+**Raised:** 2026-11-11 (M2 slice 4)
+
+### The proposal
+§6.11 (line 367) says provider clients use "tenacity retries with exponential backoff". §11 (line 1042) says
+tasks have "max_retries=3 exponential backoff". An ingest is both a provider call and a task, so both apply, and
+neither section says how they compose. Taken together literally, a failing call is attempted up to four times by
+tenacity inside each of up to four Celery attempts: sixteen calls to a provider that is already failing, which is
+the opposite of §6.12's "degrade cadence, not hammer the source".
+
+### How it is handled for the build
+Tenacity retries inside the run (1 try + 3 retries, §11's count), and Celery retries are off for ingest tasks
+(`max_retries=0`). Beat is the outer retry: the next scheduled firing tries again. The reason is recorded in
+`app/ingest/runner.py`: a Celery retry would also write a second `ingestion_runs` row for one logical run, which
+breaks the record that the M2 gate's idempotency clause is measured against.
+
+### Why it is parked
+The frozen spec cannot be edited in place.
+
+### The version that would be legitimate
+A correction release stating that provider-call retries are tenacity's, that task-level retry is not used for
+ingest, and that the next scheduled run is the outer retry.
+
+### Drift class
+Not a row on the canonical list. No revision event that changed either sentence can be named, so by the list's
+membership rule it is a plain contradiction (an unspecified composition), like IDEA-038 and IDEA-041.
+
+### Unfreeze triggers
+The next spec correction release.

@@ -3,7 +3,9 @@
 Implemented in M1 slice 6; the worker check was added in M2 slice 1. The M1 gate: killing Redis (or
 Postgres) produces the state below, never a 500. Verified by `infra/smoke-slice6.sh` and
 `backend/tests/test_health_*.py`. The worker half of the clause (IDEA-032, moved to M2's gate) is verified by
-`infra/smoke-m2-slice1.sh` and `backend/tests/test_worker_health.py`; the provider half is slice 4's.
+`infra/smoke-m2-slice1.sh` and `backend/tests/test_worker_health.py`. The provider half (slice 4) is
+verified by `infra/smoke-m2-slice4.sh` and `backend/tests/test_ingest_runner.py`, against the fake provider
+only; see "Killing a provider" below.
 
 The spec (§9 line 968) gives no response shape for these routes (IDEA-021, IDEA-025). The shapes
 here are implementation decisions, not spec text. Bodies are bare JSON, not the §9 envelope.
@@ -26,6 +28,35 @@ Always `200 {"status":"ok"}`. Touches no database, Redis or clock. Docker's heal
 | Schema behind code (or never migrated) | 503 | `not_ready` | `checks.migrations` = `{"status":"behind","current":<rev or null>,"head":<rev>}` |
 
 Each check has a 2 s timeout; a hung dependency reports `down` / `TimeoutError`.
+
+### The readiness rule
+
+**`/health/ready` degrades when the machinery has stopped, not when a source is unavailable.** This is a
+rule, not a case to be decided each time a new check is added.
+
+- *Machinery* is what FlowDesk runs and can restart: Postgres, Redis, the worker and Beat, the schema. If one
+  of these is not working, nothing is being ingested or served, and only the owner can fix it.
+- A *source* is something outside FlowDesk whose state we only observe: a data provider, a feed, the off-box
+  backup destination. It can be down, slow, rate-limiting or late for reasons FlowDesk cannot act on.
+
+The test for a new condition: *if the external thing recovered by itself, would FlowDesk be working again
+with no action from the owner?* If yes it is a source, and it does not degrade `ready`. If it needs the
+owner to restart or repair something, it is machinery, and it does.
+
+| Condition | Class | Degrades `ready`? | Where it shows |
+|---|---|---|---|
+| Redis down | machinery | **yes** | `checks.redis` |
+| Worker or Beat dead, wedged, or not completing | machinery | **yes** | `checks.worker` |
+| Postgres down, schema behind | machinery | **503** | `checks.migrations` |
+| One feed stale, or a provider down (killed) | source | no | `/health/providers` |
+| Every feed stale at once | source | no | `/health/providers` |
+| Backup stale, off-box copy failing | source | no | `/health/data` `backups` |
+
+Why it matters: this route drives the external heartbeat, and `degraded` pages after 45 minutes (below).
+Providers include an unofficial one (yfinance) that will fail on its own schedule. Paging for that would
+page about things the owner cannot fix, and a pager that cries wolf gets ignored when the worker really dies.
+A stale feed is loud where it belongs: `/health/providers` goes `stale`. It does not page through the ADR-0008
+monitor; the ops heartbeat of §11 (a later milestone) is the place for that.
 
 **This route drives the external heartbeat.** Only `ok` sends a ping (ADR-0008, `docs/HEARTBEAT.md`), so on a
 monitored instance **`degraded` is not a quiet state: it pages the owner after 45 minutes**, even though it is a
@@ -90,13 +121,19 @@ Top-level `status`, in precedence order. **Only `stale` means something broke.**
 
 Per-feed `status`: `fresh` · `stale` · `never_succeeded` (`stale: false`) · `no_threshold`
 (`stale: null`). `last_attempt_failed` is true when the last error is newer than the last success.
+Each feed also carries `first_seen_at`, and `never_succeeded: true` when it is `stale` without ever having
+succeeded.
 Staleness is HTTP 200: it describes a feed, it is not an API outage.
 
 Thresholds: `app/settings.py` `FEED_STALE_AFTER`, keyed `(provider, feed)`, empty until M2.
 There is no global default (§6.11: thresholds follow each series' own cadence).
 
-`never_succeeded` carries no age because `providers_health` has no first-seen column, so it can
-never escalate to `stale` by itself. Logged as IDEA-026.
+**A feed that has never succeeded escalates.** `providers_health.first_seen_at` (migration 0004; a column §8
+does not list, IDEA-026 addendum) is set when the feed is first registered. The seed registers every feed
+declared in `FEED_STALE_AFTER`, so a feed that is scheduled but never runs is visible, not absent. Once
+`now - first_seen_at` is past that feed's own stale threshold, `never_succeeded` becomes `stale` (with
+`never_succeeded: true`). Inside the window it is still `never_succeeded`, which is not broken. A feed with no
+threshold cannot be judged and stays `never_succeeded`.
 
 ## `GET /health/data` — pipeline state as recorded
 
@@ -106,6 +143,17 @@ Postgres only; same `503 unavailable` behaviour. Returns the latest `ingestion_r
 these tables no status vocabulary (IDEA-022). The one exception is `task_runs`, where the code writes
 `running` / `succeeded` / `failed` (a stopgap, also under IDEA-022), and the worker check reads `succeeded`.
 `tasks[]` therefore shows the canary's latest run, and `error_class` only (never `error_message`).
+
+`ingestion[]` (one entry per feed: its latest run) is written by `run_feed` with `status` `running` /
+`succeeded` / `failed` (a stopgap under IDEA-022; TEXT, no CHECK). There is one row per run, however many
+attempts the run took. `error` is `<kind>:<Class>: <text>` with credentials removed; the public profile
+removes the key.
+
+**`rows_written` is a verification signal, not a statistic.** It counts the rows a run created or *changed*
+in canonical state, never the rows it attempted to write. `rows_read` is what the provider returned. A re-ingest
+of an identical payload therefore reads N and writes 0, and that 0 is the observable evidence for the M2 gate's
+clause "re-ingesting identical payloads yields identical canonical rows". Do not change it to count attempts:
+that would make a correct idempotent re-run look as if it had written everything again.
 
 ### `backups` (M2 slice 2)
 
@@ -189,7 +237,61 @@ and `/openapi.json` return 404. Verified by `infra/smoke-slice7.sh` and
 
 ## Not covered yet
 
-- Killing a provider (also in the M1 exit gate, moved to M2's gate by IDEA-032): no provider exists until slice
-  4 builds the framework. The worker half is done (slice 1, above).
+- Killing a **real** provider: slice 4 proves the states against the fake provider only. Each real client
+  (FRED in slice 5, yfinance in slice 6) must map its library's failures into the five kinds below, and the
+  mapping is checked when that client exists. The worker half is done (slice 1, above).
 - Whether the backup has ever been restored on the real desktop: only the closing drill in `docs/BACKUP.md`
   tells you; `backups` says whether runs succeed, not whether the files can be read.
+
+## Killing a provider (M2 slice 4; the provider half of IDEA-032)
+
+An external API cannot be killed, so the gate's clause needs a definition. **A provider is killed when every
+call to it, after retries, ends in failure.** That is what FlowDesk can observe, and it covers four ways a
+source goes away, all mapped by the client into one of five kinds (`app/ingest/errors.py`):
+
+| Way it goes away | Kind | Retried within the run? |
+|---|---|---|
+| Unreachable: refused, timeout, DNS | `transient` | yes |
+| Answers "slow down" persistently (429) | `rate_limited` | yes |
+| Refuses the request: bad key, bad series, FRED's "No vintage dates exist" 400 | `permanent` | no |
+| Silent empty result (yfinance, ADR-0002) | `empty_result` | no |
+| Payload is not the known shape | `schema_mismatch` | no |
+
+(A sixth, `budget_unavailable`, means FlowDesk refused to call because the rate limiter could not grant a slot;
+that one is a fault in our own Redis, not a provider.)
+
+**One run is one `ingestion_runs` row.** Within a run, tenacity retries only the retryable kinds: 1 try + 3 retries
+(§11's `max_retries=3`), exponential with jitter, and every attempt takes a rate-budget slot. Celery retries are
+off for ingest tasks. Beat is the outer retry: the next firing tries again. A Celery retry would also write a second
+`ingestion_runs` row for one logical run, which would break the record that idempotency is measured against
+(the §6.11 / §11 overlap is IDEA-042).
+
+### The documented states, in order
+
+| When | `ingestion_runs` | `providers_health` | The feed in `/health/providers` | `/health/ready` |
+|---|---|---|---|---|
+| Healthy | `succeeded` | `last_success_at` advances | `fresh` | `ok` |
+| Just killed (inside the threshold) | `failed`, `error` = `<kind>:<Class>: <text>` | `last_error_at`, `last_error` = `<kind>:<Class>`; `last_success_at` unchanged | `fresh`, `last_attempt_failed: true` | `ok` |
+| Past the feed's own threshold | `failed` | as above | **`stale`**; top-level `status` `stale`, HTTP 200 | **`ok`** |
+| Recovered | `succeeded` | `last_success_at` advances | `fresh`, `last_attempt_failed: false` | `ok` |
+
+`/health/ready` stays `ok` throughout. That is the readiness rule above, not an oversight: a dead provider is a
+source going away, and the machinery (worker, Redis, Postgres) is still working.
+
+**`providers_health.last_error` is the kind and the exception class, never the error text.** That column is served
+by `/health/providers`; the public profile removes the key but the private profile does not, and a client
+exception routinely carries the request URL (FRED authenticates with `api_key=` in the query string). So the
+text is not stored there at all. The scrubbed text goes into `ingestion_runs.error`, which the public profile
+also removes. `backend/tests/test_ingest_runner.py` reads the stored rows back with SQL and asserts that no
+credential is in them.
+
+### The test
+
+- `backend/tests/test_ingest_runner.py`: each failure kind through `run_feed` against a real database; attempt
+  counts; one row per run; the stored credential check; `rows_written` 0 on an identical re-ingest.
+- `backend/tests/test_provider_health_states.py`: the state walk above, and `first_seen_at` escalation.
+- `infra/smoke-m2-slice4.sh`: the fake provider on the real stack (Beat, Redis, worker, Postgres, API). It sets
+  `FAKE_PROVIDER_MODE=down` and recreates the worker, then asserts the table above, including that `ready` stays
+  `ok`; sets the mode back and asserts recovery; and registers a feed that never runs and asserts it escalates.
+
+The fake provider is off by default (`FAKE_PROVIDER_ENABLED`) and registers nothing in a normal stack.

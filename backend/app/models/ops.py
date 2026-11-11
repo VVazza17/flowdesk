@@ -6,7 +6,7 @@ vocabularies) is a stopgap logged as IDEA-022/023/024 in docs/SPEC-DEFECTS.md.
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Identity, Integer, Text
+from sqlalchemy import BigInteger, Identity, Integer, Text, text
 from sqlalchemy.dialects.postgresql import TIMESTAMP
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -24,6 +24,9 @@ class ProvidersHealth(Base):
     last_success_at: Mapped[datetime | None] = mapped_column(TZ)
     last_error_at: Mapped[datetime | None] = mapped_column(TZ)
     last_error: Mapped[str | None] = mapped_column(Text)
+    # DECISION: a column §8 does not list (IDEA-026 addendum, 2026-11-11). When the feed was first
+    # registered, so "never succeeded" has an age and can escalate to stale.
+    first_seen_at: Mapped[datetime] = mapped_column(TZ, server_default=text("now()"))
 
 
 class IngestionRun(Base):

@@ -1106,3 +1106,37 @@ components, so 0BSD, Zlib and CC0-1.0 are not approved in general. A different s
 gate. The "Open: the licence gate is red" paragraph above is superseded by this entry.
 
 Re-run after the exception: lint, mypy, 270 tests, `ci-checks.sh license` (56 packages, 0 not allowed), `smoke-slice8.sh` and `smoke-m2-slice1.sh` all pass. Slice 3 is closed apart from computing sessions on native arm64, which is untested.
+
+## 2026-11-11 - M2 slice 4: provider framework and fake provider
+
+**Decisions (Kyle, on the plan).** (1) Stale feeds stay off `/health/ready`, and the rule is written down as a rule
+in `docs/HEALTH.md` ("The readiness rule": it degrades when the machinery has stopped, not when a source is
+unavailable). (2) `providers_health.first_seen_at`, with a never-succeeded feed escalating at its own threshold
+(IDEA-026 addendum). (3) Tenacity only, Celery retries 0 for ingest tasks: Beat is the outer retry, because a Celery
+retry would write a second `ingestion_runs` row for one logical run; the §6.11 / §11 overlap is IDEA-042. (4)
+`rows_written` counts created-or-changed rows only, documented as a verification signal so nobody later changes it
+to count attempts. Plus: a test that no credential reaches `providers_health.last_error`, asserted on the stored value.
+
+**Built.** `app/ingest/{errors,budget,runner,fake}.py`; `app/tasks/fake_ingest.py` (scheduled only when
+`FAKE_PROVIDER_ENABLED`); migration 0004; `classify_feed` escalation; the seed registers declared feeds; compose
+passes the fake's variables; `tenacity==9.1.2` (Apache-2.0) in the locks; tests `test_ingest_errors`,
+`test_rate_budget`, `test_ingest_runner`, `test_provider_health_states`, `test_fake_provider`;
+`infra/smoke-m2-slice4.sh`; HEALTH.md gains the readiness rule and "Killing a provider".
+
+**Left out on purpose** (slice 5 or 6 adds it with a real provider in hand): pagination, windowed quotas (FRED's
+limit is in no spec or ADR), partial-batch success, per-capability protocols, env-based provider selection,
+`Retry-After`, tuned backoff numbers. The retry numbers (4 attempts, 1 s initial, 60 s cap) are placeholders.
+
+**Found by the credential test.** The scrubber's first version failed on `Authorization: Bearer <key>`: the generic
+`name=value` pattern took the word "Bearer" as the value and left the key behind. Fixed by scrubbing Bearer first.
+That is the exact-pattern layer; only the exact-value layer (a client passing its own key as `secrets`) is a
+guarantee, and `providers_health.last_error` does not depend on either since it never holds the text.
+
+**A correction to the framing of the credential concern.** The public profile already removes
+`feeds[].last_error` (IDEA-019, `redact_providers`), so a key there would not be on the public endpoint today. The
+private profile serves it unredacted, and one redaction layer is not a reason to store a secret, so the test and
+the kind-and-class-only design stand either way.
+
+**Verified.** Lint, mypy, 329 tests; `ci-checks.sh` licence and audit with `tenacity` in the locks (via smoke 8, which passes); smokes 3, 4, 6, 7, 8, M2 slice 1, M2 slice 3 and the new M2 slice 4 pass. Not covered: any real provider, and arm64 for the new code beyond smoke 8's import check.
+
+**Found while verifying.** (1) Smoke 6 failed on a stray `fake` feed: a fake task message still queued in Redis ran after the flag was turned off. The task is now a no-op unless `FAKE_PROVIDER_ENABLED`, with a test. (2) The slice 4 smoke failed once, straight after smoke 6, because `/health/ready` was degraded by a canary smoke 6 had left stale; it now waits for `ready` to be `ok` before it starts, and passed three runs in a row before and after. (3) **Unverified risk, not observed:** the canary shares the worker and its queue with ingest tasks, and a retrying task sleeps while holding a worker slot. A provider that is down for many feeds could in principle starve the canary and degrade `ready`, which would contradict the readiness rule in practice. Nothing here triggers it (one fake feed). Revisit with slice 5 or 6, when real feeds share the worker: a separate queue for the canary is the likely fix, and it is a decision for Kyle.

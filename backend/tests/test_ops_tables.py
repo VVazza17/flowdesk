@@ -31,6 +31,8 @@ SPEC = {
             ("last_success_at", "timestamp with time zone"),
             ("last_error_at", "timestamp with time zone"),
             ("last_error", "text"),
+            # Not in §8: added by migration 0004 (IDEA-026 addendum).
+            ("first_seen_at", "timestamp with time zone"),
         ],
         ["provider", "feed"],
     ),

@@ -69,7 +69,7 @@ async def providers(
     rows, failure = await _from_postgres(response, "providers", probes.provider_rows)
     if failure is not None or rows is None:
         return failure or {"status": "unavailable", "error": "NoResult"}
-    body = svc.assemble_providers(rows, now, settings.FEED_STALE_AFTER)
+    body = svc.assemble_providers(rows, now, settings.feed_stale_after())
     # `!= "private"`, not `== "public"`: anything but the known-private mode gets the redacted body.
     return body if mode == "private" else svc.redact_providers(body)
 

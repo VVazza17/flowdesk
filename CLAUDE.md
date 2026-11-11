@@ -81,6 +81,21 @@ records M1 slice 10's heartbeat decisions.
   addendum); a different string from a future numpy fails the gate.** Session math
   (windows of N sessions) is a follow-on, not built. Sessions computing on arm64 is untested; the imports
   load under QEMU.
+- **The provider framework and a fake provider are built (M2 slice 4, 2026-11-11).** `app/ingest/`: a five-kind
+  failure taxonomy that every client maps into, a Redis spacing rate budget (every attempt takes a slot; a
+  provider with no budget, or Redis down, is refused and never run unthrottled), and `run_feed`, which wraps a
+  provider call with tenacity retries and writes `ingestion_runs` and `providers_health`. **Celery retries are
+  off for ingest tasks: Beat is the outer retry**, because a Celery retry would write a second
+  `ingestion_runs` row for one logical run (IDEA-042). **`rows_written` is a verification signal, not a
+  statistic: rows created or changed, never attempted; an identical re-ingest writes 0.** Never "fix" it to
+  count attempts. **`providers_health.last_error` stores the kind and exception class only, never the error
+  text** (FRED's key rides in the URL and `/health/providers` serves that column); a test reads the stored rows
+  back to prove it. `providers_health.first_seen_at` (migration 0004, a column §8 lacks) lets a feed that never
+  succeeds go `stale` at its own threshold. **The readiness rule (`docs/HEALTH.md`): `/health/ready` degrades
+  when the machinery has stopped (Postgres, Redis, worker, Beat), never when a source is unavailable (a
+  provider, a feed, the backup destination).** A killed provider is defined and tested in HEALTH.md; it is
+  proven against the fake only, off by default (`FAKE_PROVIDER_ENABLED`). FRED and yfinance clients, their
+  rate numbers and their error mappings are slices 5 and 6.
 - **The base image is pinned by digest** (M2 slice 0, 2026-11-08). The `FROM` line in `backend/Dockerfile` is
   the one definition. The CI tooling container, `lock-deps.sh` and the smokes read it through
   `infra/base-image.sh`, and lint fails on a second definition. The base no longer updates itself: the daily
@@ -101,7 +116,8 @@ records M1 slice 10's heartbeat decisions.
   `docs/HEALTH.md`). The frozen §16 still says the old thing until a correction release. M2 is in progress (slices 0 and 1 done 2026-11-08: the base-image pin, and the Celery worker and Beat with a
   health check keyed on a canary task's recent completions, so a wedged worker degrades `/health/ready` and
   pages; the worker half of IDEA-032 is therefore done, the provider half is slice 4's; slice 2, the
-  scheduled backups, is built but open until the desktop drill; slice 3, reference tables, is built (2026-11-10); the slice plan
+  scheduled backups, is built but open until the desktop drill; slice 3, reference tables, is built (2026-11-10);
+  slice 4, the provider framework and fake provider, is built (2026-11-11); the slice plan
   and the decisions behind it are in `docs/BUILD-LOG.md`). M2 builds yfinance, FRED and a fake provider only
   (IDEA-037); the slice 9 number is vacant.
 
@@ -130,8 +146,8 @@ tier, and finding that mismatch in month four is a bad afternoon.
 
 ## Open decisions that block work
 
-Tracked in `docs/SPEC-DEFECTS.md` (IDEA-013 … IDEA-041; IDEA-039 is in `docs/IDEAS.md`). IDEA-040 and IDEA-041
-block nothing. Eight block a milestone or a slice:
+Tracked in `docs/SPEC-DEFECTS.md` (IDEA-013 … IDEA-042; IDEA-039 is in `docs/IDEAS.md`). IDEA-040, IDEA-041 and
+IDEA-042 block nothing. Eight block a milestone or a slice:
 
 - **IDEA-013 → blocks M3.** `natural_key` has no time component, but §7.16's episode example
   requires five daily rows to exist. One of the two sections is wrong.
@@ -239,6 +255,7 @@ bash infra/smoke-slice8.sh        # slice 8: every gate green, then each goes re
 bash infra/smoke-slice9.sh        # slice 9: hypertable + aggregate + policies survive a restore; 15 breaks go red
 bash infra/smoke-slice10.sh       # slice 10: pings only on ready=ok, each outage silences them; uses a fake monitor
 bash infra/smoke-m2-slice1.sh     # M2 slice 1: worker stopped/paused, Beat stopped, fresh start, Redis down -> documented states
+bash infra/smoke-m2-slice4.sh     # M2 slice 4: fake provider on the real stack; killed -> failed runs, stale feed, ready stays ok; recovers
 bash infra/smoke-m2-slice3.sh     # M2 slice 3: migrate + seed (24 symbols, 5 universes, sessions), idempotent, provider_mappings rules
 bash infra/smoke-m2-slice2.sh     # M2 slice 2: encrypt, SFTP copy to stand-in sshd (3 permission policies), restore with the private key only
 bash infra/backup.sh              # dump + manifest into dumps/. Restoring and the version trap: docs/BACKUP.md

@@ -11,6 +11,12 @@ x-api-env: &api-env
   CANARY_INTERVAL_SECONDS: ${CANARY_INTERVAL_SECONDS:-60}
   # How old the last backup may be before /health/data calls it stale (it never touches /health/ready).
   BACKUP_STALE_AFTER_HOURS: ${BACKUP_STALE_AFTER_HOURS:-36}
+  # The fake provider (M2 slice 4): OFF unless FAKE_PROVIDER_ENABLED=true. The API judges its feed, Beat
+  # schedules it and the worker runs it, so all three read these same variables (app/settings.py).
+  FAKE_PROVIDER_ENABLED: ${FAKE_PROVIDER_ENABLED:-false}
+  FAKE_PROVIDER_MODE: ${FAKE_PROVIDER_MODE:-ok}
+  FAKE_PROVIDER_INTERVAL_SECONDS: ${FAKE_PROVIDER_INTERVAL_SECONDS:-60}
+  INGEST_RETRY_INITIAL_SECONDS: ${INGEST_RETRY_INITIAL_SECONDS:-1}
 
 # The Postgres image is defined once, here. The backup container is built FROM it so its pg_dump is the
 # server's own version, and records it in each manifest (the version trap, docs/BACKUP.md).
@@ -95,6 +101,10 @@ services:
     command: ["sh", "-c", "alembic upgrade head && python -m app.seed"]
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:?set in .env}:${POSTGRES_PASSWORD:?set in .env}@postgres:5432/${POSTGRES_DB:?set in .env}
+      # The seed registers each declared feed in providers_health (IDEA-026), so it needs to know
+      # whether the fake's feed is declared.
+      FAKE_PROVIDER_ENABLED: ${FAKE_PROVIDER_ENABLED:-false}
+      FAKE_PROVIDER_INTERVAL_SECONDS: ${FAKE_PROVIDER_INTERVAL_SECONDS:-60}
     depends_on:
       postgres:
         condition: service_healthy

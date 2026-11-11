@@ -90,7 +90,14 @@ class SqlRedisProbes:
                 select(ProvidersHealth).order_by(ProvidersHealth.provider, ProvidersHealth.feed)
             )
             return [
-                FeedRow(r.provider, r.feed, r.last_success_at, r.last_error_at, r.last_error)
+                FeedRow(
+                    r.provider,
+                    r.feed,
+                    r.last_success_at,
+                    r.last_error_at,
+                    r.last_error,
+                    r.first_seen_at,
+                )
                 for r in result
             ]
 

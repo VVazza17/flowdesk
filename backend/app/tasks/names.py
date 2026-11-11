@@ -3,6 +3,9 @@
 # The worker canary (M2 slice 1): see app/settings.py for the staleness rule.
 CANARY = "ops.canary"
 
+# The fake provider's ingest (M2 slice 4). Only scheduled when FAKE_PROVIDER_ENABLED is true.
+FAKE_INGEST = "ingest.fake"
+
 # The scheduled backup (M2 slice 2). Two tasks, not one, so that a sleeping off-box machine reads as
 # a failed copy and not as a failed backup: the dump is encrypted and kept locally first, the copy
 # is attempted afterwards and retried on its own. Both are written by the backup container (psql),

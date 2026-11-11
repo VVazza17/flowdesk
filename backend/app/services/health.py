@@ -33,6 +33,8 @@ class FeedRow:
     last_success_at: datetime | None
     last_error_at: datetime | None
     last_error: str | None
+    # None only for a row built by a test: the column is NOT NULL (migration 0004).
+    first_seen_at: datetime | None = None
 
 
 class HealthProbes(Protocol):
@@ -190,13 +192,17 @@ def classify_feed(row: FeedRow, now: datetime, threshold: timedelta | None) -> d
 
     fresh            succeeded within its threshold
     stale            succeeded, but longer ago than its threshold -> something broke
-    never_succeeded  registered, no success yet. NOT stale: before M2's first run this is the
-                     normal state. `last_error_at` set means it has been failing since the start.
+    never_succeeded  registered, no success yet, and not yet overdue. `last_error_at` set means
+                     it has been failing since the start.
+    stale            ... also when it has NEVER succeeded but `first_seen_at` is older than its
+                     threshold (`never_succeeded: true` marks that case). A feed that has missed
+                     its whole staleness window is broken by the same standard as one that
+                     succeeded once and stopped (IDEA-026, approved 2026-11-11).
     no_threshold     has succeeded but no threshold is configured, so it cannot be judged
                      (stale is null; we do not invent a number, §6.11)
 
-    DECISION: providers_health has no first-seen column, so "never succeeded" carries no age
-    and cannot escalate to a failure on its own. If that is wanted, §8 needs the column.
+    DECISION: the escalation threshold is the feed's own stale threshold, not a second per-feed
+    "grace" number. A feed with no threshold cannot be judged and stays never_succeeded.
     """
     last_error = row.last_error[:LAST_ERROR_MAX_CHARS] if row.last_error else None
     out: dict[str, Any] = {
@@ -204,6 +210,7 @@ def classify_feed(row: FeedRow, now: datetime, threshold: timedelta | None) -> d
         "feed": row.feed,
         "last_success_at": _iso(row.last_success_at),
         "last_error_at": _iso(row.last_error_at),
+        "first_seen_at": _iso(row.first_seen_at),
         # Raw provider text: private profile only. redact_providers removes it (IDEA-019).
         "last_error": last_error,
         "threshold_seconds": int(threshold.total_seconds()) if threshold else None,
@@ -213,7 +220,10 @@ def classify_feed(row: FeedRow, now: datetime, threshold: timedelta | None) -> d
         ),
     }
     if row.last_success_at is None:
-        out.update(status="never_succeeded", stale=False)
+        if threshold is not None and row.first_seen_at and now - row.first_seen_at > threshold:
+            out.update(status="stale", stale=True, never_succeeded=True)
+        else:
+            out.update(status="never_succeeded", stale=False)
     elif threshold is None:
         out.update(status="no_threshold", stale=None)
     elif now - row.last_success_at > threshold:

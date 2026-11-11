@@ -9,7 +9,7 @@ from celery import Celery
 
 from app import settings
 from app.logging import configure_logging
-from app.tasks.names import CANARY
+from app.tasks.names import CANARY, FAKE_INGEST
 
 
 def create_celery() -> Celery:
@@ -20,7 +20,7 @@ def create_celery() -> Celery:
     interval = float(settings.canary_interval_seconds())
 
     configure_logging()
-    app = Celery("flowdesk", broker=broker, include=["app.tasks.canary"])
+    app = Celery("flowdesk", broker=broker, include=["app.tasks.canary", "app.tasks.fake_ingest"])
     app.conf.update(
         timezone="America/New_York",
         enable_utc=True,
@@ -40,4 +40,11 @@ def create_celery() -> Celery:
             }
         },
     )
+    if settings.fake_provider_enabled():
+        fake_interval = float(settings.fake_provider_interval_seconds())
+        app.conf.beat_schedule["fake_ingest"] = {
+            "task": FAKE_INGEST,
+            "schedule": fake_interval,
+            "options": {"expires": fake_interval * 2},
+        }
     return app
