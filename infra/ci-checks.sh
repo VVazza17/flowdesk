@@ -113,7 +113,7 @@ check_arm64() {
     || fail "image did not run as aarch64"
   # The compiled wheels are what can differ per architecture, so load them explicitly.
   docker run --rm --platform linux/arm64 "$image" \
-    python -c "import app.main, asyncpg, greenlet, pydantic_core, sqlalchemy, redis"
+    python -c "import app.main, asyncpg, greenlet, pydantic_core, sqlalchemy, redis, numpy, pandas, exchange_calendars"
 
   trap 'docker rm -f "$name" >/dev/null 2>&1 || true' RETURN
   docker run -d --name "$name" --platform linux/arm64 -p "127.0.0.1:$port:8000" "$image" >/dev/null

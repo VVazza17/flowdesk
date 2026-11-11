@@ -1064,3 +1064,45 @@ changed key, an unpinned host, a refused key and an unresolvable name and assert
   `(provider, id_kind, external_id)` excluding `cik` (GOOG and GOOGL share one CIK), both `WHERE retired_at IS
   NULL`, plus CHECKs on `id_kind` and the CIK form. The CHECK is a deliberate exception, recorded in IDEA-022.
 
+### Slice 3 result (2026-11-10)
+
+**Built.** Migration `0003_reference_tables.py` and `app/models/reference.py` (seven tables, schemas as in
+IDEA-033); `app/services/reference_seed.py` and `app/services/sessions.py`; `python -m app.seed`, run by the
+`migrate` service after `alembic upgrade head`; the §6.2 lists in `app/settings.py`; `exchange-calendars==4.13.2`
+in `requirements.txt` and the three locks; `infra/smoke-m2-slice3.sh`; `tests/test_reference_tables.py` and
+`tests/test_sessions.py`. `smoke-slice4.sh` now asserts "0002 or later" instead of exactly 0002, since the head
+moved. `ci-checks.sh arm64` also imports numpy, pandas and exchange_calendars now.
+
+**Verified.** Lint, mypy and 269 tests pass with none skipped (the real-database tests ran). The calendar fixtures
+pass against the library as it is: NYSE 2025-07-04 and the 2025-01-09 national day of mourning have no session,
+2025-07-03 and 2025-11-28 close at 13:00 New York (17:00 and 18:00 UTC), the 09:30 open moves with the clock
+change, and KRX 2025-01-29, 2025-10-03 and 2025-10-09 have no session. The `provider_mappings` rule holds in the
+real database: GOOG and GOOGL share one CIK, a symbol cannot hold two active CIKs, one live ticker string cannot
+name two symbols, `id_kind` is a closed set, a CIK must be ten digits. `pip-audit` finds nothing in the three
+locks. Smokes 3, 4, 9 and the new M2 slice 3 smoke pass; the arm64 build loads numpy, pandas and
+exchange_calendars under QEMU. The smoke 8 and M2 slice 1 smokes were not re-run (smoke 8 includes the licence
+gate, which is red).
+
+**What the seed does on a live stack.** 24 symbols, five universes (rotation 14, benchmark 1, style extras 2,
+commodity proxies 7, breadth 0), 24 memberships starting on the seed date, two currencies, two exchanges, and
+sessions for XNYS and XKRX from 2015-01-01 to a year past today. A second run inserts nothing.
+
+**Open: the licence gate is red.** `exchange-calendars` pulls numpy 2.5.4, whose licence field is
+`BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0` (bundled components). `0BSD`, `Zlib` and `CC0-1.0` are not on
+the allow-list in `backend/tools/license_audit.py`, and every other package in the set passes. The tool's rule is
+that new entries are recorded in IDEA-027 first and are the owner's call. The narrow option, in the tool's own
+pattern for `pathspec`, is a per-package exception for numpy covering just those three parts. Nothing has been
+changed. Until it is decided, CI's licence job and smoke 8 fail.
+
+**Notes.** pandas 3.1 emits a `Pandas4Warning` about `Series.values` while `exchange_calendars` builds a calendar;
+it appears to come from the library and is not ours. Nothing prunes `trading_sessions`; the table is small.
+
+### Slice 3: licence decision (2026-11-10)
+
+The owner allowed numpy as a per-package exception keyed to the exact expression
+`BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0` (`EXPRESSION_EXCEPTIONS` in `backend/tools/license_audit.py`,
+recorded first in the IDEA-027 addendum). numpy's own licence is BSD-3-Clause; the other parts come from vendored
+components, so 0BSD, Zlib and CC0-1.0 are not approved in general. A different string from a future numpy fails the
+gate. The "Open: the licence gate is red" paragraph above is superseded by this entry.
+
+Re-run after the exception: lint, mypy, 270 tests, `ci-checks.sh license` (56 packages, 0 not allowed), `smoke-slice8.sh` and `smoke-m2-slice1.sh` all pass. Slice 3 is closed apart from computing sessions on native arm64, which is untested.

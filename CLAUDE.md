@@ -68,6 +68,19 @@ records M1 slice 10's heartbeat decisions.
   chrooted, so a leaked key reaches more than the backups** (on a default Windows install, `Authenticated Users`
   can modify ordinary top-level folders; `infra/backup/acl-survey.ps1` sizes it on the desktop). A plain `pg_restore`
   silently damages hypertables: use `infra/restore.sh`, or `infra/restore-backup.sh` for a scheduled backup.
+- **Reference tables, universes and calendars are built (M2 slice 3, 2026-11-10).** Migration 0003 adds `currencies`, `exchanges`, `symbols`, `provider_mappings`,
+  `universes`, `universe_membership` and `trading_sessions`; `python -m app.seed` (run by the `migrate` service
+  after Alembic) fills them from `settings.py`'s §6.2 lists and `exchange_calendars`. The seed is idempotent
+  and **insert-only**: it never closes an interval or rewrites a stored session, and reports disagreement as
+  drift (IDEA-040 is why). Seeded membership starts on the seed date, so **no historical query against these
+  universes returns anything before it**; revisit at slice 6. `BREADTH_UNIVERSE` exists and is empty (§6.2 gives
+  no list). `provider_mappings` holds CIK (a departure from §6.5's text), with uniqueness that depends on
+  `id_kind`, and a deliberate CHECK on it (IDEA-022 addendum). **The new dependency `exchange-calendars`
+  brings numpy, whose licence expression includes `0BSD`, `Zlib` and `CC0-1.0`; the owner allowed it as an
+  exception keyed to the package and that exact expression, not those licences in general (IDEA-027
+  addendum); a different string from a future numpy fails the gate.** Session math
+  (windows of N sessions) is a follow-on, not built. Sessions computing on arm64 is untested; the imports
+  load under QEMU.
 - **The base image is pinned by digest** (M2 slice 0, 2026-11-08). The `FROM` line in `backend/Dockerfile` is
   the one definition. The CI tooling container, `lock-deps.sh` and the smokes read it through
   `infra/base-image.sh`, and lint fails on a second definition. The base no longer updates itself: the daily
@@ -88,7 +101,7 @@ records M1 slice 10's heartbeat decisions.
   `docs/HEALTH.md`). The frozen §16 still says the old thing until a correction release. M2 is in progress (slices 0 and 1 done 2026-11-08: the base-image pin, and the Celery worker and Beat with a
   health check keyed on a canary task's recent completions, so a wedged worker degrades `/health/ready` and
   pages; the worker half of IDEA-032 is therefore done, the provider half is slice 4's; slice 2, the
-  scheduled backups, is built but open until the desktop drill; the slice plan
+  scheduled backups, is built but open until the desktop drill; slice 3, reference tables, is built (2026-11-10); the slice plan
   and the decisions behind it are in `docs/BUILD-LOG.md`). M2 builds yfinance, FRED and a fake provider only
   (IDEA-037); the slice 9 number is vacant.
 
@@ -117,7 +130,8 @@ tier, and finding that mismatch in month four is a bad afternoon.
 
 ## Open decisions that block work
 
-Tracked in `docs/SPEC-DEFECTS.md` (IDEA-013 … IDEA-038). Eight block a milestone or a slice:
+Tracked in `docs/SPEC-DEFECTS.md` (IDEA-013 … IDEA-041; IDEA-039 is in `docs/IDEAS.md`). IDEA-040 and IDEA-041
+block nothing. Eight block a milestone or a slice:
 
 - **IDEA-013 → blocks M3.** `natural_key` has no time component, but §7.16's episode example
   requires five daily rows to exist. One of the two sections is wrong.
@@ -225,6 +239,7 @@ bash infra/smoke-slice8.sh        # slice 8: every gate green, then each goes re
 bash infra/smoke-slice9.sh        # slice 9: hypertable + aggregate + policies survive a restore; 15 breaks go red
 bash infra/smoke-slice10.sh       # slice 10: pings only on ready=ok, each outage silences them; uses a fake monitor
 bash infra/smoke-m2-slice1.sh     # M2 slice 1: worker stopped/paused, Beat stopped, fresh start, Redis down -> documented states
+bash infra/smoke-m2-slice3.sh     # M2 slice 3: migrate + seed (24 symbols, 5 universes, sessions), idempotent, provider_mappings rules
 bash infra/smoke-m2-slice2.sh     # M2 slice 2: encrypt, SFTP copy to stand-in sshd (3 permission policies), restore with the private key only
 bash infra/backup.sh              # dump + manifest into dumps/. Restoring and the version trap: docs/BACKUP.md
 bash infra/restore.sh dumps/<name>.dump --db <new-or-empty-db>   # refuses a non-empty target

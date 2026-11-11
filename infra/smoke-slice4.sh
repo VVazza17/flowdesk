@@ -20,7 +20,9 @@ check_tables() {  # check_tables <db>
 docker compose up -d --build
 wait_ready
 ver=$(psql_db "$POSTGRES_DB" -c "select version_num from alembic_version")
-[ "$ver" = "0002" ] || fail "alembic_version in the main db is '$ver', expected 0002"
+# DECISION: "0002 or later". This slice's claim is that the ops tables exist; later revisions (M2 slice 3
+# added 0003) move the head, and the head itself is asserted by the migration tests and smoke 3.
+[[ "$ver" > "0001" ]] || fail "alembic_version in the main db is '$ver', expected 0002 or later"
 check_tables "$POSTGRES_DB"
 
 # 2. An empty database, migrated by the shipped image.
@@ -34,7 +36,7 @@ docker compose run --rm -T \
   migrate >/dev/null 2>&1 || fail "alembic upgrade head failed on an empty database"
 
 ver=$(psql_db "$scratch" -c "select version_num from alembic_version")
-[ "$ver" = "0002" ] || fail "scratch db alembic_version is '$ver', expected 0002"
+[[ "$ver" > "0001" ]] || fail "scratch db alembic_version is '$ver', expected 0002 or later"
 check_tables "$scratch"
 
-echo "OK: slice 4 smoke passed (up -d migrated to 0002; empty db -> 4 ops tables)"
+echo "OK: slice 4 smoke passed (up -d migrated past 0001; empty db -> 4 ops tables)"

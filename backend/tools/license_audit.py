@@ -48,6 +48,15 @@ PACKAGE_EXCEPTIONS: Mapping[str, frozenset[str]] = {
 }
 
 
+# numpy's own licence is BSD-3-Clause. The 0BSD, Zlib and CC0-1.0 parts come from vendored
+# components (IDEA-027, 2026-11-10), so this is not an approval of those licences in general. It is
+# keyed to the exact expression reviewed, not to the package name: a different string from a future
+# numpy fails the gate and stops for review instead of inheriting this entry.
+EXPRESSION_EXCEPTIONS: Mapping[str, frozenset[str]] = {
+    "numpy": frozenset({"BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0"}),
+}
+
+
 def license_parts(expression: str) -> list[str]:
     """Split on SPDX AND/OR and on the '; ' pip-licenses puts between classifiers."""
     flat = expression.replace("(", "").replace(")", "")
@@ -61,6 +70,8 @@ def violations(packages: list[dict[str, str]]) -> list[str]:
         allowed = ALLOWED | PACKAGE_EXCEPTIONS.get(name.lower(), frozenset())
         expression = package["License"]
         parts = license_parts(expression)
+        if expression in EXPRESSION_EXCEPTIONS.get(name.lower(), frozenset()):
+            continue
         if not parts or any(part not in allowed for part in parts):
             problems.append(f"{name} {version}: {expression!r}")
     return problems

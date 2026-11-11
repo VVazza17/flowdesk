@@ -677,6 +677,14 @@ reviewed fails.
 The `pathspec` entry exists because the gate caught it during slice 8, after the original decision
 named only `certifi`. The `certifi` entry was then removed by the owner, because it matched nothing.
 
+### Addendum, 2026-11-10 (M2 slice 3): numpy, by exact expression
+`exchange-calendars` brings numpy, which is in the runtime lock, so this one ships. pip-licenses reports
+`BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0`. numpy's own licence is BSD-3-Clause; the `0BSD`,
+`Zlib` and `CC0-1.0` parts come from vendored components. The owner allowed it as an exception keyed to
+**the package and that exact expression** (`EXPRESSION_EXCEPTIONS` in `license_audit.py`), not to the
+package name. **This is not a general approval of 0BSD, Zlib or CC0-1.0**: any other package carrying them
+still fails, and a future numpy that reports a different string fails the gate and stops for review.
+
 ### A known property of the gate
 The gate treats shipped and dev-only dependencies identically: it audits the dev lock, which includes
 the runtime lock, as one set. Licence obligations attach only to what is distributed, and `pathspec`

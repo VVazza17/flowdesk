@@ -63,6 +63,19 @@ def test_package_exception_does_not_cover_other_licences() -> None:
     assert len(violations([_package("AGPL-3.0", name="pathspec")])) == 1
 
 
+NUMPY_EXPRESSION = "BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0"
+
+
+def test_numpy_exception_is_scoped_to_the_reviewed_expression() -> None:
+    assert violations([_package(NUMPY_EXPRESSION, name="numpy")]) == []
+    # Same package, different string (a future numpy): the gate goes red, no inherited exception.
+    changed = NUMPY_EXPRESSION + " AND GPL-3.0"
+    assert len(violations([_package(changed, name="numpy")])) == 1
+    assert len(violations([_package("BSD-3-Clause AND 0BSD", name="numpy")])) == 1
+    # Same string, different package: no exception, and 0BSD/Zlib/CC0-1.0 stay unapproved generally.
+    assert len(violations([_package(NUMPY_EXPRESSION, name="otherpkg")])) == 1
+
+
 def test_a_violation_names_the_package_and_its_licence() -> None:
     assert violations([_package("AGPL-3.0")]) == ["somepkg 1.0: 'AGPL-3.0'"]
 

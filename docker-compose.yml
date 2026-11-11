@@ -89,7 +89,10 @@ services:
     # will report "migrations not applied" instead. restart "no" because it exits 0 by design.
     # DATABASE_URL is assembled here; a password with URL-reserved characters must be encoded.
     build: ./backend
-    command: ["alembic", "upgrade", "head"]
+    # M2 slice 3: after the migrations, seed the reference tables and extend trading sessions
+    # (python -m app.seed). Idempotent and insert-only, so every `up` is safe. A seeding failure
+    # fails this service, which is the loud outcome we want; seeding drift is only logged.
+    command: ["sh", "-c", "alembic upgrade head && python -m app.seed"]
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:?set in .env}:${POSTGRES_PASSWORD:?set in .env}@postgres:5432/${POSTGRES_DB:?set in .env}
     depends_on:

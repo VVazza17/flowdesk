@@ -5,6 +5,7 @@
 """
 
 import os
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import Literal
 
@@ -100,3 +101,71 @@ def backup_stale_after() -> timedelta:
     if hours <= 0:
         raise ValueError(f"BACKUP_STALE_AFTER_HOURS must be positive, got {raw!r}")
     return timedelta(hours=hours)
+
+
+# --- Universes (§6.2) and the reference seed (M2 slice 3, IDEA-033) ---------------------------
+# DECISION: these live in settings.py, not config.py. §6.2 says "defined in `config.py`", but this
+# repo's configuration module is settings.py, and a second module would split one concern. They are
+# plain constants, not environment variables: §6.2's lists are the definition, and the seeder is
+# insert-only (below), so an override could only add members and report drift, never close anything.
+
+
+@dataclass(frozen=True)
+class UniverseSpec:
+    slug: str
+    name: str
+    description: str
+    tickers: tuple[str, ...]
+
+
+# §6.2, verbatim. The rotation list is 14 funds; §3 line 117 says "12-ETF" and §6.12 and §7.1 say
+# "11 sector ETFs". That contradiction is IDEA-041. We seed §6.2 because it is the only place that
+# names tickers, and we do not add XLC: that would be inventing a member.
+ROTATION_UNIVERSE = (
+    "XLK",
+    "SMH",
+    "IGV",
+    "XLF",
+    "XLE",
+    "XLI",
+    "XLV",
+    "XLY",
+    "XLP",
+    "XLU",
+    "XLB",
+    "XLRE",
+    "IWM",
+    "ARKK",
+)
+BENCHMARK = ("SPY",)
+STYLE_EXTRAS = ("QQQ", "RSP")  # RSP is needed for breadth (§7.1)
+COMMODITY_PROXIES = ("USO", "UNG", "GLD", "SLV", "CPER", "URA", "DBA")  # ETF proxies, label as such
+# DECISION: empty, on purpose. §6.2 says "S&P 500 constituents" and gives no list, and M2 has no
+# constituent provider (yfinance, FRED and a fake provider only). Seeding it would mean inventing
+# about 500 tickers. The universe row exists; its members arrive with a constituent source.
+BREADTH_UNIVERSE: tuple[str, ...] = ()
+
+UNIVERSES: tuple[UniverseSpec, ...] = (
+    UniverseSpec("rotation", "Rotation universe", "§6.2 ROTATION_UNIVERSE", ROTATION_UNIVERSE),
+    UniverseSpec("benchmark", "Benchmark", "§6.2 BENCHMARK", BENCHMARK),
+    UniverseSpec("style_extras", "Style extras", "§6.2 style extras (QQQ, RSP)", STYLE_EXTRAS),
+    UniverseSpec(
+        "commodity_proxies",
+        "Commodity proxies",
+        "§6.2 COMMODITY_PROXIES: commodity exposure through ETFs, shown as ETF proxies",
+        COMMODITY_PROXIES,
+    ),
+    UniverseSpec(
+        "breadth",
+        "Breadth universe",
+        "§6.2 BREADTH_UNIVERSE: S&P 500 constituents. No members until a source exists.",
+        BREADTH_UNIVERSE,
+    ),
+)
+
+# Trading sessions are materialised for every calendar the seeded exchanges name, from this date
+# to a year past today. DECISION: 2015-01-01 covers the two years of daily bars (§6.1) and a long
+# backtest with room to spare, and costs about 250 rows a year per calendar. Each seed run extends
+# the horizon; rows already present are never rewritten (see app.services.sessions).
+SESSIONS_START_YEAR = 2015
+SESSIONS_HORIZON_DAYS = 365
