@@ -23,6 +23,7 @@ Always `200 {"status":"ok"}`. Touches no database, Redis or clock. Docker's heal
 | Everything up, schema at head | 200 | `ok` | |
 | **Redis down** | **200** | **`degraded`** | Redis is a cache/bus, never the source of truth. `checks.redis` = `{"status":"down","error":"<Class>"}`. The worker check goes `stale` too after a few intervals; see below. |
 | **Worker or Beat stopped, wedged, or not completing** | **200** | **`degraded`** | `checks.worker.status` = `stale`, or `never_completed` past its grace. See "The worker check". |
+| **Ingest worker stopped, wedged, or not completing** | **200** | **`degraded`** | `checks.ingest_worker.status` = `stale`, or `never_completed` past its grace. See "The ingest worker check". |
 | Fresh stack, no canary completed yet | 200 | `ok` | `checks.worker` = `never_completed` with `in_grace: true`. |
 | Postgres down / unreachable / timed out | 503 | `not_ready` | `checks.migrations.status` = `unknown` |
 | Schema behind code (or never migrated) | 503 | `not_ready` | `checks.migrations` = `{"status":"behind","current":<rev or null>,"head":<rev>}` |
@@ -47,6 +48,7 @@ owner to restart or repair something, it is machinery, and it does.
 |---|---|---|---|
 | Redis down | machinery | **yes** | `checks.redis` |
 | Worker or Beat dead, wedged, or not completing | machinery | **yes** | `checks.worker` |
+| Ingest worker dead, wedged, or not completing | machinery | **yes** | `checks.ingest_worker` |
 | Postgres down, schema behind | machinery | **503** | `checks.migrations` |
 | One feed stale, or a provider down (killed) | source | no | `/health/providers` |
 | Every feed stale at once | source | no | `/health/providers` |
@@ -98,11 +100,51 @@ a long time over an empty `task_runs` is past its grace, which is right: somethi
 **What it does not catch yet.**
 - A task stuck in `running` after its process died. The canary is instant, so nothing to sweep exists yet; the
   sweep arrives with the first long task (backfill, slice 10), using `heartbeat_at`.
-- A long task starving the canary. When one shares the worker, a canary queued behind it could read as a dead
-  worker. Revisit when the first long task lands (a separate queue or a dedicated worker).
+- ~~A long task starving the canary.~~ Fixed in M2 slice 5, step 0: the canary has its own queue and its own
+  worker process, and ingest work has another. See "The ingest worker check" for what that cost.
 
 Settings: `CANARY_INTERVAL_SECONDS` (`app/settings.py`), read by the API and by Beat from one variable so they
 cannot disagree. The smoke test sets it to 3 so the stale threshold is 9 s.
+
+`checks.worker` is the **ops worker**: the `worker-ops` compose service, one slot, consuming the `ops` queue
+and nothing else, running `ops.canary` and nothing else. No amount of ingest work can make it wait, so a
+`stale` here is never a long task. (`docker compose pause worker-ops` is the wedged case.)
+
+### The ingest worker check (`checks.ingest_worker` in `/health/ready`)
+
+**Why it exists.** Splitting the canary onto its own worker made `checks.worker` immune to ingest load, and in
+the same stroke blind to the ingest worker. Without a second check, a wedged ingest worker would surface only
+as every feed going stale on `/health/providers`, which by the readiness rule never pages: a machinery failure
+wearing a source failure's costume. It would break the rule in the one case the rule was written for. So the
+ingest worker has its own canary, `ops.canary_ingest`, on the `ingest` queue (the `worker` compose service,
+two slots), and its own check. (Decided by Kyle, 2026-11-11, option (b).)
+
+It has the same states as the worker check (`ok`, `stale`, `never_completed` with `in_grace`, `unknown`) and
+the same fields, with `task` = `ops.canary_ingest`. It differs in one thing, the threshold:
+
+**`stale_after_seconds` = `INGEST_TASK_MAX_SECONDS` (default 1800) + 3 x `CANARY_INTERVAL_SECONDS`.** When both
+ingest slots are held by long tasks, the ingest canary waits behind them, expires, and the next one tries. A
+task is allowed to run for at most `INGEST_TASK_MAX_SECONDS` (Celery's hard `task_time_limit` kills it past
+that), so a healthy worker busy with a legal task can leave the canary waiting that long and no longer. A
+tighter threshold would page on a healthy backfill. The grace for a fresh stack is this same, longer window.
+
+**What it costs, stated plainly.**
+- A wedged ingest worker takes up to half an hour to show (the 1800 s is a guess, not a measurement: no real
+  feed has been timed). Lowering `INGEST_TASK_MAX_SECONDS` makes it faster, and means chunking long tasks.
+- **KNOWN GAP: this threshold can false-alarm until the heartbeat check lands (M2 slice 5, step 3).** It
+  assumes one long task at a time per slot. Two slots running long tasks back to back can, by chance of which
+  queued message a freed slot takes, keep the canary waiting past the threshold, and that pages a healthy
+  worker. Queue priority is rejected as the fix: it cannot help a canary waiting behind a task that already
+  started, and it would make the guarantee depend on Redis transport behaviour. The decided fix (Kyle,
+  2026-11-11) takes queue position out of it: the ingest worker is alive if a task completed recently **or**
+  one is running with a fresh `heartbeat_at`. Nothing runs long yet, so step 0 ships without it.
+- A task killed by the time limit leaves its `task_runs` and `ingestion_runs` rows `running`. The sweep that
+  `runs.py` defers to "the first long task" is due with the same work: step 3's FRED backfill is the first
+  long task, so that trigger fired early. Built together with the heartbeat check, at step 3.
+
+Settings: `INGEST_TASK_MAX_SECONDS`, read by the workers (to enforce it) and the API (to judge by it).
+Verified by `infra/smoke-m2-slice5-step0.sh` (queues separate; ingest saturation leaves `ready` `ok`; each
+worker paused degrades it) and `backend/tests/test_worker_health.py`.
 
 ## `GET /health/providers` — feed freshness (`providers_health`)
 

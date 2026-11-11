@@ -101,3 +101,32 @@ def test_a_bad_fake_mode_refuses_to_start(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setenv("FAKE_PROVIDER_MODE", "dwon")
     with pytest.raises(ValueError, match="FAKE_PROVIDER_MODE"):
         settings.fake_provider_mode()
+
+
+# --- "slow": a provider call that hangs (M2 slice 5, step 0) -------------------------------------
+# It exists to hold an ingest worker slot for a long time, which is what a backfill does, so the
+# canary-starvation smoke has something to starve the queue with.
+
+
+def test_slow_mode_waits_then_returns_the_normal_payload() -> None:
+    import time
+
+    fake = FakeProvider(["slow"], slow_seconds=0.2)
+    started = time.monotonic()
+    batch = asyncio.run(fake.fetch("f"))
+    assert time.monotonic() - started >= 0.2
+    assert batch == asyncio.run(FakeProvider(["ok"]).fetch("f"))
+
+
+def test_slow_mode_is_accepted_and_its_wait_is_configurable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FAKE_PROVIDER_MODE", "slow")
+    assert settings.fake_provider_mode() == "slow"
+    monkeypatch.delenv("FAKE_PROVIDER_SLOW_SECONDS", raising=False)
+    assert settings.fake_provider_slow_seconds() == 60.0
+    monkeypatch.setenv("FAKE_PROVIDER_SLOW_SECONDS", "2.5")
+    assert settings.fake_provider_slow_seconds() == 2.5
+    monkeypatch.setenv("FAKE_PROVIDER_SLOW_SECONDS", "0")
+    with pytest.raises(ValueError, match="FAKE_PROVIDER_SLOW_SECONDS"):
+        settings.fake_provider_slow_seconds()

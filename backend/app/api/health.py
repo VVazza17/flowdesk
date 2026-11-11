@@ -38,7 +38,13 @@ async def ready(
     # for /api/v1; these routes sit outside it, like /health/live. Logged as IDEA-025.
     # ok / degraded -> 200 (Redis is never the source of truth); not_ready -> 503. Never a 500:
     # every probe failure is converted to data inside svc.run_check.
-    code, body = await svc.assemble_ready(probes, now, started_at, settings.worker_stale_after())
+    code, body = await svc.assemble_ready(
+        probes,
+        now,
+        started_at,
+        settings.worker_stale_after(),
+        settings.ingest_worker_stale_after(),
+    )
     response.status_code = code
     return body
 

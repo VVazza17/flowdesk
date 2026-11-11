@@ -1207,3 +1207,47 @@ its numbers carry the same label.
   machine's network. Either way a 401/403 maps to a non-retryable kind and is never `transient`; a connection reset
   cannot be told from a network blip, so it stays `transient`, bounded by the 4 attempts and Beat's next firing,
   and a feed that never succeeds goes stale (`first_seen_at`).
+
+### M2 slice 5, step 0 (2026-11-11): the canary no longer queues behind ingest work — built and verified
+
+**Built.** Two queues, two worker processes. `worker-ops` (`-Q ops -c 1`) runs `ops.canary` and nothing else;
+`worker` (`-Q ingest -c 2`) runs everything else, including the new `ops.canary_ingest`. `task_default_queue` is
+`ingest`, so a task nobody routed lands where starvation is survivable. `worker_prefetch_multiplier=1`.
+`task_time_limit` is `INGEST_TASK_MAX_SECONDS` (default 1800, a guess). `/health/ready` gains
+`checks.ingest_worker`, which degrades like `checks.worker`; its threshold is `INGEST_TASK_MAX_SECONDS` plus three
+canary intervals, because a legal task can starve its canary for that long. The fake provider gained a `slow`
+mode (`FAKE_PROVIDER_SLOW_SECONDS`) so something can hold the slots. HEALTH.md has "The ingest worker check".
+Smokes M2-1 and 9 now name `worker-ops` / both workers; M2-4's diagnostics read the `ingest` queue.
+
+**Verified, both ways (Kyle's gate: a fix for a bug nobody demonstrated isn't verified).**
+- *Red on the pre-fix stack.* The fix files (`docker-compose.yml`, `celery_app.py`, `services/health.py`,
+  `api/health.py`) were stashed, leaving the `slow` fake mode in place (without it nothing saturates the slots) and
+  adding the one-line `FAKE_PROVIDER_SLOW_SECONDS` passthrough to the old compose. `smoke-m2-slice5-step0.sh
+  --baseline` (saturation only; one worker, one queue) FAILED on the assertion it exists for: `/health/ready` was
+  `degraded` with `checks.worker` `stale` at 9 s while both slots were busy. The old stack has no `worker-ops`, so
+  the red is the canary starving and not a missing service.
+- *Green on the fixed stack* (stash popped, the temporary compose edit discarded): the full smoke passed. Queues
+  are separate (the ingest worker never received `ops.canary`, nor the ops worker `ops.canary_ingest`); with both
+  ingest slots busy the ingest canary starved up to 16 s, past the ops threshold of 9 s, and `/health/ready` stayed
+  `ok` with `checks.worker` `ok`; pausing the ingest worker gave `ingest_worker` `stale` and `degraded` with the ops
+  worker `ok`; pausing the ops worker gave the mirror.
+- *The project's own 3.12 image,* `ci-checks.sh lint` (ruff, format, mypy, locks, banned phrases) and `ci-checks.sh
+  test`: **346 passed, 0 skipped** (the 67 that skip without `DATABASE_URL` ran). The earlier 279 passed / 67
+  skipped was a Python 3.13 scratch venv, which is a weaker claim.
+- *Edited smokes re-run and passing:* M2-1 (now stopping and pausing `worker-ops`), M2-4, 6 and 9.
+- Tests were written first and failed first (ImportError on the new names; the slow-mode tests on assertion).
+
+**Not covered.** arm64 for the new code beyond what `ci-checks.sh arm64` already does (not run), `smoke-slice8.sh`
+(not run), and Beat's handling of two entries at the same interval beyond what the smoke exercised.
+
+**KNOWN GAP, shipped on purpose: the ingest canary's threshold can false-alarm until step 3.** It is sound for
+one long task per slot. Two slots running long tasks back to back can keep the canary waiting past it, and that
+would page a healthy worker. (I said earlier it could only false-alarm "when a task overruns"; that was too
+strong.) The decided fix, and why queue priority was rejected, are in the plan entry above under "Decisions
+added after approval". Nothing runs long before step 3, so no false alarm is possible until then.
+
+**arm64, known local behaviour.** `ci-checks.sh arm64` failed once ("image did not run as aarch64") on the first
+run after a cold Docker Desktop start, and passed on the immediate re-run (2026-11-11). Read as binfmt/QEMU
+registration not being ready after a cold start (Kyle's reading; not diagnosed here). **No retry is added:** CI
+installs its own QEMU, and a self-retrying gate hides real failures. A local failure right after Docker starts:
+run it again before suspecting the code. A failure in CI is real.

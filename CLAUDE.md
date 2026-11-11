@@ -257,6 +257,7 @@ bash infra/smoke-slice10.sh       # slice 10: pings only on ready=ok, each outag
 bash infra/smoke-m2-slice1.sh     # M2 slice 1: worker stopped/paused, Beat stopped, fresh start, Redis down -> documented states
 bash infra/smoke-m2-slice4.sh     # M2 slice 4: fake provider on the real stack; killed -> failed runs, stale feed, ready stays ok; recovers
 bash infra/smoke-m2-slice3.sh     # M2 slice 3: migrate + seed (24 symbols, 5 universes, sessions), idempotent, provider_mappings rules
+bash infra/smoke-m2-slice5-step0.sh # M2 slice 5 step 0: two workers on two queues; ingest saturation never delays the ops canary; each worker wedged degrades ready
 bash infra/smoke-m2-slice2.sh     # M2 slice 2: encrypt, SFTP copy to stand-in sshd (3 permission policies), restore with the private key only
 bash infra/backup.sh              # dump + manifest into dumps/. Restoring and the version trap: docs/BACKUP.md
 bash infra/restore.sh dumps/<name>.dump --db <new-or-empty-db>   # refuses a non-empty target

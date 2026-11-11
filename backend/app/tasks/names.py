@@ -3,6 +3,19 @@
 # The worker canary (M2 slice 1): see app/settings.py for the staleness rule.
 CANARY = "ops.canary"
 
+# The ingest worker's canary (M2 slice 5, step 0). Same body as CANARY, a different name
+# (task_runs is keyed by task name, so each health check reads its own history) and a
+# different queue.
+INGEST_CANARY = "ops.canary_ingest"
+
+# Two queues, two worker processes (docker-compose.yml). `ops` carries CANARY and nothing
+# else, and its worker takes nothing else, so no amount of ingest work can make it wait.
+# `ingest` is the default for every other task: a long task can safely land there, because the
+# only thing it can delay is other ingest work and INGEST_CANARY, whose threshold is sized to
+# the longest allowed task.
+OPS_QUEUE = "ops"
+INGEST_QUEUE = "ingest"
+
 # The fake provider's ingest (M2 slice 4). Only scheduled when FAKE_PROVIDER_ENABLED is true.
 FAKE_INGEST = "ingest.fake"
 

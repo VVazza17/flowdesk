@@ -9,6 +9,9 @@ x-api-env: &api-env
   # The API judges the worker canary's staleness, Beat schedules it: one variable feeds both, so they
   # cannot disagree about how often it runs (app/settings.py).
   CANARY_INTERVAL_SECONDS: ${CANARY_INTERVAL_SECONDS:-60}
+  # The longest any task may run (Celery kills it past this). The API judges the ingest worker's canary
+  # against it, the workers enforce it: one variable, so they cannot disagree (app/settings.py).
+  INGEST_TASK_MAX_SECONDS: ${INGEST_TASK_MAX_SECONDS:-1800}
   # How old the last backup may be before /health/data calls it stale (it never touches /health/ready).
   BACKUP_STALE_AFTER_HOURS: ${BACKUP_STALE_AFTER_HOURS:-36}
   # The fake provider (M2 slice 4): OFF unless FAKE_PROVIDER_ENABLED=true. The API judges its feed, Beat
@@ -16,6 +19,7 @@ x-api-env: &api-env
   FAKE_PROVIDER_ENABLED: ${FAKE_PROVIDER_ENABLED:-false}
   FAKE_PROVIDER_MODE: ${FAKE_PROVIDER_MODE:-ok}
   FAKE_PROVIDER_INTERVAL_SECONDS: ${FAKE_PROVIDER_INTERVAL_SECONDS:-60}
+  FAKE_PROVIDER_SLOW_SECONDS: ${FAKE_PROVIDER_SLOW_SECONDS:-60}
   INGEST_RETRY_INITIAL_SECONDS: ${INGEST_RETRY_INITIAL_SECONDS:-1}
 
 # The Postgres image is defined once, here. The backup container is built FROM it so its pg_dump is the
@@ -116,9 +120,24 @@ services:
   # No ports. The image's HEALTHCHECK probes port 8000, which nothing serves here, so it is disabled
   # as for the heartbeat sender. The health signal for these two is the canary in task_runs, read by
   # /health/ready: a process being up says nothing about whether it is working.
+  #
+  # Two workers on two queues (M2 slice 5, step 0). One worker on one queue meant a long backfill could
+  # hold every slot, the canary would queue behind it, and /health/ready would page as if the worker
+  # had died. `worker-ops` takes the `ops` queue and nothing else, so nothing can make the canary wait;
+  # `worker` takes `ingest`, the default for every other task. Each has a canary and each is judged by
+  # /health/ready (checks.worker and checks.ingest_worker). `-n` gives each a distinct node name.
   worker:
     build: ./backend
-    command: ["celery", "-A", "app.worker", "worker", "--loglevel=INFO", "--concurrency=2"]
+    command: ["celery", "-A", "app.worker", "worker", "--loglevel=INFO", "--concurrency=2", "-Q", "ingest", "-n", "ingest@%h"]
+    environment:
+      <<: *api-env
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+
+  worker-ops:
+    build: ./backend
+    command: ["celery", "-A", "app.worker", "worker", "--loglevel=INFO", "--concurrency=1", "-Q", "ops", "-n", "ops@%h"]
     environment:
       <<: *api-env
     healthcheck:

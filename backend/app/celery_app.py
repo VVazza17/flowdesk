@@ -9,7 +9,7 @@ from celery import Celery
 
 from app import settings
 from app.logging import configure_logging
-from app.tasks.names import CANARY, FAKE_INGEST
+from app.tasks.names import CANARY, FAKE_INGEST, INGEST_CANARY, INGEST_QUEUE, OPS_QUEUE
 
 
 def create_celery() -> Celery:
@@ -24,6 +24,21 @@ def create_celery() -> Celery:
     app.conf.update(
         timezone="America/New_York",
         enable_utc=True,
+        # DECISION (M2 slice 5, step 0): the canary cannot queue behind ingest work. It is routed to
+        # its own queue, which only its own worker process consumes (docker-compose.yml,
+        # worker-ops).
+        # Everything unrouted defaults to `ingest`: a new task nobody thought about lands where
+        # starvation is survivable, not on the queue that has to stay free.
+        task_default_queue=INGEST_QUEUE,
+        task_routes={CANARY: {"queue": OPS_QUEUE}, INGEST_CANARY: {"queue": INGEST_QUEUE}},
+        # Prefetch 1: a worker reserves only what it can start. The default (4 per process) lets a
+        # worker hold tasks in its own memory behind a long one, where no other worker can
+        # take them.
+        worker_prefetch_multiplier=1,
+        # The longest any task may run. Not a tuning knob: the ingest canary's staleness
+        # threshold is built from it (settings.ingest_worker_stale_after), so the limit has
+        # to be enforced.
+        task_time_limit=settings.ingest_task_max_seconds(),
         # Postgres owns durable state (task_runs); Redis is only the bus. No result backend.
         task_ignore_result=True,
         # Redis may not be up yet when the stack starts; keep retrying instead of exiting.
@@ -37,7 +52,14 @@ def create_celery() -> Celery:
                 # A canary that sat in the queue through a stall is no evidence of anything now.
                 # Without this, unpausing a wedged worker replays every missed run at once.
                 "options": {"expires": interval * 2},
-            }
+            },
+            # The ingest worker's canary: same body, the ingest queue. When every slot is busy it
+            # waits, expires, and the next one tries; it is judged against the longest allowed task.
+            "canary_ingest": {
+                "task": INGEST_CANARY,
+                "schedule": interval,
+                "options": {"expires": interval * 2, "queue": INGEST_QUEUE},
+            },
         },
     )
     if settings.fake_provider_enabled():

@@ -37,7 +37,10 @@ async def run_fake_ingest() -> None:
             provider_name,
             feed,
             fake_body(
-                FakeProvider([settings.fake_provider_mode()]),
+                FakeProvider(
+                    [settings.fake_provider_mode()],
+                    slow_seconds=settings.fake_provider_slow_seconds(),
+                ),
                 # DECISION: redis-py types hgetall as sync-or-async; ours is the async client.
                 RedisFakeStore(redis),  # type: ignore[arg-type]
             ),

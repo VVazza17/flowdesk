@@ -2,6 +2,8 @@
 # M2 slice 1 smoke test (IDEA-032, killing the worker): the worker's health is judged by whether the
 # canary task keeps completing, not by whether a process is up. Each way of stopping it produces the
 # documented state in docs/HEALTH.md, never a 500, and each recovers.
+# Since M2 slice 5 (step 0) "the worker" here is `worker-ops`, which runs the canary and nothing else. The
+# ingest worker has its own canary and check: infra/smoke-m2-slice5-step0.sh.
 #
 #   stopped worker    -> stale -> /health/ready degraded
 #   paused worker     -> stale -> degraded   (process alive but wedged: the case a liveness check misses)
@@ -24,9 +26,9 @@ GRACE=$((INTERVAL * 3))   # the stale window, which is also the startup grace
 # interval so a 3 s canary does not outlive the test.
 restore() {
   local rc=$?
-  docker compose unpause worker >/dev/null 2>&1 || true
+  docker compose unpause worker worker-ops >/dev/null 2>&1 || true
   unset CANARY_INTERVAL_SECONDS
-  docker compose up -d redis postgres worker beat api >/dev/null 2>&1 \
+  docker compose up -d redis postgres worker worker-ops beat api >/dev/null 2>&1 \
     || echo "WARN: could not restore the stack" >&2
   exit "$rc"
 }
@@ -82,23 +84,23 @@ get /health/data
 printf '%s' "$body" | grep -qF '"task_name":"ops.canary"' || fail "/health/data does not report the canary: $body"
 
 echo "== worker stopped -> stale, degraded"
-docker compose stop worker
+docker compose stop worker-ops
 wait_worker stale 45
 expect_verdict 200 degraded
 echo "== worker back -> recovers"
-docker compose start worker
+docker compose start worker-ops
 wait_worker ok 60
 expect_verdict 200 ok
 
 echo "== worker PAUSED (process alive, not working) -> stale, degraded"
-docker compose pause worker
+docker compose pause worker-ops
 # A paused container still has its process (Running=true), frozen (Paused=true): alive, not working.
-[ "$(docker inspect -f '{{.State.Running}} {{.State.Paused}}' "$(docker compose ps -q worker)")" = "true true" ] \
+[ "$(docker inspect -f '{{.State.Running}} {{.State.Paused}}' "$(docker compose ps -q worker-ops)")" = "true true" ] \
   || fail "worker should have a live process but be paused"
 wait_worker stale 45
 expect_verdict 200 degraded
 echo "== worker unpaused -> recovers"
-docker compose unpause worker
+docker compose unpause worker-ops
 wait_worker ok 60
 expect_verdict 200 ok
 
@@ -111,7 +113,7 @@ wait_worker ok 60
 expect_verdict 200 ok
 
 echo "== fresh stack, no canary yet -> never_completed: ok inside the grace, degraded after it"
-docker compose stop worker beat
+docker compose stop worker worker-ops beat
 docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "truncate task_runs"' >/dev/null
 docker compose restart api >/dev/null
 wait_ready api
@@ -124,7 +126,7 @@ get /health/ready
 [ "$(worker_status)" = "never_completed" ] || fail "expected never_completed after the grace: $body"
 [ "$(worker_field in_grace)" = "false" ] || fail "expected in_grace=false after the grace: $body"
 expect_verdict 200 degraded
-docker compose start worker beat
+docker compose start worker worker-ops beat
 wait_worker ok 60
 expect_verdict 200 ok
 

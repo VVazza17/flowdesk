@@ -55,7 +55,7 @@ class FakeProbes:
 
     async def last_task_success(self, task_name: str) -> datetime | None:
         # The canary is healthy so /health/ready can be asserted ok alongside a bad backup.
-        if task_name == "ops.canary":
+        if task_name in ("ops.canary", "ops.canary_ingest"):
             return NOW - timedelta(seconds=10)
         return self.successes.get(task_name)
 

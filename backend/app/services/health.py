@@ -16,7 +16,7 @@ from typing import Any, Protocol
 
 import structlog
 
-from app.tasks.names import BACKUP, BACKUP_COPY, CANARY, STATUS_SKIPPED
+from app.tasks.names import BACKUP, BACKUP_COPY, CANARY, INGEST_CANARY, STATUS_SKIPPED
 
 log = structlog.get_logger(__name__)
 
@@ -70,14 +70,22 @@ async def run_check(name: str, probe: Callable[[], Awaitable[Any]]) -> dict[str,
 
 
 async def assemble_ready(
-    probes: HealthProbes, now: datetime, started_at: datetime, worker_stale_after: timedelta
+    probes: HealthProbes,
+    now: datetime,
+    started_at: datetime,
+    worker_stale_after: timedelta,
+    ingest_worker_stale_after: timedelta,
 ) -> tuple[int, dict[str, Any]]:
     """Readiness: ok (200) | degraded (200) | not_ready (503).
 
-    Degraded means Redis is down or the worker is not completing the canary. Redis is a cache/bus,
+    Degraded means Redis is down or a worker is not completing its canary. Redis is a cache/bus,
     never the source of truth, so losing it degrades; losing Postgres or running against an
     unmigrated schema means the API cannot serve real data. A worker that has stopped completing
-    the canary degrades too (M2 slice 1): the API still answers, but nothing is being ingested.
+    its canary degrades too (M2 slice 1): the API still answers, but nothing is being ingested.
+    There are two workers and two canaries (M2 slice 5, step 0): `worker` is the ops worker, which
+    only runs the canary and so cannot be starved; `ingest_worker` runs ingest work, and its canary
+    is judged against the longest allowed ingest task. A wedged ingest worker is machinery stopping,
+    not a source failing, so it degrades here even though every feed it feeds would only read stale.
     `now` and `started_at` are passed in: no clock in the logic.
     """
     pg, redis = await asyncio.gather(
@@ -92,7 +100,21 @@ async def assemble_ready(
         started_at=started_at,
         stale_after=worker_stale_after,
     )
-    checks = {"postgres": pg, "redis": redis, "migrations": migrations, "worker": worker}
+    ingest_worker = await _check_worker(
+        probes,
+        pg_ok=pg["status"] == "ok",
+        now=now,
+        started_at=started_at,
+        stale_after=ingest_worker_stale_after,
+        task=INGEST_CANARY,
+    )
+    checks = {
+        "postgres": pg,
+        "redis": redis,
+        "migrations": migrations,
+        "worker": worker,
+        "ingest_worker": ingest_worker,
+    }
 
     if pg["status"] != "ok" or migrations["status"] != "ok":
         return 503, {"status": "not_ready", "checks": checks}
@@ -101,7 +123,7 @@ async def assemble_ready(
     # backup must not, so it lives on /health/data and the missed-run signal. A new condition that
     # shouldn't page doesn't belong here, or the gate in app/heartbeat.py changes in the same
     # commit. See ADR-0008.
-    if redis["status"] != "ok" or _worker_degrades(worker):
+    if redis["status"] != "ok" or _worker_degrades(worker) or _worker_degrades(ingest_worker):
         return 200, {"status": "degraded", "checks": checks}
     return 200, {"status": "ok", "checks": checks}
 
@@ -113,6 +135,7 @@ async def _check_worker(
     now: datetime,
     started_at: datetime,
     stale_after: timedelta,
+    task: str = CANARY,
 ) -> dict[str, Any]:
     if not pg_ok:
         return {"status": "unknown", "reason": "postgres_down"}
@@ -121,19 +144,23 @@ async def _check_worker(
 
     async def probe() -> None:
         nonlocal last, answered
-        last = await probes.last_task_success(CANARY)
+        last = await probes.last_task_success(task)
         answered = True
 
-    result = await run_check("worker", probe)
+    result = await run_check("worker" if task == CANARY else "ingest_worker", probe)
     if result["status"] != "ok" or not answered:
         # Same stance as migrations: not being able to ask is not evidence that the worker is dead,
         # and a Postgres or schema problem already shows in its own check (and as not_ready).
         return {"status": "unknown", "error": result.get("error", "NoResult")}
-    return classify_worker(last, now, started_at, stale_after)
+    return classify_worker(last, now, started_at, stale_after, task=task)
 
 
 def classify_worker(
-    last_success: datetime | None, now: datetime, started_at: datetime, stale_after: timedelta
+    last_success: datetime | None,
+    now: datetime,
+    started_at: datetime,
+    stale_after: timedelta,
+    task: str = CANARY,
 ) -> dict[str, Any]:
     """The worker's state from the canary's last recorded success. Beat dying and the worker dying
     look identical here, on purpose: both mean completions stop, and one state is easier to act on.
@@ -149,7 +176,7 @@ def classify_worker(
     DECISION: the grace is measured from the API process's start, because task_runs is empty on a
     fresh install and has no first-seen time to measure from (the same gap as IDEA-026).
     """
-    base: dict[str, Any] = {"task": CANARY, "stale_after_seconds": int(stale_after.total_seconds())}
+    base: dict[str, Any] = {"task": task, "stale_after_seconds": int(stale_after.total_seconds())}
     if last_success is None:
         return {
             **base,

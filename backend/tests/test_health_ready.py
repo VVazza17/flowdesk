@@ -60,8 +60,8 @@ class FakeProbes:
     async def last_task_success(self, task_name: str) -> datetime | None:
         if self.worker_error:
             raise self.worker_error
-        # Only the canary has a history here; every other task (the backup steps) has never run.
-        return self.last_success if task_name == "ops.canary" else None
+        # Only the two canaries have a history here; every other task (the backup steps) never ran.
+        return self.last_success if task_name in ("ops.canary", "ops.canary_ingest") else None
 
     async def data_state(self) -> dict[str, list[dict[str, Any]]]:
         if self.postgres:

@@ -9,6 +9,7 @@ It deliberately defines no record types. FRED-shaped and bar-shaped records belo
 to show that re-ingesting an identical payload writes nothing new.
 """
 
+import asyncio
 import hashlib
 import json
 from collections.abc import Awaitable, Sequence
@@ -45,16 +46,22 @@ class FakeProvider:
     """`script` is consumed one entry per call and the last entry repeats, so ["transient",
     "transient", "ok"] fails twice and then works, and ["down"] fails forever."""
 
-    def __init__(self, script: Sequence[str] = ("ok",)) -> None:
+    def __init__(self, script: Sequence[str] = ("ok",), slow_seconds: float = 60.0) -> None:
         if not script:
             raise ValueError("script must not be empty")
         self._script = list(script)
+        self._slow_seconds = slow_seconds
         self.calls = 0
 
     async def fetch(self, feed: str) -> FakeBatch:
         mode = self._script[min(self.calls, len(self._script) - 1)]
         self.calls += 1
         if mode == "ok":
+            return _payload()
+        if mode == "slow":
+            # A call that hangs and then succeeds: it holds a worker slot for a long time, which is
+            # what a backfill does. Used to fill the ingest slots (infra/smoke-m2-slice5-step0.sh).
+            await asyncio.sleep(self._slow_seconds)
             return _payload()
         if mode == "transient":
             raise Transient("simulated timeout")

@@ -115,7 +115,7 @@ get /health/ready
 ready=$(printf '%s' "$body" | sed -n 's/^{"status":"\([a-z_]*\)".*/\1/p')
 if [ "$ready" != "ok" ]; then
   echo "--- diagnostics: queue length, canary history, worker log tail" >&2
-  docker compose exec -T redis redis-cli llen celery >&2 || true
+  docker compose exec -T redis redis-cli llen ingest >&2 || true
   one "SELECT started_at, completed_at, status FROM task_runs WHERE task_name='ops.canary' ORDER BY id DESC LIMIT 6" >&2 || true
   docker compose logs --tail 25 worker >&2 || true
 fi

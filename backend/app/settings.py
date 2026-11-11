@@ -83,8 +83,12 @@ def feed_stale_after() -> dict[tuple[str, str], timedelta]:
 #
 # DECISION: stale after three missed runs. One miss can be a queued or slow run; three is not. The
 # threshold is derived from the interval, so the API (which judges) and Beat (which schedules) read
-# the same variable and cannot disagree. Revisit when long tasks share the worker: a canary stuck
-# behind a long backfill would look like a dead worker.
+# the same variable and cannot disagree.
+#
+# Long tasks (M2 slice 5, step 0): the canary cannot queue behind them. It has its own queue and its
+# own worker process (`ops`, one slot), and ingest work runs on another (`ingest`). A second canary
+# runs on the ingest queue so that a wedged ingest worker is still machinery stopping and still
+# degrades /health/ready; see ingest_worker_stale_after for why its threshold is different.
 WORKER_STALE_MULTIPLIER = 3
 
 
@@ -99,6 +103,38 @@ def canary_interval_seconds() -> int:
 
 def worker_stale_after() -> timedelta:
     return timedelta(seconds=canary_interval_seconds() * WORKER_STALE_MULTIPLIER)
+
+
+def ingest_task_max_seconds() -> int:
+    """The longest any task may run: Celery kills it past this (celery_app.py, task_time_limit).
+
+    # DECISION: 30 minutes. A guess, not a measurement: no real feed exists yet, and the FRED
+    # backfill (slice 5) and the bar backfill (slice 10) are the first tasks that could approach
+    # it. A task that needs longer is chunked, or given its own limit when it is built; raising
+    # this raises the time a wedged ingest worker takes to show, because the ingest canary's
+    # threshold is built from it.
+    # A task killed by this limit leaves its task_runs and ingestion_runs rows 'running' (see the
+    # DECISION in app/tasks/runs.py: the sweep arrives with the first long task, which is now).
+    """
+    raw = os.environ.get("INGEST_TASK_MAX_SECONDS", "").strip() or "1800"
+    value = int(raw)
+    if value <= 0:
+        raise ValueError(f"INGEST_TASK_MAX_SECONDS must be positive, got {raw!r}")
+    return value
+
+
+def ingest_worker_stale_after() -> timedelta:
+    """How old the ingest canary's last success may be before /health/ready calls the ingest worker
+    stale: the longest allowed task, plus the usual three missed canaries.
+
+    A task running for the whole limit can legitimately starve the ingest canary for that long (both
+    slots busy), so a tighter number would page on a healthy backfill. A looser one would let a
+    wedged worker hide. This is the one threshold derived from a limit that is enforced, not
+    guessed.
+    """
+    return timedelta(
+        seconds=ingest_task_max_seconds() + canary_interval_seconds() * WORKER_STALE_MULTIPLIER
+    )
 
 
 # --- Ingest framework (M2 slice 4) -------------------------------------------------------------
@@ -121,7 +157,7 @@ def ingest_retry_initial_seconds() -> float:
 # "kill a provider" clause something to kill. It is OFF unless FAKE_PROVIDER_ENABLED=true, and then
 # it only registers one Beat task and one feed. It never runs in a normal stack.
 FAKE_FEED = ("fake", "ticks")
-FAKE_MODES = ("ok", "transient", "rate_limited", "permanent", "empty", "schema", "down")
+FAKE_MODES = ("ok", "transient", "rate_limited", "permanent", "empty", "schema", "down", "slow")
 
 
 def fake_provider_enabled() -> bool:
@@ -133,6 +169,15 @@ def fake_provider_mode() -> str:
     if mode not in FAKE_MODES:
         raise ValueError(f"FAKE_PROVIDER_MODE must be one of {FAKE_MODES}, got {mode!r}")
     return mode
+
+
+def fake_provider_slow_seconds() -> float:
+    """How long a `slow` fake call hangs before it succeeds (M2 slice 5, step 0)."""
+    raw = os.environ.get("FAKE_PROVIDER_SLOW_SECONDS", "").strip() or "60"
+    value = float(raw)
+    if value <= 0:
+        raise ValueError(f"FAKE_PROVIDER_SLOW_SECONDS must be positive, got {raw!r}")
+    return value
 
 
 def fake_provider_interval_seconds() -> int:
