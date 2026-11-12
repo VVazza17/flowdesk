@@ -1380,3 +1380,148 @@ just the package's own metadata:
 **Not done, deliberately.** `FRED_API_KEY` is not yet passed to any container. `x-api-env` is shared by `api`,
 `api-public`, `worker` and `beat`, and the API has no use for the key (and `api-public` faces the outside); step 3
 passes it to `worker` only.
+
+### M2 slice 5, step 2b (2026-11-12): the first real FRED calls — PARTIAL, blocked on a key
+
+Asked for before step 3's backfill design: (1) the vintage-date cap on a widened-window `output_type=4` request for
+every daily series in 6.4, (2) the real response shape against the documentation-derived fixtures, (3) one real
+error body. **There is no FRED API key on this machine** (not in `.env`, not in the environment), so (1) and (2) are
+**not measured**. (3) is, and a little more.
+
+**Measured, keyless (3 requests, 1.5 s apart).**
+- The API host is reachable from here (`api.stlouisfed.org`; `fred.stlouisfed.org`, the website, was reset earlier).
+- **A missing, a malformed and a well-formed-but-unregistered `api_key` are all HTTP 400** with
+  `Content-Type: application/json; charset=UTF-8` and a body of the form
+  `{"error_code":400,"error_message":"Bad Request.  The value for variable api_key is not registered.  Read https:\/\/fred.stlouisfed.org\/docs\/api\/api_key.html for more information."}`
+  (the slashes are JSON-escaped as `\/`; two spaces after "Bad Request."). Not 401, not 403.
+- No rate-limit or `Retry-After` header on those responses (a 400, so not informative about a 429).
+- The three bodies are in `tests/fixtures/fred/` unmodified, and `backend/tests/test_fred_real_bodies.py` feeds them
+  through the client: each is `permanent`, not retried, names the api key, and copies nothing FRED said into the
+  exception. **This grounds the 400 / `api_key` branch of the taxonomy.** The 401/403, 423, 429, 5xx, vintage-400 and
+  unknown-series branches are still documentation only.
+
+**Not measured, and why it matters.** (1) decides whether the backfill is chunked, so the backfill's windowing is
+**pending** (see the step 3 plan). (2) matters because every FRED fixture except the three above is built from the
+documented shape.
+
+**The probe is ready.** `probe_fred.py` (kept out of the repo: `spikes/` is frozen, and it is a measurement, not a
+test) was run end to end against a local stub FRED (41 requests, no bug left in the loop) and against the real API
+with a throwaway key (it stops after one request at the key check). With a key in `.env` it needs one command, takes
+about a minute, and paces itself at 1.25 s a request (about 48 a minute against the 120 a minute FRED documents). For
+GDPC1 and each of the 17 series in 6.4 it records:
+- `series/vintagedates` count over the widened window, and the widened-window `output_type=4` request: HTTP status,
+  seconds, bytes, `count` vs rows returned (silent truncation), top-level keys, observation keys, value formats,
+  `"."` counts, and anything that is neither a decimal nor `"."`;
+- **whether old observations carry a real first-publication date or one bulk-load date** (distinct `realtime_start`
+  values, the most common one and its share, and any `realtime_start` earlier than its own `date`). This is a risk
+  the plan below depends on: if, say, every 1960s observation of a daily series carries the same `realtime_start`,
+  then "first print" for history is a bulk-load date, not a publication date;
+- the `latest` shape (`output_type=1`) for DGS10, and real bodies for three provokable errors:
+  `output_type=4` with the default window ("No vintage dates exist"), an unknown series, and `limit=100001`;
+- it stops at the first 429 and prints that response's headers (cookies removed).
+Full responses go to a scratch directory; trimmed ones go to `tests/fixtures/fred/` afterwards.
+
+**To run it (Kyle):** get a free key at https://fredaccount.stlouisfed.org/apikeys, add `FRED_API_KEY=<key>` to the
+gitignored `.env` (never in chat), and say so. The key is read from the environment and never printed or written.
+
+### M2 slice 5, step 3 plan (2026-11-12) — plan only, no code; backfill windowing PENDING step 2b
+
+**Scope:** make macro_metrics fill and stay current, and make a long ingest task something the health model can
+tell from a wedged one. Five parts; only A's windowing waits on the measurement.
+
+**A. Backfill (first prints).** `ingest.fred_backfill`, started by hand (`celery call`), never by Beat. Per series,
+`FredClient.first_prints` then idempotent insert of `revision = 0` rows with `ON CONFLICT DO NOTHING`;
+`available_at` = 00:00 America/New_York on the day after `realtime_start` (ADR-0003 addendum), computed by one
+pure, tested function. `rows_written` counts rows created, so a re-run writes 0. Progress in `backfill_runs`
+(`total_units` = series, `current_unit` = the series in flight), so a killed run resumes at the first series not
+complete. Runs on the `ingest` queue under the heartbeat (part C).
+- **WINDOWING: PENDING.** Three outcomes of measurement (1), each a different design:
+  (i) every series returns its full `count` in one request: no chunking, one request per series, paged by `offset`;
+  (ii) a series is refused or capped (an error naming vintage dates, or fewer rows than `count`): the request is
+  split into real-time windows that each contain at most the cap's worth of vintage dates (the dates come from
+  `series/vintagedates`), and how `output_type=4` behaves *inside* a sub-window (which first prints it returns)
+  must be measured before that design is trusted;
+  (iii) silent truncation (rows < count, or a quietly shortened history): the backfill must detect and refuse, and
+  the client gains a truncation check it does not have today.
+- **ALSO PENDING, from the same measurement: bulk-load `realtime_start`.** If old observations share one
+  `realtime_start`, their `available_at` is a bulk-load date. That is not early (the point-in-time filter stays
+  safe), but those rows would be invisible to any replay before that date. Whether they are kept, flagged, or
+  excluded from PIT use is a decision to take with the numbers in hand.
+
+**B. Daily poll.** `ingest.fred_poll`, Beat crontab 08:00 America/New_York (6.4/11), one `run_feed` per series
+(`provider='fred'`, `feed=<series id>`), sequential, so each series has its own `ingestion_runs` row, its own
+`providers_health` row and its own staleness (ADR-0003 decision 5). Each fetches `latest` (the whole current series,
+one request: revisions land on old periods, PAYEMS months back and CPI seasonal factors years back, so a "recent
+window" would miss them) and diffs against the newest stored revision of every period:
+- *unchanged* writes nothing; *changed* (including value to NULL and NULL to value) appends `revision + 1` with
+  `available_at` = the poll instant (injected clock) and `ingested_at` the same instant;
+- a period never seen before is a new `revision = 0` whose `available_at` is the poll instant too (it can only be
+  new now); a stored period absent from the poll is logged with a count and left alone, never deleted
+  (triggers forbid it);
+- **the poll refuses a series with no stored baseline** (a `permanent`-kind error naming the backfill). Without this
+  guard a poll on an empty series would write the whole history with `available_at` = today, which silently destroys
+  point-in-time history. This guard is the one thing here with no precedent in the spec.
+- Two writers on one series (a poll during a backfill): a Postgres advisory transaction lock keyed on the series.
+
+**C. The `heartbeat_at` liveness check and the running-row sweep** (decided 2026-11-11; replaces queue priority;
+reading confirmed by Kyle 2026-11-12: canary at 3 intervals for condition 1, any running row with a fresh
+`heartbeat_at` for condition 2).
+- **One definition, in one place.** `app/tasks/liveness.py` holds two constants and one function, and the health
+  probe and the sweep both import them; neither restates a number.
+  `HEARTBEAT_INTERVAL_SECONDS = 30` (how often a running task writes) and `HEARTBEAT_FRESH_SECONDS = 120` (four
+  intervals: three consecutive beats may be lost to a slow commit or a GC pause before a live task looks dead).
+  `is_fresh(heartbeat_at, now) -> bool` is `now - heartbeat_at <= HEARTBEAT_FRESH_SECONDS`, and a NULL heartbeat is
+  never fresh. A test pins `HEARTBEAT_FRESH_SECONDS >= 3 * HEARTBEAT_INTERVAL_SECONDS` so the two cannot drift
+  into a state where a healthy task is swept.
+- **What writes it, and when.** `run_recorded` (the one wrapper every task goes through) writes `heartbeat_at` at
+  start (as it already does), at completion (already), **and every 30 s in between from a background thread with
+  its own short DB connection**, so no task body has to remember to. This matters for the backfill: it is the first
+  task long enough to need it, and a beat only at start and end would look dead for its whole run. The thread stops
+  when the body returns or raises. **What a beat proves:** the worker process is alive and can reach Postgres. It
+  does *not* prove the body is making progress (a body stuck in a call keeps beating). That case is bounded by
+  `httpx2`'s 30 s timeout per request and, as the last resort, `task_time_limit` (`INGEST_TASK_MAX_SECONDS`), which
+  kills the process and so stops the beats. Backfill progress is a separate signal, `backfill_runs.current_unit`.
+- `checks.ingest_worker` is `ok` if the ingest canary succeeded within 3 canary intervals **or** a `task_runs` row
+  is `running` with a fresh heartbeat (new status `busy`, which does not degrade); `stale` only if neither.
+  Consequence: the ingest canary's threshold no longer needs to be sized to the longest task
+  (`INGEST_TASK_MAX_SECONDS` + 3 intervals), so it reverts to 3 intervals and a wedged ingest worker shows in
+  minutes, not half an hour. `INGEST_TASK_MAX_SECONDS` stays as the hard `task_time_limit`. This removes step 0's
+  documented false-alarm gap and its slow detection together.
+- **Sweep.** `ops.sweep` on the **ops** queue (a saturated ingest queue cannot starve it), every 2 minutes. A
+  `task_runs` row that is `running` and **not `is_fresh`** becomes `failed` with `error_class = 'Orphaned'`: the same
+  function the health probe uses, so "alive" means one thing. Because a row gets a heartbeat at start, a task that
+  has only just begun is fresh, not NULL. **One deliberate second rule:** `ingestion_runs` has no link to
+  `task_runs` (no column carries it), so it cannot use the heartbeat; a row `running` for longer than
+  `INGEST_TASK_MAX_SECONDS` plus a minute cannot still be alive (the time limit would have killed it) and is failed
+  the same way. That is the one place the sweep does not use `is_fresh`, and it is noted in the code. Linking the two
+  tables would need a migration and is not done here; say if you want it.
+- Tests: `is_fresh` at the boundary and for NULL; the constants relation; a task longer than 3 intervals keeps
+  `heartbeat_at` advancing (injected clock and a short interval); a killed task's beats stop and the sweep fails it
+  after `HEARTBEAT_FRESH_SECONDS`, not before; a live long task is never swept; `ingest_worker` returns `busy` with
+  a stale canary and a fresh running row, and `stale` with neither.
+
+**D. Wiring.** `FRED_API_KEY` and `FRED_USER_AGENT` to the `worker` service only (never `x-api-env`, which `api` and
+`api-public` share); the key passed to `run_feed(secrets=[...])`; `settings.FRED_SERIES` (the 17 of 6.4, config, not
+code, per 6.4's "adding a tile = one row") and per-series `FEED_STALE_AFTER` for the poll's health. A
+`FRED_BASE_URL` override (default the real API) so the smoke can run the whole path on the real stack against a local
+stub FRED.
+
+**E. Verification.** Tests: the available_at function (DST edges included); the store (first run writes N, identical
+re-run writes 0, a changed value appends revision 1 and keeps revision 0, gap to value and value to gap, the baseline
+guard, the advisory lock, the foreign key, inserts passing the immutability triggers); the heartbeat liveness
+statuses; the sweep; the feed bodies against fixtures. `infra/smoke-m2-slice5-step3.sh`: the real stack, a stub FRED,
+a backfill then a poll, a revision injected in the stub and seen as `revision = 1`, a killed worker mid-backfill
+swept to `failed`, `ready` staying `ok` while a long backfill runs (the step 0 scenario, now without the false-alarm
+gap).
+
+**Files.** New: `app/ingest/macro.py` (pure rules), `app/services/macro_store.py`, `app/ingest/fred_feed.py`,
+`app/tasks/fred_ingest.py`, `app/tasks/sweep.py`, `tests/test_macro_store.py`, `tests/test_fred_feed.py`,
+`tests/test_heartbeat_liveness.py`, `tests/test_sweep.py`, `infra/smoke-m2-slice5-step3.sh`. Changed:
+`app/tasks/runs.py`, `app/tasks/names.py`, `app/celery_app.py`, `app/settings.py`, `app/services/health.py`,
+`app/services/health_probes.py`, `docker-compose.yml`, `.env.example`, `docs/HEALTH.md`. No migration: `macro_metrics`
+and `backfill_runs` exist.
+
+**What step 3 needs from Kyle, in order.** (1) A FRED key in `.env` so the probe can run; windowing waits on it.
+(2) The rate-limit sentence read on FRED's page and the `fred` budget entry added: unit tests do not need it, but
+neither the smoke (the runner refuses a provider with no budget) nor any real run can proceed without it.
+(3) A yes or a correction on the heartbeat reading in C.

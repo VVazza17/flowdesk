@@ -321,8 +321,8 @@ fetch tool; the rate-limit sentence still awaits Kyle's reading on the page, see
 | 429 | `rate_limited` | yes | Documented past 120 requests a minute, with "a temporary block" for ignoring it. The status and every header except cookies are logged on the first natural one: whether FRED sends `Retry-After` is unknown. |
 | 400, "No vintage dates exist" | `permanent` | no | A configuration bug (ADR-0003 decision 4). The client cannot produce it: it refuses vintage output types without an explicit window. |
 | 400, "series does not exist" | `permanent` | no | ADR-0003 decision 8. |
-| 400, anything naming `api_key` | `permanent` | no | Missing, malformed or unregistered key. |
-| 401, 403 | `permanent` | no | Never `transient` (Kyle, 2026-11-11): retrying a refused key or a blocked client only hammers what refused it. |
+| 400, anything naming `api_key` | `permanent` | no | Missing, malformed or unregistered key. **Observed**: all three arrive as HTTP 400 with a JSON body (fixtures in `tests/fixtures/fred/`, `tests/test_fred_real_bodies.py`). |
+| 401, 403 | `permanent` | no | **Not observed**: FRED sends key failures as 400. Kept as `permanent`, never `transient` (Kyle, 2026-11-11): retrying a refused client only hammers what refused it. |
 | 423, 500, 502, 503, 504 | `transient` | yes | 423 and 500 are listed with no explanation; treated as transient and logged. |
 | redirect, other 4xx | `permanent` | no | Redirects are never followed: the key would go to whatever host answered. |
 | connection refused, reset, timeout | `transient` | yes | A reset cannot be told from a network blip, so it is retried: 4 attempts per run, then Beat's next firing. A feed that never succeeds goes `stale` (`first_seen_at`). |
