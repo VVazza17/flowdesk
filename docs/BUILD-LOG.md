@@ -1277,9 +1277,8 @@ the stored value untouched; a gap stored as NULL; exact NUMERIC round trip; each
 foreign key and its SET NULL behaviour; downgrade and re-upgrade. They do NOT test point-in-time reads (step 4)
 or ingestion (step 3).
 
-**Verified.** In the project's 3.12 image: lint, format and mypy clean; **360 passed, 0 skipped** (346 before, 14
-new), including `test_models_match_migrations`, which diffs the model against the migration. Smokes 3, 4, M2-3
-and 9 pass (9 proves a backup round-trips with the new table in the real database). The real database is at 0005.
+**Verified.** In the project's 3.12 image: lint, format and mypy clean; **371 passed, 0 skipped** (346 before, 25 new: 14 for the table, 11 for the triggers), including `test_models_match_migrations`, which diffs the model against the migration. Smokes 3, 4, M2-3
+and 9 pass (9 proves a backup round-trips with the new table in the real database). The real database is at 0005 with the triggers (the table was empty; dropped by hand, stamped 0004 and upgraded after the triggers were added). **Restore proven with rows:** on two scratch databases, `pg_dump -Fc | pg_restore --no-owner --exit-on-error` carried two GDPC1 vintages across, and an UPDATE on the restored copy was refused with the intended message and left the value intact.
 
 **Decided (Kyle, 2026-11-11): `available_at` for a date-granular publication is the end of that day in
 America/New_York.** Never early, up to 24 hours late, for first prints only: a documented bias with its direction
