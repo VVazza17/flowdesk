@@ -1736,3 +1736,30 @@ returned. 1,240 stored rows are NULL (gaps FRED did publish in a vintage); 636 r
 The vintage store is therefore populated in the dev database; it is not in any backup yet.
 Tests: 484 pass, lint and mypy clean in the 3.12 image; two mutations (an accounting that never reports an unaccounted
 value, and a chunk size with no margin) each turned 5 tests red and were reverted.
+
+### M2 slice 5, step 3: why ADR-0003 dates revisions by the poll, and whether FRED can give the true date (2026-11-12)
+
+Asked before the poll is built: was the poll date for revisions chosen for cost? **The ADR does not say so.** Decision 3
+never mentions request cost. Its reasoning is: `output_type=4` is first-published only, so it "is not the mechanism
+for capturing later revisions"; therefore ongoing ingestion polls, diffs against the last stored value, and dates a
+change by the poll on which it was first seen, "accurate to within one polling interval", defended as "conservative
+in the safe direction". What it **assumes without testing** is that no cheap way exists to get a revision's true
+publication date. ADR-0003's authors tested `output_type=4` only (M0 spikes 3 and 3b).
+
+**That assumption does not hold (measured 2026-11-12, 6 requests).** `output_type=3` ("new and revised observations
+only") over the widened window returns a series' whole revision history with each vintage's true date, in one request
+per series, in a **wide** format: each row is `{"date": ..., "<SERIES>_<YYYYMMDD>": value, ...}` with one key per
+vintage in which that period changed, not the long `realtime_start`/`value` rows of `output_type=4`. GDPC1: 319 rows,
+for 1947-01-01 fourteen vintages from 1992-12-22 to 2023-09-28. The same 2000-vintage-date cap applies. A short window
+works for a poll: `realtime_start=2026-10-01` on GDPC1 returned the single new row (`2026-07-01`, vintage `20261029`);
+DGS10 over `2026-11-02..2026-11-12` returned 7 rows. **A window containing no vintage date answers HTTP 400 "No vintage
+dates exist"** (ADR decision 4's error), which for a poll is a normal quiet day and not a configuration bug, so a poll
+using this must not treat it as one.
+
+What this changes if adopted: a revision's `available_at` could be `available_at_for(true vintage date)`, the same
+convention as a first print, so a rebuild from FRED reproduces the table exactly and the "late by up to one polling
+interval" bias disappears; and the backfill could capture the **whole revision history**, not only first prints (the
+ADR's "initial history only" rests on the same assumption). What it does not change: periods before a series' first
+vintage still have no first-print date. Not yet checked: that `output_type=3` values agree with `output_type=4` first
+prints for every series, and what the first vintage column holds for a period whose first print predates it.
+**No code changed; the poll is not built; waiting on Kyle's decision.**
