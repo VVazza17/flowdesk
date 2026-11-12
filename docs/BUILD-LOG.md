@@ -1251,3 +1251,58 @@ run after a cold Docker Desktop start, and passed on the immediate re-run (2026-
 registration not being ready after a cold start (Kyle's reading; not diagnosed here). **No retry is added:** CI
 installs its own QEMU, and a self-retrying gate hides real failures. A local failure right after Docker starts:
 run it again before suspecting the code. A failure in CI is real.
+
+### M2 slice 5, step 1 (2026-11-11): macro_metrics and migration 0005
+
+**Built.** `backend/alembic/versions/0005_macro_metrics.py`, `backend/app/models/macro.py`, and
+`backend/tests/test_macro_metrics.py`. Columns, in order: `metric` TEXT, `effective_at` DATE, `revision` INT
+(default 0), `value` NUMERIC (nullable), `available_at` TIMESTAMPTZ, `ingested_at` TIMESTAMPTZ (default now()),
+`source` TEXT, `ingestion_run_id` BIGINT (nullable). Primary key `(metric, effective_at, revision)`: a later value
+for a period is a new row. The first table built to the shared provenance vocabulary (IDEA-034); IDEA-038 is
+marked resolved.
+
+**Decisions made in the migration, each a `# DECISION:` there.**
+- *Plain table, not a hypertable.* §8 does not mark it with the hypertable symbol, and about 17 series of at most
+  tens of thousands of rows each is small; 0003 set the precedent.
+- *No index beyond the primary key,* and *no CHECK on `revision`* (the ops tables' convention).
+- *`ingestion_run_id` is a foreign key to `ingestion_runs`, ON DELETE SET NULL.* §8 gives only a BIGINT. A purged
+  ledger row must neither take the observation with it nor be blocked by it.
+- *`value` is nullable:* a FRED "." is a stored row with `NULL`, never 0.0 and never forward-filled.
+
+**Tests (written first; 13 of 14 failed before the migration existed, the 14th, "not a hypertable", passed
+vacuously because no table existed).** They pin the shape: names and types; the primary key; defaults; a DATE
+read back as 2025-01-01 under `SET TIME ZONE 'America/Toronto'` (the failure DATE exists to rule out); a revision
+and its first print coexisting (GDPC1 Q1-2025, 23,526.085 then 23,548.210); the same vintage rejected twice with
+the stored value untouched; a gap stored as NULL; exact NUMERIC round trip; each identifying column required; the
+foreign key and its SET NULL behaviour; downgrade and re-upgrade. They do NOT test point-in-time reads (step 4)
+or ingestion (step 3).
+
+**Verified.** In the project's 3.12 image: lint, format and mypy clean; **360 passed, 0 skipped** (346 before, 14
+new), including `test_models_match_migrations`, which diffs the model against the migration. Smokes 3, 4, M2-3
+and 9 pass (9 proves a backup round-trips with the new table in the real database). The real database is at 0005.
+
+**Decided (Kyle, 2026-11-11): `available_at` for a date-granular publication is the end of that day in
+America/New_York.** Never early, up to 24 hours late, for first prints only: a documented bias with its direction
+and size, recorded in an addendum to ADR-0003, in HEALTH.md and in IDEA-034 (it binds every observation table).
+M5's outcome tracking must carry it or it will attribute up to a day of lag to the strategy. One assumption stays
+open until the backfill meets real data: FRED's dates are presumably US Central, whose day ends an hour after the
+New York midnight used here; compare `realtime_start` with known release times for a few series.
+
+**Added: the database refuses to change a stored vintage (Kyle, 2026-11-11).** BEFORE UPDATE, DELETE and TRUNCATE
+triggers on `macro_metrics` (same migration 0005). Reason: an overwritten vintage is the only failure here that
+is both catastrophic and undetectable, and the primary key does not prevent it. One carve-out, which is mine and
+should be read as a refinement of what was asked: an UPDATE may clear `ingestion_run_id` to NULL, because the foreign
+key's `ON DELETE SET NULL` is itself an UPDATE and a blanket refusal would have made any referenced
+`ingestion_runs` row undeletable. **Checked before blocking DELETE:** nothing deletes from `macro_metrics` (the
+table is new; the only DELETEs near it are on `ingestion_runs`, in smokes 4, 9, M2-4 and step 0, and reach it only
+as that SET NULL). `pg_restore` loads with COPY into an empty target and `pg_dump` emits triggers after the data, so
+restore is unaffected. `DROP TABLE`, the downgrade, is not blocked. So DELETE and TRUNCATE are blocked too.
+`docs/RUNBOOK-VINTAGE-REPAIR.md` is the sanctioned way around: BUILD-LOG entry first, a backup, then
+`DISABLE TRIGGER USER` / the repair / `ENABLE TRIGGER USER` in one transaction with `SET LOCAL log_statement = 'all'`
+so the server log records it. Nothing monitors that the triggers are enabled (not built; the one-transaction rule
+is the guard, and the runbook says where a check would go).
+
+**Tests added for it (written first; 11 failed, then passed):** every stored column refuses an UPDATE (seven
+cases) and the refused statement changes nothing; DELETE and TRUNCATE refuse; the run pointer may be cleared but
+not repointed; the triggers exist and are enabled (`tgenabled = 'O'`); the runbook's procedure works, an
+abandoned repair is rolled back with the triggers still enabled, and the guard is back afterwards.

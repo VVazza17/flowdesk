@@ -197,6 +197,16 @@ of an identical payload therefore reads N and writes 0, and that 0 is the observ
 clause "re-ingesting identical payloads yields identical canonical rows". Do not change it to count attempts:
 that would make a correct idempotent re-run look as if it had written everything again.
 
+### Known bias: `available_at` for a FRED first print is up to a day late (M2 slice 5)
+
+Anything on this endpoint (or later, in the per-series data age) that is computed from `macro_metrics.available_at`
+inherits a documented bias. A first print's `available_at` is the end of its publication day in New York
+(ADR-0003, addendum of 2026-11-11), so it is **late by 0 to 24 hours, never early**, and a series' data age
+read as `now - max(available_at)` is correspondingly up to a day **younger** than the truth. That is the safe
+direction for a staleness alarm only in the sense that it cannot invent a look-ahead; it can delay a stale
+verdict by up to a day, which is small beside the per-series thresholds (generous multiples of observed lag,
+days to months). Do not tighten a threshold to chase it.
+
 ### `backups` (M2 slice 2)
 
 `GET /health/data` also carries a `backups` object with the two steps of the scheduled backup, side by side

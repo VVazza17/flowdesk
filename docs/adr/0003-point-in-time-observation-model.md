@@ -122,3 +122,54 @@ Raw evidence: `spikes/spike3_evidence.json` and `spikes/spike3b_evidence.json`.
   not an optimization to defer — treating it as a Phase-2 hardening item
   would mean early signals and their outcome-tracking history are built on
   a model this evidence already falsifies.
+
+## Addendum, 2026-11-11 (M2 slice 5; Kyle)
+
+Decisions 1 to 8 above stand unchanged. These two notes settle what they left open when `macro_metrics` was built
+(migration 0005).
+
+### `available_at` for a date-granular publication is the end of that day in America/New_York
+
+FRED's `realtime_start` is a date, but `available_at` is a timestamp and every point-in-time read filters
+`available_at <= simulated_clock`. Decision 3 calls a first print's `available_at` "exact"; a date cannot be
+exact to the instant, so the rule is:
+
+> For a first print (`revision = 0`), `available_at` is **00:00 America/New_York at the start of the day after
+> FRED's `realtime_start`** (the end of the publication day, DST-aware). For a revision it is the instant the
+> poll first saw the change, which is a real timestamp.
+
+**This is a documented bias, with a direction and a size.**
+
+- *Direction:* always **late**, never early. A replay never sees a first print before the live system could
+  have, so the look-ahead that decision 2 exists to prevent cannot come from this rule. (Midnight UTC of the
+  publication date would have been *early*: an 08:30 ET release is 13:30 UTC, and a replay clock between the two
+  would read a value that had not been published yet.)
+- *Size:* between 0 and 24 hours, for first prints only. The lateness is 24 hours minus the release's time of day
+  in New York: a release at 08:30 ET is stored about 15.5 hours late, one at 16:15 ET about 7.75 hours late. It is
+  roughly constant per series (a series has a release schedule) and not stored.
+- *Who it affects:* anything that replays on the publication day itself. A daily series read at the next
+  session's open is unaffected, because 00:00 ET precedes any open. A replay clocked at the close of the
+  publication day cannot use that day's print, though the live system could have used it from the morning.
+- *Not a bias on revisions,* whose `available_at` is the poll instant. Those are late by up to one polling
+  interval (decision 3), a separate and already documented bias.
+
+**M5's outcome tracking must carry this.** Any signal-to-outcome lag, reaction time, or "how early was the
+signal" measured from a FRED-sourced `available_at` overstates the delay by up to 24 hours for first prints.
+Left unaccounted for, that lag would be attributed to the strategy. M5 must either report the bias beside
+every such number or measure FRED-sourced inputs from the publication date (recoverable for a first print as
+`date_in_New_York(available_at - 1 microsecond)`), never from `available_at` as stored.
+
+**Assumption to verify when the backfill meets real data.** FRED states its times in US Central, so
+`realtime_start` is presumably a Central date, and the end of a Central day is 01:00 ET the next day, an hour
+after the 00:00 ET this rule uses. That could only matter for a release after 23:00 Central, and FRED releases
+are daytime events, but it is an assumption until `realtime_start` is compared against known release times for a
+handful of series.
+
+### Vintages are immutable in the database, not only in the ingest code
+
+Decision 1 says an earlier vintage is never overwritten. The primary key `(metric, effective_at, revision)`
+stops a duplicate vintage but not an `UPDATE`, and an overwritten vintage is both catastrophic and undetectable:
+a replay would read the revised value as always known, with nothing red anywhere. So `BEFORE UPDATE`,
+`BEFORE DELETE` and `BEFORE TRUNCATE` triggers refuse, with one carve-out: `ingestion_run_id` may be cleared to
+NULL (the foreign key's `ON DELETE SET NULL`). The sanctioned way around them, for a genuine repair that must
+leave a trace, is `docs/RUNBOOK-VINTAGE-REPAIR.md`.

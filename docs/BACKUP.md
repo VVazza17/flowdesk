@@ -150,6 +150,14 @@ Do not restore by hand without them. Measured on 2.31.0 (2026-11-04, details in 
 Also never use `pg_restore -j` ("does not correctly restore the TimescaleDB catalogs"), or dump single tables
 or schemas (the dump loses the hypertable/chunk relationship). Both are from the same Timescale page.
 
+## `macro_metrics` is append-only, and restores are unaffected (M2 slice 5)
+
+`macro_metrics` has triggers that refuse `UPDATE`, `DELETE` and `TRUNCATE` (migration 0005,
+`docs/RUNBOOK-VINTAGE-REPAIR.md`). A backup and a restore are not affected: `pg_restore` loads rows with `COPY`
+into an empty database, which fires none of them, and `pg_dump` emits the triggers after the data, so the
+guard comes back with the table. Nothing in `infra/` deletes from it. **Take a backup before any repair** (the
+runbook says so); the dump is how a bad repair is undone.
+
 ## What this does not cover
 
 - **Redis:** not backed up, on purpose. Postgres owns all durable state.

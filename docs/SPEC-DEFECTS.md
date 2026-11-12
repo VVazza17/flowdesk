@@ -1019,6 +1019,11 @@ disagree.
   extended with `ingestion_run_id` (already in §8 `macro_metrics`). Names and meanings bind every observation
   table; types do not: `macro_metrics.effective_at` is a DATE (a period), where `bars` keeps an instant. IDEA-038
   is resolved by this entry. `universe_membership`'s use of `available_at` and `source` is unaffected.
+- **Settled at slice 5 step 1 (Kyle, 2026-11-11), also binding on every observation table:** when a provider
+  publishes at date granularity, `available_at` is the end of that day in America/New_York (00:00 the next
+  day). Never early, up to 24 hours late: a documented bias, in ADR-0003's addendum, that M5's outcome
+  tracking must not attribute to the strategy. `bars` conforms at slice 6 (an intraday bar's `available_at` is a
+  real instant and needs no such rule).
 - **Waits for slice 6 planning:** the `bars`-specific decisions. These are where `c_total_return` revisions live
   (revision columns on `bars`, or a separate revision table), how `provider/feed/venue_scope` is stored, and
   IDEA-035's version home. These are decided together, since the version home and the revision storage both
@@ -1151,7 +1156,7 @@ The next spec correction release.
 
 ## IDEA-038: The observation timestamp is `effective_ts` in §8 and `effective_at` everywhere else
 
-**Status:** Open. **Blocks M2 slice 5** (`macro_metrics`). Resolved by the shared provenance vocabulary decision at slice 5 planning (see IDEA-034).
+**Status:** Resolved by decision (Kyle, 2026-11-11: the shared provenance vocabulary, see IDEA-034) and built in migration 0005. The frozen spec still says `effective_ts`; a correction release is pending.
 **Raised:** 2026-11-08 (M2 planning)
 
 ### The proposal
