@@ -1487,18 +1487,66 @@ reading confirmed by Kyle 2026-11-12: canary at 3 intervals for condition 1, any
   (`INGEST_TASK_MAX_SECONDS` + 3 intervals), so it reverts to 3 intervals and a wedged ingest worker shows in
   minutes, not half an hour. `INGEST_TASK_MAX_SECONDS` stays as the hard `task_time_limit`. This removes step 0's
   documented false-alarm gap and its slow detection together.
-- **Sweep.** `ops.sweep` on the **ops** queue (a saturated ingest queue cannot starve it), every 2 minutes. A
-  `task_runs` row that is `running` and **not `is_fresh`** becomes `failed` with `error_class = 'Orphaned'`: the same
-  function the health probe uses, so "alive" means one thing. Because a row gets a heartbeat at start, a task that
-  has only just begun is fresh, not NULL. **One deliberate second rule:** `ingestion_runs` has no link to
-  `task_runs` (no column carries it), so it cannot use the heartbeat; a row `running` for longer than
-  `INGEST_TASK_MAX_SECONDS` plus a minute cannot still be alive (the time limit would have killed it) and is failed
-  the same way. That is the one place the sweep does not use `is_fresh`, and it is noted in the code. Linking the two
-  tables would need a migration and is not done here; say if you want it.
-- Tests: `is_fresh` at the boundary and for NULL; the constants relation; a task longer than 3 intervals keeps
-  `heartbeat_at` advancing (injected clock and a short interval); a killed task's beats stop and the sweep fails it
-  after `HEARTBEAT_FRESH_SECONDS`, not before; a live long task is never swept; `ingest_worker` returns `busy` with
-  a stale canary and a fresh running row, and `stale` with neither.
+- **Sweep, one rule for both tables (Kyle, 2026-11-12).** `ops.sweep` on the **ops** queue (a saturated ingest queue
+  cannot starve it), every 2 minutes. The only test of liveness is `is_fresh` on a `task_runs.heartbeat_at`:
+  - a `task_runs` row that is `running` and not fresh becomes `failed`, `error_class = 'Orphaned'`;
+  - an `ingestion_runs` row that is `running` and whose `task_run_id` does **not** point at a `task_runs` row that is
+    both `running` and fresh becomes `failed`, `error = 'Orphaned'` (same class name). A NULL `task_run_id` fails that
+    test too, so it needs no special case: the rule is "not linked to a live task".
+  - Order within one sweep: `task_runs` first, then `ingestion_runs`, in one transaction, so the two tables cannot
+    disagree about the same run for even one sweep.
+  - **Migration `0006` adds `ingestion_runs.task_run_id BIGINT NULL REFERENCES task_runs(id) ON DELETE SET NULL`**
+    (the macro_metrics precedent for ingestion_run_id). Nullable because rows already written (fake-provider runs,
+    smokes) have no task, and **they cannot be backfilled** (there is nothing to link them to); that is the reason to
+    do it now, before real FRED rows exist. No row written after the migration may have NULL: `run_recorded` sets a
+    context variable holding its row id, and `run_feed` reads it and raises (a `permanent`-kind configuration error)
+    if it is unset, so a feed cannot be run outside a recorded task by accident. The earlier "second rule"
+    (`INGEST_TASK_MAX_SECONDS` + 1 minute) is deleted. No index on `task_run_id` (the table is small and the sweep
+    reads only `running` rows); revisit if it is ever slow.
+  - **Open, not decided here:** `backfill_runs` also has `running` rows a killed worker leaves behind and has no
+    heartbeat link either. Step 3's resume logic reads it ("first series not complete"), so a stale `running` row
+    there is harmless to correctness but misleading to read. Proposed: same `task_run_id` column and the same rule,
+    in the same migration. Say if you want that; it is not in the plan until you do.
+- **A swept row whose task completes later (DECIDED, Kyle asked for a decision, not whatever the code does).** This is
+  reachable: the heartbeat thread can stall (a lost DB connection, a long GC pause, the laptop sleeping) while the
+  body carries on, and the sweep fails the row; the body then finishes. Today's code would silently overwrite it:
+  `run_recorded`'s completion and failure writes are `UPDATE ... WHERE id = :id` with no status condition
+  (`app/tasks/runs.py`). **Decision: the sweep's verdict stands, and the late result is recorded as a note, never as
+  a status.**
+  - Every completion or failure write becomes `UPDATE ... WHERE id = :id AND status = 'running'`, for `task_runs`
+    **and** `ingestion_runs` (`run_feed`'s final write). If it matches zero rows the row was swept: the status stays
+    `failed`/`Orphaned`, `error_message` is extended with `completed after sweep at <ts>, rows_written=<n>` (or
+    `failed after sweep at <ts>: <ExcClass>`), and a `task_completed_after_sweep` warning is logged.
+  - *Why not overwrite with a note:* for the stretch between the last beat and the completion nothing was heard from
+    the worker, which is itself the incident (a stalled heartbeat, a sleeping machine); turning the row `succeeded`
+    erases that, and `/health/ready` and the page for a real stall would depend on whether a task happened to finish
+    afterwards. *Why not refuse silently:* the work did happen and its rows exist (the inserts are idempotent and the
+    triggers keep them valid), so a row that says only "Orphaned" would mislead the next reader into re-running the
+    backfill; the note carries the fact. The cost is one `failed` row per such event, which is what an operator
+    wants to see.
+  - Atomicity: the sweep's own `UPDATE` carries `AND status = 'running'` and the freshness condition in the same
+    statement, so a sweep and a completion that race are serialized by the row lock: whichever commits first wins and
+    the other takes the zero-rows path above. The sweep re-checks freshness in the `UPDATE`, so a beat that lands
+    between the sweep's read and write saves the row.
+- **The heartbeat thread is torn down on every exit path (design; verified by tests when built).** The pattern is one
+  `try/finally` that encloses everything after the thread starts, so it cannot be skipped by a path someone adds
+  later: `stop.set()`, then `thread.join(timeout=HEARTBEAT_INTERVAL_SECONDS)`, then a warning if it is still alive.
+  Covered: body returns; body raises `Exception`; body raises `BaseException` (`CancelledError`, `SystemExit`,
+  `KeyboardInterrupt`); the **final status write itself raises** (it runs inside the `try`, so the `finally` still
+  stops the thread); and `SoftTimeLimitExceeded` (an `Exception` subclass, so the same path as a failure). The thread
+  is a daemon, so a path the `finally` cannot reach (the hard time limit `SIGKILL`, `kill -9`, power loss) ends it
+  with the process, which is the intended meaning: no process, no beats. The thread never raises into the body: its
+  DB write is wrapped, logs and keeps trying on the next tick, and a failing heartbeat only makes the row go
+  not-fresh. It also exits on its own if its row is no longer `running` (checked in the same `UPDATE ... WHERE
+  status = 'running'`, zero rows means stop), so a swept task's thread does not keep writing to a failed row.
+  Tests: a thread-count assertion after each exit path above (no `heartbeat` thread alive), a body that raises
+  `SystemExit`, a final write that raises, and a thread whose row has been swept stops beating.
+- Tests (liveness): `is_fresh` at the boundary and for NULL; the constants relation; a task longer than 3 intervals
+  keeps `heartbeat_at` advancing (injected clock and a short interval); a killed task's beats stop and the sweep fails
+  it after `HEARTBEAT_FRESH_SECONDS`, not before; a live long task is never swept; an `ingestion_runs` row linked to a
+  live task is never swept and one linked to a dead (or NULL) task is; a completion after the sweep leaves `failed` and
+  adds the note (for both tables); `ingest_worker` returns `busy` with a stale canary and a fresh running row, and
+  `stale` with neither.
 
 **D. Wiring.** `FRED_API_KEY` and `FRED_USER_AGENT` to the `worker` service only (never `x-api-env`, which `api` and
 `api-public` share); the key passed to `run_feed(secrets=[...])`; `settings.FRED_SERIES` (the 17 of 6.4, config, not
@@ -1516,10 +1564,10 @@ gap).
 
 **Files.** New: `app/ingest/macro.py` (pure rules), `app/services/macro_store.py`, `app/ingest/fred_feed.py`,
 `app/tasks/fred_ingest.py`, `app/tasks/sweep.py`, `tests/test_macro_store.py`, `tests/test_fred_feed.py`,
-`tests/test_heartbeat_liveness.py`, `tests/test_sweep.py`, `infra/smoke-m2-slice5-step3.sh`. Changed:
-`app/tasks/runs.py`, `app/tasks/names.py`, `app/celery_app.py`, `app/settings.py`, `app/services/health.py`,
-`app/services/health_probes.py`, `docker-compose.yml`, `.env.example`, `docs/HEALTH.md`. No migration: `macro_metrics`
-and `backfill_runs` exist.
+`tests/test_heartbeat_liveness.py`, `tests/test_sweep.py`, `infra/smoke-m2-slice5-step3.sh`. New also: `app/tasks/liveness.py`, `alembic/versions/0006_ingestion_runs_task_run_id.py`. Changed:
+`app/tasks/runs.py`, `app/ingest/runner.py`, `app/models/ops.py`, `app/tasks/names.py`, `app/celery_app.py`, `app/settings.py`, `app/services/health.py`,
+`app/services/health_probes.py`, `docker-compose.yml`, `.env.example`, `docs/HEALTH.md`. **One migration, `0006`:** `ingestion_runs.task_run_id` (part C). `macro_metrics`
+and `backfill_runs` already exist.
 
 **What step 3 needs from Kyle, in order.** (1) A FRED key in `.env` so the probe can run; windowing waits on it.
 (2) The rate-limit sentence read on FRED's page and the `fred` budget entry added: unit tests do not need it, but
