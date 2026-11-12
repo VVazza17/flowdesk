@@ -20,7 +20,11 @@ def create_celery() -> Celery:
     interval = float(settings.canary_interval_seconds())
 
     configure_logging()
-    app = Celery("flowdesk", broker=broker, include=["app.tasks.canary", "app.tasks.fake_ingest"])
+    app = Celery(
+        "flowdesk",
+        broker=broker,
+        include=["app.tasks.canary", "app.tasks.fake_ingest", "app.tasks.fred_ingest"],
+    )
     app.conf.update(
         timezone="America/New_York",
         enable_utc=True,

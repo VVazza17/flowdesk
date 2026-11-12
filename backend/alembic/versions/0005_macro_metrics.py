@@ -21,6 +21,16 @@ observation table:
   source            the provider id ('fred').
   ingestion_run_id  the ingestion_runs row that wrote it (§8 has it; the settled list keeps it).
 
+`available_at < effective_at` IS LEGITIMATE, and NO CHECK CONSTRAINT MAY BE ADDED FOR IT (confirmed
+2026-11-12, Kyle). A value can be knowable before the period it describes. Worked example, measured
+against the real API: IORB's first print for the period 2021-07-30 was published 2021-07-28, and
+every one of IORB's 1,932 first prints has a publication date 1 to 6 days BEFORE its own
+`effective_at` (a rate announced ahead of the day it applies). A constraint like
+`CHECK (available_at >= effective_at)` looks like sanity and would reject all of them, or, worse,
+tempt an ingest into clamping the date and making the point-in-time filter show the value later
+than it was known. The only ordering this table asserts is that `available_at` is a real
+publication date (nothing enters without one: docs/adr/0003, addendum 2026-11-12).
+
 `value` is nullable on purpose: FRED's "." is a genuine gap (ADR-0003 decision 7). A gap is a stored
 row with value NULL, so the period still exists and nothing can read it as 0.0 or forward-fill
 over it.

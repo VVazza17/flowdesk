@@ -131,6 +131,11 @@ services:
     command: ["celery", "-A", "app.worker", "worker", "--loglevel=INFO", "--concurrency=2", "-Q", "ingest", "-n", "ingest@%h"]
     environment:
       <<: *api-env
+      # FRED credentials go to the process that calls FRED and to no other: never into x-api-env, which
+      # api and api-public share (api-public is the one that may one day face the internet).
+      FRED_API_KEY: ${FRED_API_KEY:-}
+      FRED_USER_AGENT: ${FRED_USER_AGENT:-}
+      FRED_BASE_URL: ${FRED_BASE_URL:-}
     healthcheck:
       disable: true
     restart: unless-stopped

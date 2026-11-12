@@ -7,10 +7,12 @@
 import os
 import re
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import date, timedelta
 from typing import Literal
 
 from app.ingest.budget import RateBudget
+from app.ingest.fred import BASE_URL
+from app.ingest.macro import FredSeries
 
 DeploymentMode = Literal["private", "public"]
 
@@ -310,3 +312,38 @@ def fred_user_agent() -> str:
     # FRED_USER_AGENT to change it.
     """
     return os.environ.get("FRED_USER_AGENT", "").strip() or "FlowDesk/0.1 (macro-data ingest)"
+
+
+def fred_base_url() -> str:
+    """FRED_BASE_URL, for pointing the client at a local stub (a smoke) and nowhere else."""
+    return os.environ.get("FRED_BASE_URL", "").strip() or BASE_URL
+
+
+# The series of §6.4, with the two dates that bound each one's point-in-time record. MEASURED
+# 2026-11-12 against the real API (docs/BUILD-LOG.md, step 2c), not derived and not documented by
+# FRED: `first_vintage` is the first date from series/vintagedates; `first_covered_period` is the
+# earliest period output_type=4 returns. Every earlier period exists in FRED's latest values with no
+# publication date, so it is NOT in macro_metrics (nothing enters a point-in-time table without a
+# real publication date). A read that finds no row for a period before `first_covered_period` is
+# looking at a value that predates the vintage record, which is not the same as no value existing.
+# The boundary differs by decades between series. Adding a series is one row; the backfill warns
+# if what it observes no longer matches.
+FRED_SERIES: tuple[FredSeries, ...] = (
+    FredSeries("DGS10", date(2005, 6, 28), date(2005, 6, 27)),
+    FredSeries("DGS2", date(2005, 6, 28), date(2005, 6, 27)),
+    FredSeries("T10Y2Y", date(2014, 1, 27), date(2014, 1, 27)),
+    FredSeries("MORTGAGE30US", date(2010, 6, 17), date(2010, 6, 24)),
+    FredSeries("BAMLH0A0HYM2", date(2023, 11, 13), date(2023, 11, 14)),
+    FredSeries("BAMLC0A0CM", date(2023, 11, 13), date(2023, 11, 14)),
+    FredSeries("CPIAUCSL", date(1972, 7, 21), date(1972, 7, 1)),
+    FredSeries("UNRATE", date(1960, 3, 15), date(1960, 3, 1)),
+    FredSeries("HOUST", date(1960, 7, 21), date(1960, 7, 1)),
+    FredSeries("CSUSHPINSA", date(2014, 11, 25), date(2014, 10, 1)),
+    FredSeries("DRCCLACBS", date(2011, 5, 24), date(2011, 4, 1)),
+    FredSeries("VIXCLS", date(2010, 11, 22), date(2010, 11, 22)),
+    FredSeries("DTWEXBGS", date(2019, 2, 4), date(2019, 2, 4)),
+    FredSeries("DFII10", date(2005, 10, 12), date(2005, 10, 10)),
+    FredSeries("T10YIE", date(2014, 1, 27), date(2014, 1, 27)),
+    FredSeries("SOFR", date(2019, 3, 29), date(2019, 3, 29)),
+    FredSeries("IORB", date(2021, 7, 28), date(2021, 7, 30)),
+)

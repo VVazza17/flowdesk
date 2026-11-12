@@ -31,6 +31,7 @@ import httpx2
 import structlog
 
 from app.ingest.errors import Permanent, RateLimited, SchemaMismatch, Transient
+from app.ingest.macro import chunk_vintage_dates
 
 log = structlog.get_logger(__name__)
 
@@ -47,6 +48,8 @@ _VINTAGE_OUTPUT_TYPES = frozenset({2, 3, 4})
 
 # series/observations: `limit` is an integer from 1 to 100000 (FRED's documentation).
 MAX_PAGE_SIZE = 100_000
+# series/vintagedates: `limit` up to 10000 (its default), paged by offset like observations.
+MAX_VINTAGEDATES_PAGE = 10_000
 # A guard against a provider that never reaches its own `count`: 100 pages is 10 million rows.
 MAX_PAGES = 100
 
@@ -81,9 +84,10 @@ class FredObservation:
 class FredClient:
     """Use as `async with FredClient(...) as fred:`.
 
-    `before_next_page` is awaited before every request after the first within one call. The runner
-    takes a rate-limit slot per attempt, which covers the first request; a paged call makes more,
-    and each is a request against the budget, so the caller passes its limiter's acquire here.
+    `before_next_request` is awaited before every request this client makes after its first. The
+    runner takes a rate-limit slot per attempt, which covers the first request; a paged or
+    chunked call makes more, and each is a request against the budget, so the caller passes its
+    limiter's acquire here. Build one client per attempt, so the count starts again with the slot.
     """
 
     def __init__(
@@ -94,7 +98,7 @@ class FredClient:
         transport: httpx2.AsyncBaseTransport | None = None,
         base_url: str = BASE_URL,
         page_size: int = MAX_PAGE_SIZE,
-        before_next_page: Callable[[], Awaitable[None]] | None = None,
+        before_next_request: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         if not api_key:
             raise ValueError("a FRED api key is required")
@@ -104,7 +108,8 @@ class FredClient:
             raise ValueError(f"page_size must be between 1 and {MAX_PAGE_SIZE}")
         self._api_key = api_key
         self._page_size = page_size
-        self._before_next_page = before_next_page
+        self._before_next_request = before_next_request
+        self._requests_sent = 0
         # follow_redirects=False on purpose: a redirect would send the key to whatever host
         # answered.
         self._client = httpx2.AsyncClient(
@@ -133,13 +138,72 @@ class FredClient:
         await self._client.aclose()
 
     async def first_prints(self, series_id: str) -> list[FredObservation]:
-        """Each observation's first published value and its publication date (the backfill)."""
+        """First prints over the whole widened window, in ONE request (ADR-0003).
+
+        FRED refuses this for a series with more than 2000 vintage dates (measured 2026-11-12:
+        six of the seventeen in 6.4), with an explicit 400 that this client raises as Permanent.
+        The backfill uses `first_prints_chunked`.
+        """
+        return await self.first_prints_window(
+            series_id,
+            date.fromisoformat(FIRST_PRINT_WINDOW_START),
+            date.fromisoformat(FIRST_PRINT_WINDOW_END),
+        )
+
+    async def first_prints_window(
+        self, series_id: str, start: date, end: date
+    ) -> list[FredObservation]:
+        """First prints whose publication falls in the real-time window [start, end]."""
         return await self.observations(
             series_id,
             output_type=OUTPUT_TYPE_FIRST_PRINT,
-            realtime_start=date.fromisoformat(FIRST_PRINT_WINDOW_START),
-            realtime_end=date.fromisoformat(FIRST_PRINT_WINDOW_END),
+            realtime_start=start,
+            realtime_end=end,
         )
+
+    async def vintage_dates(self, series_id: str) -> list[date]:
+        """Every date on which the series' data changed, oldest first (series/vintagedates)."""
+        if not _SERIES_ID.fullmatch(series_id):
+            raise ValueError("invalid FRED series id")
+        found: list[date] = []
+        offset = 0
+        for _ in range(MAX_PAGES):
+            response = await self._get(
+                "/series/vintagedates",
+                {
+                    "series_id": series_id,
+                    "api_key": self._api_key,
+                    "file_type": "json",
+                    "realtime_start": FIRST_PRINT_WINDOW_START,
+                    "realtime_end": FIRST_PRINT_WINDOW_END,
+                    "limit": str(MAX_VINTAGEDATES_PAGE),
+                    "offset": str(offset),
+                },
+            )
+            page, count = _parse_vintage_dates(response)
+            found.extend(page)
+            offset += len(page)
+            if offset >= count:
+                return sorted(found)
+            if not page:
+                raise SchemaMismatch("FRED returned an empty page before reaching its count")
+        raise SchemaMismatch(f"FRED never reached its own count within {MAX_PAGES} pages")
+
+    async def first_prints_chunked(self, series_id: str) -> list[FredObservation]:
+        """First prints for any series: the vintage dates are split into windows FRED accepts.
+
+        A window holding more than 2000 vintage dates is refused (an explicit 400, never a
+        silent cut), so every series is chunked, including the ones that fit today (SOFR was 98
+        short of the cap when measured). Measured on the six series over the cap: the windows
+        answer 200, `count` equals the rows returned, and no observation date appears in two
+        windows. The caller still has to compare the union with the latest values: see
+        app.ingest.macro.account_for.
+        """
+        dates = await self.vintage_dates(series_id)
+        rows: list[FredObservation] = []
+        for start, end in chunk_vintage_dates(dates):
+            rows.extend(await self.first_prints_window(series_id, start, end))
+        return rows
 
     async def latest(
         self, series_id: str, *, observation_start: date | None = None
@@ -191,9 +255,7 @@ class FredClient:
             pages += 1
             if pages > MAX_PAGES:
                 raise SchemaMismatch(f"FRED never reached its own count within {MAX_PAGES} pages")
-            if pages > 1 and self._before_next_page is not None:
-                await self._before_next_page()
-            response = await self._get({**params, "offset": str(offset)})
+            response = await self._get("/series/observations", {**params, "offset": str(offset)})
             page, count = _parse_page(response, series_id)
             rows.extend(page)
             offset += len(page)
@@ -204,9 +266,12 @@ class FredClient:
                 # would loop us forever.
                 raise SchemaMismatch("FRED returned an empty page before reaching its count")
 
-    async def _get(self, params: dict[str, str]) -> httpx2.Response:
+    async def _get(self, path: str, params: dict[str, str]) -> httpx2.Response:
+        if self._requests_sent and self._before_next_request is not None:
+            await self._before_next_request()
+        self._requests_sent += 1
         try:
-            response = await self._client.get("/series/observations", params=params)
+            response = await self._client.get(path, params=params)
         except httpx2.HTTPError as exc:
             # The CLASS only. httpx2's message can carry the request URL, and the URL carries
             # the key.
@@ -305,6 +370,22 @@ def _parse_page(response: httpx2.Response, series_id: str) -> tuple[list[FredObs
             )
         )
     return rows, count
+
+
+def _parse_vintage_dates(response: httpx2.Response) -> tuple[list[date], int]:
+    try:
+        data: Any = response.json()
+    except ValueError:
+        raise SchemaMismatch("FRED returned a body that is not JSON") from None
+    if not isinstance(data, dict):
+        raise SchemaMismatch("FRED returned JSON that is not an object")
+    count, items = data.get("count"), data.get("vintage_dates")
+    if not isinstance(count, int) or isinstance(count, bool) or not isinstance(items, list):
+        raise SchemaMismatch("FRED response has no usable count and vintage_dates")
+    try:
+        return [date.fromisoformat(item) for item in items], count
+    except (TypeError, ValueError):
+        raise SchemaMismatch("a vintage date is malformed") from None
 
 
 def _parse_value(raw: Any) -> Decimal | None:

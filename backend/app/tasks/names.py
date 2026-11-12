@@ -33,3 +33,7 @@ STATUS_RUNNING = "running"
 STATUS_SUCCEEDED = "succeeded"
 STATUS_FAILED = "failed"
 STATUS_SKIPPED = "skipped"
+
+# The FRED backfill (M2 slice 5, step 3). Started by hand (`celery call`), never by Beat: it fetches
+# every series' whole first-print history, which is slow and is not something to repeat on a timer.
+FRED_BACKFILL = "ingest.fred_backfill"

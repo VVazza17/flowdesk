@@ -1696,3 +1696,43 @@ not mention" something is the tool's reading of the page, not a text search I ra
   **Review trigger:** re-read the FRED announcements page (`fred.stlouisfed.org/news/`) for any v1 notice at each
   FRED-client change and at M6 planning; the probe's run with a real key is a second check, since it exercises v1 as it
   is today.
+
+### M2 slice 5, step 3, part A built: the FRED backfill (2026-11-12)
+
+Built to the plan's part A and the decisions Kyle took on step 2c's findings. Parts B (daily poll), C (heartbeat and
+sweep), D's remaining wiring and E's smoke are **not** built; this is one reviewable piece.
+
+- **New:** `app/ingest/macro.py` (pure: `available_at_for`, `chunk_vintage_dates`, `account_for`, `FredSeries`),
+  `app/services/macro_store.py` (the only writer of `macro_metrics`), `app/ingest/fred_feed.py` (the per-series
+  body), `app/tasks/fred_ingest.py` (`ingest.fred_backfill`, started by hand). **Changed:** `app/ingest/fred.py`
+  (`vintage_dates`, `first_prints_window`, `first_prints_chunked`; the rate hook is now per request, not per page),
+  `app/settings.py` (`FRED_SERIES`, `fred_base_url`), the `worker` service env (`FRED_API_KEY`, `FRED_USER_AGENT`,
+  `FRED_BASE_URL`; never `x-api-env`), `.env.example`, migration 0005's comment (no schema change), ADR-0003.
+- **What it does per series:** `series/vintagedates`, windows of at most 1,900 vintage dates, `output_type=4` per
+  window, the latest values, then `account_for`: a real value with no first print, or a first print the latest
+  values lack, **refuses** and writes nothing. Otherwise first prints go in as `revision = 0` in one transaction
+  under a per-series advisory lock, skipping rows already stored; a stored row that disagrees with FRED's first
+  print refuses (nothing is overwritten). Pre-vintage periods and unpublished `"."` dates are skipped and logged
+  (`fred_backfill_series`: `pre_vintage_excluded`, `gaps_without_trace_skipped`).
+- **Decisions made while building, each reversible:** (1) **a mismatch between a series' configured and observed
+  `first_covered_period` warns and does not refuse** (`fred_vintage_start_changed`): the data is still fully accounted
+  for, and refusing would block on a benign change. (2) **Resuming is re-running**: every write is idempotent
+  (`rows_written` is 0 on a repeat), so a killed backfill is finished by calling the task again; `backfill_runs`
+  records progress (`total_units`, `completed_units`, `current_unit`, status) for the operator. Skipping completed
+  series waits for slice 10's resume design. (3) **A failed series does not stop the others**; the task raises at the
+  end naming the failed series, and `backfill_runs.status` is `failed`.
+- **Not done, on purpose:** no heartbeat yet (part C), so a backfill of this length still relies on the ingest
+  canary's long threshold; no stub-FRED smoke yet (part E).
+
+
+**Verified on the real stack against the real API (2026-11-12, dev database).** `celery call ingest.fred_backfill` on the
+`worker` service: all 17 series succeeded in 120 s (about 2 requests a second in total, under the 1 a second budget per
+slot; no 429, no retry). **38,294 rows in `macro_metrics` across 17 metrics**, 17 `ingestion_runs` rows `succeeded`
+with `rows_written` summing to 38,294, one `backfill_runs` row `succeeded` 17 of 17. Every `pre_vintage_excluded` count
+equals the probe's (DGS10 11,344, GDPC1-style gaps as measured), VIXCLS skipped its 32 unpublished holiday dates, and
+**no `fred_vintage_start_changed` warning**, so the configured `first_covered_period` of all 17 series matches what FRED
+returned. 1,240 stored rows are NULL (gaps FRED did publish in a vintage); 636 rows have `available_at < effective_at`
+(IORB, as predicted). **A second run created 0 rows in all 17 series** (`rows_read` 38,294, `rows_written` 0) in 81 s.
+The vintage store is therefore populated in the dev database; it is not in any backup yet.
+Tests: 484 pass, lint and mypy clean in the 3.12 image; two mutations (an accounting that never reports an unaccounted
+value, and a chunk size with no margin) each turned 5 tests red and were reverted.

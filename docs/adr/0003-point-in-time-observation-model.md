@@ -173,3 +173,45 @@ a replay would read the revised value as always known, with nothing red anywhere
 `BEFORE DELETE` and `BEFORE TRUNCATE` triggers refuse, with one carve-out: `ingestion_run_id` may be cleared to
 NULL (the foreign key's `ON DELETE SET NULL`). The sanctioned way around them, for a genuine repair that must
 leave a trace, is `docs/RUNBOOK-VINTAGE-REPAIR.md`.
+
+## Addendum, 2026-11-12 (M2 slice 5, step 2c and 3; Kyle)
+
+Settled with the first real FRED measurements (`docs/BUILD-LOG.md`, "step 2c").
+
+### The rule: nothing enters a point-in-time table without a real publication date
+
+This is the rule behind the decisions below, recorded once so that it does not have to be rediscovered. A
+point-in-time table answers "what was knowable on day D". A value whose publication date nobody can state was not
+knowable on any particular day; giving it one (the first vintage's date, the ingest date, midnight of anything)
+makes every replay that reaches it show a value as known when it may not have been. So such a value is **left out**,
+not stored with a guessed `available_at`, and what is left out is **recorded**, so its absence is a fact and not a
+surprise. **Slice 6 meets this again with prices** (a bar's `c_total_return` as it stood on a given day cannot be
+reconstructed after the fact); it applies there unchanged.
+
+Applied to FRED:
+
+- **Pre-vintage observations stay out of `macro_metrics`.** `output_type=4` returns observations only from a
+  series' first stored vintage onward, and says nothing about the earlier ones (GDPC1: 179 of 319 observations,
+  1947 to 1991). Those exist in FRED's latest values and have no publication date. Not stored.
+- **A `"."` with no vintage trace is skipped, with a logged count.** VIXCLS has 32 market-holiday dates inside its
+  covered range that are `"."` in the latest values and appear in no vintage. No one published them as anything, so
+  there is no `available_at` to give them. (A `"."` that FRED *did* publish in a vintage stays a stored NULL
+  row: decision 7.) The daily poll applies the same skip.
+- **The measured start of each series' record is stored beside the series list** (`settings.FRED_SERIES`:
+  `first_vintage` and `first_covered_period`, measured 2026-11-12, FRED states neither). A point-in-time read must
+  tell "no value exists" from "a value exists but predates the vintage record"; the boundary differs by decades
+  between series (UNRATE 1960, DGS10 2005, BAMLH0A0HYM2 2023), so it cannot be a constant. A period earlier than a
+  series' `first_covered_period` is the second case. Step 4's read is where this is used.
+
+### `available_at < effective_at` is legitimate and unconstrained
+
+IORB's first prints are published 1 to 6 days before their own period (1,932 of 1,932 rows). A value can be known
+before the period it describes. No `CHECK (available_at >= effective_at)` may be added, and no ingest may clamp the
+date; the migration says so beside the table so that it is read by whoever would add it in good faith.
+
+### The backfill refuses rather than trusts
+
+FRED signals the vintage-date cap (2000) with an explicit 400, but `output_type=4` is silent about what it leaves
+out. The backfill therefore compares the first prints with the latest values and **writes nothing for a series in
+which a real value has no first print and is not explained by either rule above** (`app/ingest/macro.py`,
+`account_for`). A partial history must not look complete.

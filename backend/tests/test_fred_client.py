@@ -261,7 +261,7 @@ def test_paging_follows_offsets_and_takes_a_slot_for_every_page_after_the_first(
         nonlocal slots
         slots += 1
 
-    rows = run_first_prints(handler, page_size=2, before_next_page=pace)
+    rows = run_first_prints(handler, page_size=2, before_next_request=pace)
     assert offsets == ["0", "2", "4"]
     assert [r.value for r in rows] == [Decimal(d) for d in (1, 2, 3, 4, 5)]
     # The runner's slot covers the first request of an attempt; the client takes the others.
