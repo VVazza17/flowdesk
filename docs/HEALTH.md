@@ -313,17 +313,21 @@ source goes away, all mapped by the client into one of five kinds (`app/ingest/e
 
 ### FRED's failures (M2 slice 5, step 2): documented, not measured
 
-What the client does with each response, from FRED's errors page (read 2026-11-11 through a summarising
-fetch tool; the rate-limit sentence still awaits Kyle's reading on the page, see the BUILD-LOG):
+What the client does with each response, from FRED's errors page (the rate-limit sentence read verbatim by
+Kyle, 2026-11-12, see the BUILD-LOG). The page lists the complete set of statuses FRED may return: 400, 404,
+423, 429, 500. Error bodies are XML or JSON with a message attribute carrying the description. Only the
+three 400s in the table were observed; the rest is documentation:
 
 | FRED answers | Kind | Retried within the run? | Note |
 |---|---|---|---|
 | 429 | `rate_limited` | yes | Documented past 120 requests a minute, with "a temporary block" for ignoring it. The status and every header except cookies are logged on the first natural one: whether FRED sends `Retry-After` is unknown. |
 | 400, "No vintage dates exist" | `permanent` | no | A configuration bug (ADR-0003 decision 4). The client cannot produce it: it refuses vintage output types without an explicit window. |
-| 400, "series does not exist" | `permanent` | no | ADR-0003 decision 8. |
+| 400, "exceeds the maximum number of vintage dates ... (2000)" | `permanent` | no | **Observed.** An explicit refusal, never a silent truncation; the backfill splits the real-time window (BUILD-LOG, step 2c). |
+| 400, "series does not exist" | `permanent` | no | ADR-0003 decision 8. **Observed**: HTTP 400, not 404. |
 | 400, anything naming `api_key` | `permanent` | no | Missing, malformed or unregistered key. **Observed**: all three arrive as HTTP 400 with a JSON body (fixtures in `tests/fixtures/fred/`, `tests/test_fred_real_bodies.py`). |
 | 401, 403 | `permanent` | no | **Not observed**: FRED sends key failures as 400. Kept as `permanent`, never `transient` (Kyle, 2026-11-11): retrying a refused client only hammers what refused it. |
-| 423, 500, 502, 503, 504 | `transient` | yes | 423 and 500 are listed with no explanation; treated as transient and logged. |
+| 423, 500, 502, 503, 504 | `transient` | yes | 423 and 500 are on FRED's list but unexplained, so treating them as transient is a **judgement call, not a documented meaning**; logged. 502-504 are not on the list at all. |
+| 404 | `permanent` | no | On FRED's list, unexplained; falls under "other 4xx". |
 | redirect, other 4xx | `permanent` | no | Redirects are never followed: the key would go to whatever host answered. |
 | connection refused, reset, timeout | `transient` | yes | A reset cannot be told from a network blip, so it is retried: 4 attempts per run, then Beat's next firing. A feed that never succeeds goes `stale` (`first_seen_at`). |
 | not JSON, wrong shape, a value that is not a decimal or `.` | `schema_mismatch` | no | Rejected, not guessed at. `NaN` and `Infinity` are rejected. |
@@ -332,9 +336,9 @@ An exception raised by this client carries fixed text and never anything FRED se
 rides in the URL and FRED may echo a request. The HTTP library's own request log is held at WARNING for the
 same reason (`app/logging.py`).
 
-**FRED cannot be called yet, by design.** `settings.RATE_BUDGETS` has no `fred` entry (withheld until the
-rate-limit sentence is read on the page), and the runner refuses a provider with no budget
-(`budget_unavailable`).
+**FRED's budget is 60 requests a minute** (`RateBudget(1.0, 1)`, half the documented 120, which is
+documented and not measured: no 429 has been seen). A provider with no budget is refused
+(`budget_unavailable`), which is what kept FRED uncallable until the sentence was read.
 
 (A sixth, `budget_unavailable`, means FlowDesk refused to call because the rate limiter could not grant a slot;
 that one is a fault in our own Redis, not a provider.)

@@ -1175,18 +1175,19 @@ then) · 5 per-series data age · 6 smoke, HEALTH.md, `.env.example` (`FRED_API_
 for JSON, lower for daily series); the M0 spike only covered GDPC1 and DGS10, so a widened window on the other
 daily series may need chunking. Also which request shapes trigger the "No vintage dates" 400.
 
-**FRED rate limit: documented, not measured. NOT YET CONFIRMED FROM THE PAGE ITSELF.** Source:
-https://fred.stlouisfed.org/docs/api/fred/errors.html, read 2026-11-11 through a fetch tool that passes pages
-through a small model (curl and PowerShell from this machine were refused: connection reset, then timeout). Its
-quotation, which is not byte-verified:
+**FRED rate limit: documented, not measured.** Source: https://fred.stlouisfed.org/docs/api/fred/errors.html,
+**confirmed verbatim on the page by Kyle, 2026-11-12** (the earlier fetch-tool quotation matched it):
 
-> 429 Too Many Requests (Up to 120 requests per minute are allowed before being served a 429 error code.
-> Not complying with the throttling can result in a temporary block.)
+> 429 Too Many Requests (Up to 120 requests per minute are allowed before being served a 429 error code. N
+> ot complying with the throttling can result in a temporary block.)
 
-The page lists 423 and 500 with no explanation and does not mention `Retry-After`. A 6,000/day figure appears in
-third-party guides and in no official source found. **The FRED entry in `RATE_BUDGETS` (1 request per second, 60 a
-minute) is not to be committed until Kyle has read that sentence on the page and replaced the line above with the
-verified text.** No 429 has been observed; the client will log status and headers on the first natural one.
+The page lists the complete set of status codes it may return: **400, 404, 423, 429, 500**. 423 and 500 are
+listed with no explanation, and the page does not mention `Retry-After`. Error bodies are XML or JSON with a
+message attribute carrying the description, which matches the three real 400s captured in step 2b. A 6,000/day
+figure appears in third-party guides and in no official source found. The `fred` entry in `RATE_BUDGETS` is
+`RateBudget(1.0, 1)` (1 request per second, 60 a minute, half the cap), added 2026-11-12. **No 429 has been
+observed**, so the 120 is a documented number and the budget is a margin against it, not a measurement; the
+client logs status and headers on the first natural 429.
 The slice 4 retry placeholders (`RetryPolicy`, `runner.py`) are replaced by a per-provider override for FRED;
 its numbers carry the same label.
 
@@ -1368,12 +1369,9 @@ just the package's own metadata:
   timeouts (30 s, 10 s connect) are placeholders. The first real call is the first evidence of the response shapes
   (field names, the `count` and `limit` fields, `realtime_*` on output_type=4); the fixtures are written from the
   documented shape and ADR-0003's evidence.
-- **The FRED rate budget is withheld.** `settings.RATE_BUDGETS` has no `fred` entry, and
-  `test_fred_has_no_rate_budget_until_the_documented_limit_is_read_from_the_page` pins that. The runner refuses a
-  provider with no budget, so FRED cannot be called, let alone unthrottled. **Outstanding, and yours:** read FRED's
-  errors page yourself, replace the unverified quotation in the slice 5 plan entry above with the exact text, then
-  add `"fred": RateBudget(min_interval_seconds=1.0, max_batch=1)` (60 a minute, half the documented cap) and flip
-  that test.
+- **The FRED rate budget was withheld until 2026-11-12**, when Kyle read the sentence on FRED's errors page; it is
+  quoted verbatim in the slice 5 plan entry above, and `"fred": RateBudget(1.0, 1)` is now in `RATE_BUDGETS`. The
+  tripwire test became `test_fred_budget_is_half_the_documented_limit`. Still documented, not measured.
 - The slice 4 retry placeholders (4 attempts, 1 s, 60 s) are unchanged: nothing has been observed that would tune
   them. They stay labelled placeholders.
 
@@ -1424,7 +1422,64 @@ Full responses go to a scratch directory; trimmed ones go to `tests/fixtures/fre
 **To run it (Kyle):** get a free key at https://fredaccount.stlouisfed.org/apikeys, add `FRED_API_KEY=<key>` to the
 gitignored `.env` (never in chat), and say so. The key is read from the environment and never printed or written.
 
-### M2 slice 5, step 3 plan (2026-11-12) — plan only, no code; backfill windowing PENDING step 2b
+### M2 slice 5, step 2c (2026-11-12): the real FRED measurements
+
+With a key in `.env` (never printed; 32 lowercase alphanumerics, checked by shape only) the probe ran: 41 requests
+for probe 1 (`vintagedates`, widened `output_type=4`, `latest`, three provoked errors, 18 series) and 68 for the two
+follow-ups (latest values per series for a completeness comparison; chunked windows on the six capped series), all
+at 1.25 s spacing, **no 429 and no other non-200 except the 400s below**. About 110 requests in total. The scripts
+live in the session scratchpad, not the repo (`spikes/` is frozen); fixtures are in `tests/fixtures/fred/`.
+
+**1. The vintage-date cap: 2000, and it is an explicit 400, not silent truncation.** The body, from `DGS10`:
+`{"error_code":400,"error_message":"Bad Request.  There are 5147 vintage dates in the specified real-time period:
+1776-07-04 to 9999-12-31.  This exceeds the maximum number of vintage dates allowed for this file type (2000)."}`
+The message carries the count and the limit, so the detection is mechanical. Per series (vintage dates from
+`series/vintagedates`; the error's count is one lower than that endpoint's, cause unexplained): **over the cap, 400:**
+DGS10 5,148, DGS2 5,149, DFII10 5,130, VIXCLS 3,971, T10YIE 3,164, T10Y2Y 3,160. **Under, 200:** SOFR 1,902,
+IORB 1,319, MORTGAGE30US 856, UNRATE 801, HOUST 791, BAMLH0A0HYM2 784, BAMLC0A0CM 782, CPIAUCSL 671, GDPC1 420,
+DTWEXBGS 406, CSUSHPINSA 144, DRCCLACBS 62. (All 17 series of 6.4 plus GDPC1.) **SOFR is 98 vintage dates from the
+cap**; that is why the design chunks every series.
+`output_type=4` rows are one first print per observation date, not one row per vintage (GDPC1: 420 vintage dates,
+140 rows, 140 distinct dates), and several observations can share a vintage (DTWEXBGS: 2,025 rows, 405 vintages).
+Chunked windows were then measured on the six capped series (3, 3, 2, 3, 3, 2 windows of at most 1,900 vintage
+dates): all 200, `count` equals the rows returned, no date in two windows, no gaps in range except VIXCLS below.
+
+**2. Silent shortfalls the cap does not cover (the correctness finding).** Comparing the union against the latest
+values for every series: **every date the union lacks is either earlier than the series' first vintage or a `"."`
+that was never published as a number**, never a date inside the covered range with a value. Full table, dates in
+latest and absent from `output_type=4` (all before its first date): GDPC1 179, CPIAUCSL 306, UNRATE 146, HOUST 18,
+CSUSHPINSA 477, DRCCLACBS 81, MORTGAGE30US 2,047, DTWEXBGS 3,415, SOFR 258, BAMLH0A0HYM2 1, BAMLC0A0CM 1, IORB 1,
+DGS10 11,344, DGS2 7,584, T10Y2Y 9,824, T10YIE 2,887, DFII10 722; VIXCLS 5,481 before its first vintage plus **32
+holiday `"."` dates inside the range**. In the other direction: dates in `output_type=4` and not in latest: 0 for all
+17. This is the "complete costume" the backfill must not wear; the design (step 3 plan, part A) compares against
+the latest values and refuses on any unaccounted date.
+
+**3. Real response shape against the documentation-derived fixtures: they agree, with differences worth knowing.**
+The real success bodies (`ok_first_prints_DRCCLACBS.json`, `ok_latest_DGS10.json`, unmodified) parse through the
+client unchanged. Top-level keys: `realtime_start`, `realtime_end`, `observation_start` (`1600-01-01`),
+`observation_end`, `units`, `output_type`, `file_type`, `order_by`, `sort_order`, `count`, `offset`, `limit`,
+`observations`. Observation keys: `realtime_start`, `realtime_end`, `date`, `value` (value always a string; `"."`
+a gap; no other non-numeric value in any series). Differences: (a) on a first print `realtime_end` is **where the
+value's interval ended** (GDPC1: first print 1992-01-29, `realtime_end` 1992-02-27), not `9999-12-31`; what it
+means precisely for a never-revised value was not checked;
+the client ignores it, as it should; (b) `latest` rows carry `realtime_start = realtime_end =` today; (c) **IORB**
+first prints have `realtime_start` **1 to 6 days before their own `date`** on every row (a rate announced ahead of
+its effective date), which is legitimate and means `available_at < effective_at` is a valid state; migration 0005
+has no CHECK against it, and none may be added; (d) no rate-limit header and no `Retry-After` on any 200, and
+`Cache-Control: no-cache`; (e) latency 0.24 to 1 s per request, one 4.2 s outlier (DTWEXBGS).
+
+**4. Real error bodies (HTTP status is 400 for all of them, none 404).** Saved in `tests/fixtures/fred/`:
+vintage cap exceeded (above); `output_type=4` on the default window: `No vintage dates exist for the specified
+real-time period: 2026-11-12 to 2026-11-12.`; an unknown series: `The series does not exist.` (**HTTP 400, not 404**);
+`limit=100001`: `Variable limit is not between 1 and 100000.` The client maps each to `permanent`; the new cap
+message gets its own text ("split the window") so a log line says what to do. 401, 403, 404, 423, 429 and 5xx are
+still unobserved.
+
+**Method.** Measured 2026-11-12 against `api.stlouisfed.org/fred`; a single session, one key, one network. Counts
+will drift as vintages accrue (every number above is today's). The 2000 limit is the message's own figure, stated for
+this file type; whether it differs for other output types was not measured.
+
+### M2 slice 5, step 3 plan (2026-11-12) — plan only, no code; windowing settled by step 2c
 
 **Scope:** make macro_metrics fill and stay current, and make a long ingest task something the health model can
 tell from a wedged one. Five parts; only A's windowing waits on the measurement.
@@ -1435,18 +1490,47 @@ tell from a wedged one. Five parts; only A's windowing waits on the measurement.
 pure, tested function. `rows_written` counts rows created, so a re-run writes 0. Progress in `backfill_runs`
 (`total_units` = series, `current_unit` = the series in flight), so a killed run resumes at the first series not
 complete. Runs on the `ingest` queue under the heartbeat (part C).
-- **WINDOWING: PENDING.** Three outcomes of measurement (1), each a different design:
-  (i) every series returns its full `count` in one request: no chunking, one request per series, paged by `offset`;
-  (ii) a series is refused or capped (an error naming vintage dates, or fewer rows than `count`): the request is
-  split into real-time windows that each contain at most the cap's worth of vintage dates (the dates come from
-  `series/vintagedates`), and how `output_type=4` behaves *inside* a sub-window (which first prints it returns)
-  must be measured before that design is trusted;
-  (iii) silent truncation (rows < count, or a quietly shortened history): the backfill must detect and refuse, and
-  the client gains a truncation check it does not have today.
-- **ALSO PENDING, from the same measurement: bulk-load `realtime_start`.** If old observations share one
-  `realtime_start`, their `available_at` is a bulk-load date. That is not early (the point-in-time filter stays
-  safe), but those rows would be invisible to any replay before that date. Whether they are kept, flagged, or
-  excluded from PIT use is a decision to take with the numbers in hand.
+- **WINDOWING (settled by step 2c's measurement, 2026-11-12): chunk every series, uniformly.** FRED refuses a
+  window holding more than 2000 vintage dates with an explicit 400, so no series is requested in one piece even
+  when today it would fit (SOFR has 1,902 vintage dates and crosses the cap within months; a "chunk only if big"
+  rule would break on a date nobody is watching). Per series: `series/vintagedates` over the widened window, split
+  the sorted dates into runs of **at most 1,900** (a margin under 2000, which the error text counts one differently
+  from `vintagedates`, see 2c), and request `output_type=4` with `realtime_start` = the run's first date and
+  `realtime_end` = its last. Measured on all six capped series: every window answered 200, `count` equalled the rows
+  returned, **no observation date appeared in two windows**, and **nothing inside the covered range was missing**
+  except the VIXCLS holiday gaps below. Windows are disjoint and cover the vintage history, so the union is the
+  answer. `FredClient.first_prints` becomes `first_prints_window(series_id, start, end)` plus the chunker in
+  `app/ingest/macro.py` (pure, tested on the six real vintage-date counts).
+- **The completeness check the backfill must run (the "missing data wearing a complete costume" case).** The cap
+  is *not* silent, but two other things are, and both are found only by comparing against the latest values
+  (`output_type=1`, one request per series): after assembling the union, every date in the latest series must be
+  accounted for. A date is *accounted for* if (a) it is in the union; (b) it is earlier than the earliest date in the
+  union (**pre-vintage history**, below); or (c) its latest value is `"."` (**a gap never published as a number**,
+  below). Anything else is a **refusal**: the backfill writes nothing for that series and fails with a
+  `schema_mismatch`-kind error naming the count, never a partial series. A date in the union and not in latest also
+  refuses (never observed: 0 across all 17).
+- **Pre-vintage history is not available through `output_type=4`, and FRED does not say so. DECISION FOR KYLE, not
+  taken here.** `output_type=4` returns observations only from the series' first stored vintage onward: GDPC1 from
+  1991-10 (179 of 319 observations absent, 1947 to 1991), CPIAUCSL 306 of 958, DGS10 11,344 of 16,920, MORTGAGE30US
+  2,047 of 2,902. No error, no count, no flag. Those observations exist in the latest values and have **no
+  publication date**, so they cannot be stored as first prints with an honest `available_at` (any date would be
+  invented, and the point-in-time filter would then show a value as known when nobody can say it was). Options:
+  (A) leave them out of `macro_metrics` and document that point-in-time reads start at each series' first vintage
+  (recommended: it keeps the table's one promise); (B) store them with `available_at` = the series' first vintage
+  date and a marker, which needs a column the table lacks and makes the filter lie in a documented way; (C) keep
+  them in a separate non-point-in-time table for features that need long history (z-scores over decades) and never
+  read it for replay. Check §7 for which modules need history before the first vintage before choosing.
+- **`"."` that was never a number is absent from `output_type=4`.** VIXCLS has 32 market-holiday dates in range
+  (e.g. 2010-11-25) that are `"."` in the latest values and appear in no vintage; the BAML and DTWEXBGS gaps that
+  *do* appear in `output_type=4` are different (why FRED reports those and not these was not determined). Consequence for the
+  poll (part B): on its first run it will see those dates in the latest values with no stored row and, by the
+  rule "a period never seen is a new revision 0 at the poll instant", insert them as NULL with `available_at` =
+  that day. That is honest (nobody knew it earlier) but writes a burst of gap rows; I propose the poll skips a
+  never-seen period whose value is `"."` and counts it in a log field, to be confirmed.
+- **Bulk-load `realtime_start`: not present.** The feared case (every old observation sharing one bulk-load date) did
+  not occur in any series: distinct `realtime_start` values are about one per vintage (the most common value covers
+  at most 1.6 percent of rows), and no first print is dated before its own period except IORB (below). The
+  first-print dates in the covered range are real publication dates.
 
 **B. Daily poll.** `ingest.fred_poll`, Beat crontab 08:00 America/New_York (6.4/11), one `run_feed` per series
 (`provider='fred'`, `feed=<series id>`), sequential, so each series has its own `ingestion_runs` row, its own

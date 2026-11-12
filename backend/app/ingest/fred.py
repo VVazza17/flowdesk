@@ -16,8 +16,7 @@ Three things in here exist because of what FRED does, not because of taste:
 * "." is a genuine gap (ADR-0003 decision 7): kept as a row with value None, never 0.0, never
   forward-filled. NaN, Infinity and anything else that is not a plain decimal is rejected.
 
-The rate budget is NOT declared here or in settings yet (see settings.RATE_BUDGETS): until it is,
-the runner refuses to call FRED at all.
+The rate budget (60 a minute, half FRED's documented 120) is declared in settings.RATE_BUDGETS.
 """
 
 import re
@@ -240,8 +239,12 @@ def _raise_for_status(response: httpx2.Response) -> None:
     if 300 <= code < 400:
         raise Permanent(f"FRED redirected ({code}); redirects are not followed")
     if code == 423 or code >= 500:
-        # 423 and 500 are listed on FRED's errors page with no explanation. Transient, bounded by
-        # the retry policy and Beat's next firing; logged so the real behaviour can be learned.
+        # FRED's errors page lists the complete set of statuses it may return: 400, 404, 423,
+        # 429, 500 (read by Kyle, 2026-11-12). 423 and 500 are listed but unexplained, so
+        # treating them as transient is a JUDGEMENT CALL, not something the docs say: a gap in
+        # the docs would be a missing entry, and this is a present entry with no meaning
+        # given. Bounded by the retry policy and Beat's next firing; logged so the real
+        # behaviour can be learned. 404 is listed too and falls to the permanent branch below.
         log.warning("fred_unexpected_status", status=code, headers=_loggable_headers(response))
         raise Transient(f"FRED answered {code}")
     raise Permanent(f"FRED answered {code}")
@@ -253,6 +256,14 @@ def _explain_400(response: httpx2.Response) -> str:
     except (ValueError, AttributeError):
         message = ""
     lowered = message.lower()
+    if "maximum number of vintage dates" in lowered:
+        # Observed 2026-11-12: a window holding more than 2000 vintage dates is refused outright
+        # (HTTP 400 with the count and the limit), never silently shortened. The caller must split
+        # the real-time window; this client does not.
+        return (
+            "FRED 400: the real-time window holds more than the maximum number of vintage dates "
+            "(2000); split the window"
+        )
     if "no vintage dates" in lowered:
         return (
             "FRED 400: no vintage dates exist for this real-time window; a configuration bug in "

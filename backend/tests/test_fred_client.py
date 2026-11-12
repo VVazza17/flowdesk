@@ -459,9 +459,12 @@ def test_the_user_agent_default_and_override(monkeypatch: pytest.MonkeyPatch) ->
     assert settings.fred_user_agent() == "Custom/2"
 
 
-def test_fred_has_no_rate_budget_until_the_documented_limit_is_read_from_the_page() -> None:
-    # A deliberate tripwire (docs/BUILD-LOG.md, slice 5 plan): the runner refuses a provider with no
-    # budget, so FRED cannot run unthrottled while this stands. Kyle reads FRED's errors page,
-    # quotes the rate-limit sentence into the BUILD-LOG, and only then adds the entry and flips
-    # this test.
-    assert "fred" not in settings.RATE_BUDGETS
+def test_fred_budget_is_half_the_documented_limit() -> None:
+    # The tripwire's other half (docs/BUILD-LOG.md, slice 5 plan). FRED documents 120 requests
+    # a minute before a 429 (not measured). The budget must exist, because the runner refuses
+    # a provider with none, and must not exceed half the documented rate: raising it needs a
+    # measured limit.
+    budget = settings.RATE_BUDGETS["fred"]
+    assert budget.min_interval_seconds == 1.0
+    assert budget.max_batch == 1
+    assert 60.0 / budget.min_interval_seconds <= 120 / 2

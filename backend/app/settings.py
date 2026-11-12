@@ -143,13 +143,16 @@ def ingest_worker_stale_after() -> timedelta:
 # limiter refuses rather than run unthrottled. yfinance (>=1 s spacing, ~100 per batch, §6.12) is
 # added by slice 6 and FRED by slice 5, each with a number it has verified.
 #
-# FRED is WITHHELD on purpose (M2 slice 5, step 2). FRED's errors page is understood to allow
-# 120 requests a minute before a 429, but that sentence has only been read through a summarising
-# fetch tool. Kyle reads it on the page, the exact text goes into docs/BUILD-LOG.md, and only then
-# does `"fred": RateBudget(min_interval_seconds=1.0, max_batch=1)` (60 a minute, half the cap)
-# go in here and test_fred_has_no_rate_budget_until_the_documented_limit_is_read_from_the_page
-# flips. Until then the runner refuses to call FRED at all (BudgetUnavailable), never unthrottled.
-RATE_BUDGETS: dict[str, RateBudget] = {"fake": RateBudget(min_interval_seconds=0.2, max_batch=100)}
+# FRED: one request a second, 60 a minute, half the documented cap. The cap is DOCUMENTED, NOT
+# MEASURED (no 429 has been observed). Kyle read FRED's errors page on 2026-11-12: "429 Too
+# Many Requests (Up to 120 requests per minute are allowed before being served a 429 error
+# code. Not complying with the throttling can result in a temporary block.)" The half is
+# headroom for that being wrong and for a page that is not the whole story; the "temporary
+# block" is the cost of finding out.
+RATE_BUDGETS: dict[str, RateBudget] = {
+    "fake": RateBudget(min_interval_seconds=0.2, max_batch=100),
+    "fred": RateBudget(min_interval_seconds=1.0, max_batch=1),
+}
 
 
 def ingest_retry_initial_seconds() -> float:

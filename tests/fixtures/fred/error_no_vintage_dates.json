@@ -1,0 +1,8 @@
+{
+  "captured_on": "2026-11-12",
+  "source": "https://api.stlouisfed.org/fred/series/observations",
+  "request": "series_id=GDPC1&output_type=4&file_type=json",
+  "status": 400,
+  "content_type": "application/json; charset=UTF-8",
+  "body": "{\"error_code\":400,\"error_message\":\"Bad Request.  No vintage dates exist for the specified real-time period: 2026-11-12 to 2026-11-12.\"}"
+}
