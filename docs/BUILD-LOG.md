@@ -1503,10 +1503,19 @@ reading confirmed by Kyle 2026-11-12: canary at 3 intervals for condition 1, any
     if it is unset, so a feed cannot be run outside a recorded task by accident. The earlier "second rule"
     (`INGEST_TASK_MAX_SECONDS` + 1 minute) is deleted. No index on `task_run_id` (the table is small and the sweep
     reads only `running` rows); revisit if it is ever slow.
-  - **Open, not decided here:** `backfill_runs` also has `running` rows a killed worker leaves behind and has no
-    heartbeat link either. Step 3's resume logic reads it ("first series not complete"), so a stale `running` row
-    there is harmless to correctness but misleading to read. Proposed: same `task_run_id` column and the same rule,
-    in the same migration. Say if you want that; it is not in the plan until you do.
+  - **`backfill_runs` is deliberately excluded from the sweep (Kyle, 2026-11-12). A reasoned exclusion, not a TODO.**
+    A resumable backfill spans several task runs by design: M2 slice 10's gate is a worker restart mid-run, after
+    which a new task picks the same `backfill_runs` row up. One `task_run_id` FK cannot express "the runs that
+    worked on this", and a row that is `running` with no live task between a crash and the resume is **correct, not
+    orphaned**: the work is unfinished and waiting to be resumed. So the question the rule must answer there is not
+    "is the linked task alive" but "has anything picked this up recently", and that depends on the resume design
+    (who resumes, after how long, what a stale-and-unclaimed row means), which is decided at slice 10. Sweeping it
+    now with the task rule would mark every crash-then-resume `failed`, which is wrong. `backfill_runs` gets no
+    column in `0006`. Step 3's backfill reads and writes its progress row as planned and takes no part in the sweep.
+    **Where this is recorded when built:** the docstring of `app/tasks/sweep.py` (what the sweep covers: `task_runs`
+    and `ingestion_runs`; what it does not: `backfill_runs`, with this reason) and the sweep section of
+    `docs/HEALTH.md`, so a reader of either sees an exclusion with its reason rather than a gap. A test pins that the
+    sweep leaves a `running` `backfill_runs` row with no live task untouched.
 - **A swept row whose task completes later (DECIDED, Kyle asked for a decision, not whatever the code does).** This is
   reachable: the heartbeat thread can stall (a lost DB connection, a long GC pause, the laptop sleeping) while the
   body carries on, and the sweep fails the row; the body then finishes. Today's code would silently overwrite it:
