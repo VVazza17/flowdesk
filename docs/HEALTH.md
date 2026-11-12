@@ -289,9 +289,11 @@ and `/openapi.json` return 404. Verified by `infra/smoke-slice7.sh` and
 
 ## Not covered yet
 
-- Killing a **real** provider: slice 4 proves the states against the fake provider only. Each real client
-  (FRED in slice 5, yfinance in slice 6) must map its library's failures into the five kinds below, and the
-  mapping is checked when that client exists. The worker half is done (slice 1, above).
+- Killing a **real** provider: slice 4 proves the states against the fake provider only. FRED's client
+  (`app/ingest/fred.py`, slice 5 step 2) maps its failures into the five kinds, proven against a mock
+  transport (`tests/test_fred_client.py`), **not against FRED**: no real call has been made and none of
+  its error behaviour is measured. See "FRED's failures" below. yfinance (slice 6) is still to do. The
+  worker half is done (slice 1, above).
 - Whether the backup has ever been restored on the real desktop: only the closing drill in `docs/BACKUP.md`
   tells you; `backups` says whether runs succeed, not whether the files can be read.
 
@@ -308,6 +310,31 @@ source goes away, all mapped by the client into one of five kinds (`app/ingest/e
 | Refuses the request: bad key, bad series, FRED's "No vintage dates exist" 400 | `permanent` | no |
 | Silent empty result (yfinance, ADR-0002) | `empty_result` | no |
 | Payload is not the known shape | `schema_mismatch` | no |
+
+### FRED's failures (M2 slice 5, step 2): documented, not measured
+
+What the client does with each response, from FRED's errors page (read 2026-11-11 through a summarising
+fetch tool; the rate-limit sentence still awaits Kyle's reading on the page, see the BUILD-LOG):
+
+| FRED answers | Kind | Retried within the run? | Note |
+|---|---|---|---|
+| 429 | `rate_limited` | yes | Documented past 120 requests a minute, with "a temporary block" for ignoring it. The status and every header except cookies are logged on the first natural one: whether FRED sends `Retry-After` is unknown. |
+| 400, "No vintage dates exist" | `permanent` | no | A configuration bug (ADR-0003 decision 4). The client cannot produce it: it refuses vintage output types without an explicit window. |
+| 400, "series does not exist" | `permanent` | no | ADR-0003 decision 8. |
+| 400, anything naming `api_key` | `permanent` | no | Missing, malformed or unregistered key. |
+| 401, 403 | `permanent` | no | Never `transient` (Kyle, 2026-11-11): retrying a refused key or a blocked client only hammers what refused it. |
+| 423, 500, 502, 503, 504 | `transient` | yes | 423 and 500 are listed with no explanation; treated as transient and logged. |
+| redirect, other 4xx | `permanent` | no | Redirects are never followed: the key would go to whatever host answered. |
+| connection refused, reset, timeout | `transient` | yes | A reset cannot be told from a network blip, so it is retried: 4 attempts per run, then Beat's next firing. A feed that never succeeds goes `stale` (`first_seen_at`). |
+| not JSON, wrong shape, a value that is not a decimal or `.` | `schema_mismatch` | no | Rejected, not guessed at. `NaN` and `Infinity` are rejected. |
+
+An exception raised by this client carries fixed text and never anything FRED sent back, because the key
+rides in the URL and FRED may echo a request. The HTTP library's own request log is held at WARNING for the
+same reason (`app/logging.py`).
+
+**FRED cannot be called yet, by design.** `settings.RATE_BUDGETS` has no `fred` entry (withheld until the
+rate-limit sentence is read on the page), and the runner refuses a provider with no budget
+(`budget_unavailable`).
 
 (A sixth, `budget_unavailable`, means FlowDesk refused to call because the rate limiter could not grant a slot;
 that one is a fault in our own Redis, not a provider.)

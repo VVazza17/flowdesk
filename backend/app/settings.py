@@ -5,6 +5,7 @@
 """
 
 import os
+import re
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Literal
@@ -141,6 +142,13 @@ def ingest_worker_stale_after() -> timedelta:
 # Rate budgets by provider (app.ingest.budget). A provider with no entry cannot be called: the
 # limiter refuses rather than run unthrottled. yfinance (>=1 s spacing, ~100 per batch, §6.12) is
 # added by slice 6 and FRED by slice 5, each with a number it has verified.
+#
+# FRED is WITHHELD on purpose (M2 slice 5, step 2). FRED's errors page is understood to allow
+# 120 requests a minute before a 429, but that sentence has only been read through a summarising
+# fetch tool. Kyle reads it on the page, the exact text goes into docs/BUILD-LOG.md, and only then
+# does `"fred": RateBudget(min_interval_seconds=1.0, max_batch=1)` (60 a minute, half the cap)
+# go in here and test_fred_has_no_rate_budget_until_the_documented_limit_is_read_from_the_page
+# flips. Until then the runner refuses to call FRED at all (BudgetUnavailable), never unthrottled.
 RATE_BUDGETS: dict[str, RateBudget] = {"fake": RateBudget(min_interval_seconds=0.2, max_batch=100)}
 
 
@@ -269,3 +277,33 @@ UNIVERSES: tuple[UniverseSpec, ...] = (
 # the horizon; rows already present are never rewritten (see app.services.sessions).
 SESSIONS_START_YEAR = 2015
 SESSIONS_HORIZON_DAYS = 365
+
+
+# --- FRED (M2 slice 5, step 2) -----------------------------------------------------------------
+# FRED's own words for a malformed key are "not a 32 character alpha-numeric lower-case string",
+# so a key that is not one is rejected here, loudly and early, instead of becoming a 400
+# mid-ingest. The value is never put in the message: it is a credential.
+_FRED_KEY = re.compile(r"[a-z0-9]{32}")
+
+
+def fred_api_key() -> str | None:
+    """FRED_API_KEY, or None when unset. A malformed value raises, without echoing it."""
+    raw = os.environ.get("FRED_API_KEY", "").strip()
+    if not raw:
+        return None
+    if not _FRED_KEY.fullmatch(raw):
+        raise ValueError(
+            "FRED_API_KEY must be 32 lowercase alphanumeric characters (value not shown)"
+        )
+    return raw
+
+
+def fred_user_agent() -> str:
+    """The User-Agent the FRED client sends: explicit, never the HTTP library's default.
+
+    # DECISION (Kyle, 2026-11-11): FRED documents no User-Agent requirement, unlike EDGAR
+    # (§6.5), so a blank value falls back to this default and does not stop startup. The
+    # default names the app and nobody else: no email, no personal contact. Set
+    # FRED_USER_AGENT to change it.
+    """
+    return os.environ.get("FRED_USER_AGENT", "").strip() or "FlowDesk/0.1 (macro-data ingest)"

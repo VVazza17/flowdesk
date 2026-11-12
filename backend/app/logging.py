@@ -53,6 +53,12 @@ def configure_logging(level: str | None = None, stream: IO[str] | None = None) -
         lg = logging.getLogger(name)
         lg.handlers = []
         lg.propagate = True
+    # DECISION (M2 slice 5, step 2): the HTTP client libraries are held at WARNING whatever
+    # LOG_LEVEL says. httpx2 logs `HTTP Request: GET <url>` at INFO, and FRED's api_key is in
+    # the URL's query string, so INFO or DEBUG would write the credential into the log. A test
+    # pins it.
+    for name in ("httpx2", "httpcore2"):
+        logging.getLogger(name).setLevel(logging.WARNING)
     # DECISION: uvicorn's access log stays off even if someone drops --no-access-log.
     # CorrelationIdMiddleware owns the one per-request line (it carries status and duration);
     # a second uvicorn line per request would break "one request, one line".

@@ -8,3 +8,7 @@ redis==8.1.0
 celery[redis]==5.7.0
 exchange-calendars==4.13.2
 tenacity==9.1.2
+# REVIEW TRIGGER (Kyle, 2026-11-12): when this pin is next bumped, recheck whether PyPI publishes an
+# attestation for the new release (https://pypi.org/integrity/httpx2/<version>/<file>/provenance; it
+# was a 404 for 2.16.0). Provenance gap and decision: docs/BUILD-LOG.md, slice 5 step 2.
+httpx2==2.16.0

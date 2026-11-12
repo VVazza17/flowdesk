@@ -1305,3 +1305,78 @@ is the guard, and the runbook says where a check would go).
 cases) and the refused statement changes nothing; DELETE and TRUNCATE refuse; the run pointer may be cleared but
 not repointed; the triggers exist and are enabled (`tgenabled = 'O'`); the runbook's procedure works, an
 abandoned repair is rolled back with the triggers still enabled, and the guard is back afterwards.
+
+### M2 slice 5, step 2 (2026-11-12): the FRED client
+
+**Built.** `backend/app/ingest/fred.py` (`FredClient`, `FredObservation`), settings `fred_api_key()` and
+`fred_user_agent()`, `backend/tests/test_fred_client.py` (57 tests), `.env.example` entries, and HEALTH.md's
+"FRED's failures". It fetches and parses; it writes nothing (storing vintages is step 3, reading them back is
+step 4). `first_prints(series)` sends output_type=4 with the widened window (1776-07-04 to 9999-12-31, ADR-0003);
+`latest(series)` sends no real-time window. Paged with `limit`/`offset`, a page cap of 100, and a refusal of an empty
+page before the count is reached.
+
+**Decisions, each in the code.**
+- *`httpx2` is now a runtime dependency* (BSD-3-Clause; Pydantic's continuation of httpx, see "Provenance" below). It
+  was already a *direct dev pin* from `cc4ec01` (M1 slice 8, replacing `httpx 0.28.1`), not something FastAPI or
+  Starlette pulled in: `pip show httpx2` reports `Required-by:` empty. Starlette and FastAPI name it only in optional
+  extras (`starlette[full]`, `fastapi[standard]`), and Starlette's `TestClient` imports it. (An earlier version of
+  this entry said it was "already the dev dependency behind FastAPI's test client"; that was an assumption, not a
+  check, and was wrong.) The runtime lock gains `httpx2`, `httpcore2` and `truststore`;
+  licence audit 0 not allowed, `pip-audit` clean, locks regenerated with `infra/lock-deps.sh`. This is a dependency
+  I added; the alternative was stdlib `urllib` in a thread, with every timeout, header and test seam hand-built.
+- *The client makes the "No vintage dates exist" 400 unreachable:* `observations` raises `ValueError` for
+  output types 2, 3 and 4 without an explicit window, before any request. It is still classified (a `permanent`
+  configuration bug) in case FRED returns it anyway.
+- *Every exception carries fixed text only,* never anything FRED sent back, and `from None` on network errors. The key
+  rides in the URL and FRED may echo a request.
+- *`httpx2` logs `HTTP Request: GET <url>` at INFO, key included.* This is not hypothetical: with the guard removed
+  the test failed. `configure_logging` now holds `httpx2` and `httpcore2` at WARNING whatever `LOG_LEVEL` is.
+- *401 and 403 are `permanent`* (Kyle): never retried. 423 and 500 are `transient` and logged with their headers; a
+  429 logs its status and all headers but cookies, which is how `Retry-After` gets measured on the first natural one.
+- *`FRED_API_KEY` is validated as 32 lowercase alphanumerics* (FRED's own description of a valid key), refused
+  without echoing the value. *`FRED_USER_AGENT`* defaults to `FlowDesk/0.1 (macro-data ingest)`: no email.
+- *Redirects are not followed* (the key would go to whatever host answered).
+- *Paging and the budget:* the runner takes one rate-limit slot per attempt; the client takes one for every further
+  page through a `before_next_page` callback the caller supplies.
+- *A well-formed empty result is returned empty,* not raised: for a poll it can be legitimate, and whether it is a
+  failure is step 3's call.
+
+**Verified.** In the project's 3.12 image: lint, format and mypy clean; **428 passed, 0 skipped** (371 before, 57
+new). The two guards that matter most were mutation-checked: removing the logger quieting fails
+`test_the_http_library_cannot_log_the_url_even_at_debug`, and putting the exception text into the `Transient`
+message fails `test_no_error_text_can_carry_the_key_even_if_fred_echoes_it`. The production image imports the client
+(`httpx2` 2.16.0). `ci-checks.sh license` and `audit` pass.
+
+**Provenance of `httpx2`: a gap, recorded and accepted (Kyle, 2026-11-12).** Checked against PyPI and GitHub, not
+just the package's own metadata:
+- *Repository and publisher:* PyPI's project URLs point to `github.com/pydantic/httpx2`; the PyPI maintainer is
+  "Pydantic Services Inc." (`engineering@pydantic.dev`) and the author Tom Christie. The README says it is a
+  continuation of HTTPX with Pydantic "picking up stewardship". The history is carried over (`lovelydinosaur` 912
+  commits, `Kludex` 165, `florimondmanca`, `sethmlarson`). The Pydantic GitHub org is verified (2022).
+- *The gaps:* it is **not** Encode's `httpx` under a 2.x name but a different org's continuation of it; the package
+  is **about six months old** (repo and first upload both 2026-05-11, 22 releases since); and **PyPI publishes no
+  attestation for 2.16.0** (the provenance endpoint returns 404), so the upload cannot be cryptographically tied to
+  the repo. Mitigations: the pin is hash-pinned in both locks, `pip-audit` is clean, and the licence is BSD-3.
+- *Why it is accepted:* Starlette itself prefers it, the work to avoid it (a stdlib client plus a hand-written
+  redirect-refusing handler on a path carrying an API key, replacing tested code with untested code) was judged to
+  be a worse risk than the dependency.
+- **Review trigger:** when the pin is next bumped, recheck whether PyPI publishes an attestation for the new
+  release. The same note sits above the pin in `backend/requirements.txt`, where a bump will see it.
+
+**NOT verified.**
+- **No real FRED call has been made,** so every status mapping is from FRED's documentation, not observed. The
+  timeouts (30 s, 10 s connect) are placeholders. The first real call is the first evidence of the response shapes
+  (field names, the `count` and `limit` fields, `realtime_*` on output_type=4); the fixtures are written from the
+  documented shape and ADR-0003's evidence.
+- **The FRED rate budget is withheld.** `settings.RATE_BUDGETS` has no `fred` entry, and
+  `test_fred_has_no_rate_budget_until_the_documented_limit_is_read_from_the_page` pins that. The runner refuses a
+  provider with no budget, so FRED cannot be called, let alone unthrottled. **Outstanding, and yours:** read FRED's
+  errors page yourself, replace the unverified quotation in the slice 5 plan entry above with the exact text, then
+  add `"fred": RateBudget(min_interval_seconds=1.0, max_batch=1)` (60 a minute, half the documented cap) and flip
+  that test.
+- The slice 4 retry placeholders (4 attempts, 1 s, 60 s) are unchanged: nothing has been observed that would tune
+  them. They stay labelled placeholders.
+
+**Not done, deliberately.** `FRED_API_KEY` is not yet passed to any container. `x-api-env` is shared by `api`,
+`api-public`, `worker` and `beat`, and the API has no use for the key (and `api-public` faces the outside); step 3
+passes it to `worker` only.
