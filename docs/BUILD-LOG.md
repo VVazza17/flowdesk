@@ -1582,3 +1582,33 @@ and `backfill_runs` already exist.
 (2) The rate-limit sentence read on FRED's page and the `fred` budget entry added: unit tests do not need it, but
 neither the smoke (the runner refuses a provider with no budget) nor any real run can proceed without it.
 (3) A yes or a correction on the heartbeat reading in C.
+
+### M2 slice 5: FRED API Version 2 checked against ADR-0003 (2026-11-12)
+
+Asked: does v2 expose vintages, and is v1 on a deprecation path? Read on 2026-11-12: the v1 index
+(`fred.stlouisfed.org/docs/api/fred/`), the v2 index (`.../fred/v2/index.html`), the one v2 endpoint page
+(`.../v2/release_observations.html`) and FRED's announcement "FRED Launches New Version of API" (4 November 2025,
+`fred.stlouisfed.org/news/2025/11/fred-launches-new-version-of-api`). **Caveat on method:** the fetch tool summarized
+each page rather than returning it verbatim, so the quotes below are the tool's, and a statement that a page "does
+not mention" something is the tool's reading of the page, not a text search I ran.
+
+- **v2 has no vintage support.** It has exactly one endpoint, `fred/v2/release/observations`, "the observations for
+  all series on a release". Its request parameters are `release_id`, `format`, `limit` (1 to 500000) and
+  `next_cursor`. There is **no `realtime_start`, `realtime_end`, `output_type`, `vintage_dates` or as-of parameter**,
+  and observations carry only `date` and `value`. It is a current-values bulk download paged by cursor. The
+  ADR-0003 mechanism (`output_type=4` over a widened real-time window) exists only in v1.
+- **Nothing says v1 is deprecated.** The v1 index still describes v1 as retrieving data from "FRED and ALFRED", lists
+  the vintage-dates endpoint, and says nothing about retirement; neither the v2 pages nor the announcement mention
+  v1, deprecation or a timeline. v2 is presented as an addition ("ideal for ... observations for all series on a
+  release in bulk"). **Absence of a notice is not a promise**: nothing here dates v1's life.
+- **Plan impact: none to the design.** Series-level vintage retrieval is v1 and stays v1. v2 is a possible later
+  optimisation for the daily poll (one request per release instead of one per series) but cannot replace v1 for the
+  backfill, and the poll needs the *latest* values only, so it would be a legitimate use; not adopted, because 17
+  series at one request each is already cheap and v2's own caveat (a response can mix updated and non-updated series
+  during a release update; check `last_updated` and reprocess) adds a failure mode v1 does not have.
+- **The risk worth carrying to M6 is on the record, not solved:** if FRED ever retires v1, vintage retrieval via
+  the API goes with it. The mitigation already in place is that the vintages are *stored* (`macro_metrics`, immutable,
+  backed up), so a retirement would stop new history from being fetched but would not erase what is held.
+  **Review trigger:** re-read the FRED announcements page (`fred.stlouisfed.org/news/`) for any v1 notice at each
+  FRED-client change and at M6 planning; the probe's run with a real key is a second check, since it exercises v1 as it
+  is today.
