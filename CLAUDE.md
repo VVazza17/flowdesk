@@ -114,10 +114,19 @@ below).
   chain has no beginning; recoverable data we chose not to model). The window is 100 vintage dates (FRED's gateway
   504s at 60 s; about 0.16 s per vintage date), and a 504 halves the window. Migration 0006 is `series_history_state`
   (a table section 8 lacks), 0007 renames its gap count and adds the gap-first-print count; part C's `task_run_id`
-  migration is therefore 0008. **The first real backfill is complete: all 17 series captured.** `output_type=4` does not always
+  migration is 0008 (built). **The first real backfill is complete: all 17 series captured.** `output_type=4` does not always
   report a `"."` first print, so a chain starting with `"."` and absent from it is stored as a gap first print, counted apart
   (ADR-0003 F2). `FRED_RULE_VERSION` bumps when a change makes the rules stricter or changes what is stored; for a
   relaxation, count first. The entry point warns that the machine must stay awake. See `docs/BUILD-LOG.md`.
+- **Task liveness: heartbeat, `task_run_id` and the sweep are built (M2 slice 5, step 3, part C, 2026-11-13).** `run_recorded`
+  beats `task_runs.heartbeat_at` every 30 s from a daemon thread (fresh for 120 s; `app/tasks/liveness.py` is the one
+  definition) and publishes its row id; **`run_feed` refuses to run outside a recorded task** (`NotRecorded`) and links each
+  `ingestion_runs` row to it (`task_run_id`, migration 0008); `ops.sweep` (ops queue, every 120 s) fails `running` rows
+  nothing is alive behind (`Orphaned`), in `task_runs` and `ingestion_runs` in one transaction. **Excluded, each with its
+  reason (`app/tasks/sweep.py`, `docs/HEALTH.md`): `backfill_runs` (resume is slice 10) and `ops.backup` / `ops.backup_copy`
+  (psql-written, they never heartbeat).** A swept row whose task finishes later keeps the sweep's verdict plus a note. `checks.ingest_worker`
+  has a `busy` state (alive, not degraded) and its threshold is three canary intervals again, not the task limit. Tests that call
+  `run_feed` directly use `tests/recorded.py`. A manual backfill is a task execution and has a `task_runs` row.
 - **The base image is pinned by digest** (M2 slice 0, 2026-11-08). The `FROM` line in `backend/Dockerfile` is
   the one definition. The CI tooling container, `lock-deps.sh` and the smokes read it through
   `infra/base-image.sh`, and lint fails on a second definition. The base no longer updates itself: the daily
@@ -280,6 +289,7 @@ bash infra/smoke-m2-slice1.sh     # M2 slice 1: worker stopped/paused, Beat stop
 bash infra/smoke-m2-slice4.sh     # M2 slice 4: fake provider on the real stack; killed -> failed runs, stale feed, ready stays ok; recovers
 bash infra/smoke-m2-slice3.sh     # M2 slice 3: migrate + seed (24 symbols, 5 universes, sessions), idempotent, provider_mappings rules
 bash infra/smoke-m2-slice5-step0.sh # M2 slice 5 step 0: two workers on two queues; ingest saturation never delays the ops canary; each worker wedged degrades ready
+bash infra/smoke-m2-slice5-step3-sweep.sh # M2 slice 5 step 3 part C: SIGKILL the ingest worker mid-task -> busy, then stale, then the sweep fails both rows (~5 min)
 bash infra/smoke-m2-slice2.sh     # M2 slice 2: encrypt, SFTP copy to stand-in sshd (3 permission policies), restore with the private key only
 docker compose run --rm worker python -m app.backfill   # FRED revision history, every series not yet captured; --series A,B [--force]
 bash infra/backup.sh              # dump + manifest into dumps/. Restoring and the version trap: docs/BACKUP.md

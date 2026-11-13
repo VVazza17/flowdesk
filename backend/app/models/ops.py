@@ -6,7 +6,7 @@ vocabularies) is a stopgap logged as IDEA-022/023/024 in docs/SPEC-DEFECTS.md.
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Identity, Integer, Text, text
+from sqlalchemy import BigInteger, ForeignKey, Identity, Integer, Text, text
 from sqlalchemy.dialects.postgresql import TIMESTAMP
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -43,6 +43,12 @@ class IngestionRun(Base):
     rows_read: Mapped[int | None] = mapped_column(Integer)
     rows_written: Mapped[int | None] = mapped_column(Integer)
     error: Mapped[str | None] = mapped_column(Text)
+    # The task execution this run belongs to (migration 0008). NULL only on rows written before it:
+    # run_feed refuses to run outside a recorded task. The sweep fails a `running` run whose task is
+    # not alive, and a NULL is "not linked to a live task" without a special case.
+    task_run_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("task_runs.id", ondelete="SET NULL")
+    )
 
 
 class TaskRun(Base):

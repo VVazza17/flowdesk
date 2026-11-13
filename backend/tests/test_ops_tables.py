@@ -47,6 +47,8 @@ SPEC = {
             ("rows_read", "integer"),
             ("rows_written", "integer"),
             ("error", "text"),
+            # Not in §8: migration 0008 (the sweep's link to the task that started the run).
+            ("task_run_id", "bigint"),
         ],
         ["id"],
     ),

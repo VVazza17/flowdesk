@@ -28,9 +28,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import structlog
-from sqlalchemy import insert, update
+from sqlalchemy import func, insert, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from tenacity import (
     AsyncRetrying,
     RetryCallState,
@@ -40,9 +40,10 @@ from tenacity import (
 )
 
 from app.ingest.budget import Limiter
-from app.ingest.errors import health_error, is_retryable, kind_of, run_error
+from app.ingest.errors import NotRecorded, health_error, is_retryable, kind_of, run_error
 from app.models.ops import IngestionRun, ProvidersHealth
 from app.tasks.names import STATUS_FAILED, STATUS_RUNNING, STATUS_SUCCEEDED
+from app.tasks.runs import after_sweep_note, current_task_run_id
 
 log = structlog.get_logger(__name__)
 
@@ -135,7 +136,17 @@ async def run_feed(
 
     `secrets` are this provider's credentials, passed so the stored error text can have them
     removed by exact value (app.ingest.errors.scrub). providers_health never gets the text at all.
+
+    Must run inside `app.tasks.runs.run_recorded`: the ingestion run is linked to that task's
+    `task_runs` row (`task_run_id`), which is how the sweep tells a live run from an orphan. Run
+    outside one, it raises NotRecorded before writing anything. The final write is conditional on
+    the
+    row still being `running`: if the sweep failed it meanwhile, the sweep's verdict stands and what
+    happened is appended to `error` as a note (BUILD-LOG, step 3 plan, part C).
     """
+    task_run_id = current_task_run_id.get()
+    if task_run_id is None:
+        raise NotRecorded("run_feed must run inside run_recorded: no task_runs row to link to")
     started = clock()
     async with engine.begin() as conn:
         await conn.execute(
@@ -146,7 +157,13 @@ async def run_feed(
         run_id = (
             await conn.execute(
                 insert(IngestionRun)
-                .values(provider=provider, feed=feed, started_at=started, status=STATUS_RUNNING)
+                .values(
+                    provider=provider,
+                    feed=feed,
+                    started_at=started,
+                    status=STATUS_RUNNING,
+                    task_run_id=task_run_id,
+                )
                 .returning(IngestionRun.id)
             )
         ).scalar_one()
@@ -169,11 +186,16 @@ async def run_feed(
     except Exception as exc:
         finished = clock()
         async with engine.begin() as conn:
-            await conn.execute(
+            failed = await conn.execute(
                 update(IngestionRun)
-                .where(IngestionRun.id == run_id)
+                .where(IngestionRun.id == run_id, IngestionRun.status == STATUS_RUNNING)
                 .values(status=STATUS_FAILED, finished_at=finished, error=run_error(exc, secrets))
             )
+            if not failed.rowcount:
+                await _note_swept(
+                    conn, run_id, after_sweep_note("failed", finished) + f": {type(exc).__name__}"
+                )
+                log.warning("ingest_failed_after_sweep", provider=provider, feed=feed)
             await conn.execute(
                 update(ProvidersHealth)
                 .where(ProvidersHealth.provider == provider, ProvidersHealth.feed == feed)
@@ -183,9 +205,9 @@ async def run_feed(
         raise
     finished = clock()
     async with engine.begin() as conn:
-        await conn.execute(
+        done = await conn.execute(
             update(IngestionRun)
-            .where(IngestionRun.id == run_id)
+            .where(IngestionRun.id == run_id, IngestionRun.status == STATUS_RUNNING)
             .values(
                 status=STATUS_SUCCEEDED,
                 finished_at=finished,
@@ -193,9 +215,30 @@ async def run_feed(
                 rows_written=result.rows_written,
             )
         )
+        if not done.rowcount:
+            # The sweep failed this row while the body was still working. The rows the body wrote
+            # exist (inserts are idempotent and the triggers keep them valid), so the note says so;
+            # the status stays what the sweep decided. DECISION: providers_health below still
+            # records the provider call's success, because that table is about the SOURCE and the
+            # source answered; the machinery's failure is on the run row and in the sweep.
+            await _note_swept(
+                conn,
+                run_id,
+                after_sweep_note("completed", finished) + f", rows_written={result.rows_written}",
+            )
+            log.warning("ingest_completed_after_sweep", provider=provider, feed=feed)
         await conn.execute(
             update(ProvidersHealth)
             .where(ProvidersHealth.provider == provider, ProvidersHealth.feed == feed)
             .values(last_success_at=finished)
         )
     return result
+
+
+async def _note_swept(conn: AsyncConnection, run_id: int, note: str) -> None:
+    """Append `note` to the error of a run the sweep already failed; its status is left alone."""
+    await conn.execute(
+        update(IngestionRun)
+        .where(IngestionRun.id == run_id)
+        .values(error=func.concat(func.coalesce(IngestionRun.error, ""), note))
+    )

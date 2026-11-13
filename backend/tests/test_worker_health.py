@@ -4,6 +4,7 @@ Keyed on recent canary completions, not on a process being alive, so a wedged wo
 No infrastructure: probes are faked, the clock is passed in.
 """
 
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -29,10 +30,12 @@ class FakeProbes:
         ingest_last_success: datetime | None = NOW - timedelta(seconds=10),
         worker_error: Exception | None = None,
         ingest_error: Exception | None = None,
+        busy_task: str | None = None,
     ) -> None:
         self.postgres, self.redis = postgres, redis
         self.last_success, self.worker_error = last_success, worker_error
         self.ingest_last_success, self.ingest_error = ingest_last_success, ingest_error
+        self.busy_task = busy_task
 
     async def ping_postgres(self) -> None:
         if self.postgres:
@@ -44,6 +47,9 @@ class FakeProbes:
 
     async def migration_revisions(self) -> tuple[str | None, str]:
         return ("0002", "0002")
+
+    async def running_task_fresh(self, task_names: Sequence[str], now: datetime) -> str | None:
+        return self.busy_task
 
     async def provider_rows(self) -> list[FeedRow]:
         return []
@@ -176,10 +182,11 @@ def test_started_at_is_set_by_the_app_factory() -> None:
 # --- The ingest worker's canary (M2 slice 5, step 0, option b) ------------------------------
 # Without it a wedged ingest worker would show only as stale feeds, and stale feeds never page: a
 # machinery failure wearing a source failure's costume, breaking the readiness rule in the
-# one case it was written for. The threshold is sized to the longest allowed ingest task, so a
-# long, legal task starving the canary is not a failure.
+# one case it was written for. Since part C its threshold is the same three intervals as the ops
+# worker's, and a canary stuck behind a long task is covered by `busy` (a running task of the ingest
+# worker with a fresh heartbeat), not by a threshold sized to the task limit.
 
-INGEST_STALE_AFTER = timedelta(seconds=1980)  # 1800 s task limit + 3 x the 60 s canary
+INGEST_STALE_AFTER = timedelta(seconds=180)  # 3 x the 60 s canary
 
 
 def test_ingest_canary_classification_names_its_own_task_and_threshold() -> None:
@@ -188,7 +195,7 @@ def test_ingest_canary_classification_names_its_own_task_and_threshold() -> None
     )
     assert out["status"] == "ok"
     assert out["task"] == "ops.canary_ingest"
-    assert out["stale_after_seconds"] == 1980
+    assert out["stale_after_seconds"] == 180
 
 
 def test_ready_reports_both_workers_and_is_ok_when_both_are_healthy() -> None:
@@ -209,17 +216,68 @@ def test_a_wedged_ingest_worker_degrades_ready_even_though_the_ops_worker_is_fin
     assert body["checks"]["ingest_worker"]["status"] == "stale"
 
 
-def test_a_long_legal_ingest_task_starving_the_canary_is_not_a_failure() -> None:
-    # 20 minutes without an ingest canary: far past the ops threshold (3 min), inside the longest
-    # allowed task (30 min). Judged by the ops threshold this would page on a healthy backfill.
-    probes = FakeProbes(ingest_last_success=NOW - timedelta(minutes=20))
+def test_a_stuck_canary_with_no_live_task_is_stale_at_three_intervals() -> None:
+    # Ten minutes without an ingest canary and nothing running: wedged, and no longer excused by a
+    # half-hour allowance.
+    probes = FakeProbes(ingest_last_success=NOW - timedelta(minutes=10))
+    body = client(probes).get("/health/ready").json()
+    assert body["status"] == "degraded"
+    assert body["checks"]["ingest_worker"]["status"] == "stale"
+
+
+def test_a_stale_canary_behind_a_running_task_with_a_fresh_heartbeat_is_busy_not_degraded() -> None:
+    # Twenty minutes without an ingest canary, but a task of the ingest worker is running and
+    # beating: the worker is alive, doing its job. Alive is not degraded.
+    probes = FakeProbes(ingest_last_success=NOW - timedelta(minutes=20), busy_task="ingest.fake")
     body = client(probes).get("/health/ready").json()
     assert body["status"] == "ok"
+    assert body["checks"]["ingest_worker"]["status"] == "busy"
+    assert body["checks"]["ingest_worker"]["running_task"] == "ingest.fake"
+    assert body["checks"]["ingest_worker"]["stale_after_seconds"] == 180
+
+
+def test_busy_also_covers_a_worker_whose_canary_has_never_completed() -> None:
+    probes = FakeProbes(ingest_last_success=None, busy_task="ingest.fake")
+    body = client(probes).get("/health/ready").json()
+    assert body["status"] == "ok"
+    assert body["checks"]["ingest_worker"]["status"] == "busy"
+
+
+def test_a_healthy_canary_is_ok_and_the_busy_probe_is_not_even_asked() -> None:
+    class Spy(FakeProbes):
+        asked = False
+
+        async def running_task_fresh(self, task_names: Sequence[str], now: datetime) -> str | None:
+            Spy.asked = True
+            return "ingest.fake"
+
+    body = client(Spy()).get("/health/ready").json()
     assert body["checks"]["ingest_worker"]["status"] == "ok"
-    assert body["checks"]["ingest_worker"]["age_seconds"] == 1200
+    assert Spy.asked is False
 
 
-def test_ingest_canary_one_second_past_the_longest_task_is_stale() -> None:
+def test_the_ops_worker_is_never_busy_a_stuck_ops_canary_always_degrades() -> None:
+    # `busy` is for the ingest worker only: the ops worker runs the canary and nothing else, so
+    # there is no long task that could excuse it.
+    probes = FakeProbes(last_success=NOW - timedelta(minutes=10), busy_task="ingest.fake")
+    body = client(probes).get("/health/ready").json()
+    assert body["checks"]["worker"]["status"] == "stale"
+    assert body["status"] == "degraded"
+
+
+def test_failing_to_ask_whether_a_task_is_running_leaves_the_canarys_verdict() -> None:
+    class Broken(FakeProbes):
+        async def running_task_fresh(self, task_names: Sequence[str], now: datetime) -> str | None:
+            raise RuntimeError("boom")
+
+    body = (
+        client(Broken(ingest_last_success=NOW - timedelta(minutes=10))).get("/health/ready").json()
+    )
+    assert body["checks"]["ingest_worker"]["status"] == "stale"
+    assert body["status"] == "degraded"
+
+
+def test_ingest_canary_one_second_past_three_intervals_is_stale() -> None:
     edge = classify_worker(
         NOW - INGEST_STALE_AFTER, NOW, LONG_AGO, INGEST_STALE_AFTER, task=INGEST_CANARY
     )
@@ -250,9 +308,9 @@ def test_ingest_worker_never_completed_is_ok_in_grace_and_degrades_after_it() ->
     ).get("/health/ready")
     assert young.json()["status"] == "ok"
     assert young.json()["checks"]["ingest_worker"]["in_grace"] is True
-    # The grace is this check's own threshold: 20 minutes up is inside the 33-minute one.
+    # The grace is this check's own threshold (three intervals): two minutes up is inside it.
     still_young = client(
-        FakeProbes(ingest_last_success=None), started_at=NOW - timedelta(minutes=20)
+        FakeProbes(ingest_last_success=None), started_at=NOW - timedelta(minutes=2)
     ).get("/health/ready")
     assert still_young.json()["checks"]["ingest_worker"]["in_grace"] is True
     old = client(FakeProbes(ingest_last_success=None)).get("/health/ready")

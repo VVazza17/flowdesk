@@ -114,7 +114,9 @@ expect_verdict 200 ok
 
 echo "== fresh stack, no canary yet -> never_completed: ok inside the grace, degraded after it"
 docker compose stop worker worker-ops beat
-docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "truncate task_runs"' >/dev/null
+# DELETE, not TRUNCATE: ingestion_runs.task_run_id references task_runs (migration 0008), and TRUNCATE
+# refuses a referenced table. The foreign key is ON DELETE SET NULL, so this is safe.
+docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "delete from task_runs"' >/dev/null
 docker compose restart api >/dev/null
 wait_ready api
 get /health/ready

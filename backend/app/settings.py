@@ -128,16 +128,17 @@ def ingest_task_max_seconds() -> int:
 
 def ingest_worker_stale_after() -> timedelta:
     """How old the ingest canary's last success may be before /health/ready calls the ingest worker
-    stale: the longest allowed task, plus the usual three missed canaries.
+    stale: the usual three missed canaries, the same as the ops worker.
 
-    A task running for the whole limit can legitimately starve the ingest canary for that long (both
-    slots busy), so a tighter number would page on a healthy backfill. A looser one would let a
-    wedged worker hide. This is the one threshold derived from a limit that is enforced, not
-    guessed.
+    It used to be INGEST_TASK_MAX_SECONDS plus three intervals, because a long task could starve the
+    canary for that long and a tighter number would have paged on a healthy backfill. Part C removed
+    the reason: a task now beats `heartbeat_at` from a background thread, and the ingest worker is
+    `busy` (alive, not degraded) while a task of its own has a fresh beat. So a canary stuck behind
+    a
+    long task no longer has to be waited out, and a wedged ingest worker shows in minutes.
+    `INGEST_TASK_MAX_SECONDS` stays as Celery's hard `task_time_limit`, nothing more.
     """
-    return timedelta(
-        seconds=ingest_task_max_seconds() + canary_interval_seconds() * WORKER_STALE_MULTIPLIER
-    )
+    return worker_stale_after()
 
 
 # --- Ingest framework (M2 slice 4) -------------------------------------------------------------

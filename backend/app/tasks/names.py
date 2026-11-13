@@ -41,3 +41,25 @@ STATUS_SKIPPED = "skipped"
 # goes through `run_recorded`, so a manual backfill has a real row and the sweep's rule applies
 # unchanged.
 FRED_BACKFILL = "ingest.fred_backfill"
+
+# The sweep (M2 slice 5, step 3, part C): fails the `running` rows nothing is alive behind.
+# Runs on the `ops` queue, so a saturated ingest queue cannot starve it.
+SWEEP = "ops.sweep"
+
+# Tasks the sweep must NOT touch, with the reason (a reasoned exclusion, not a gap). The backup
+# container writes these rows with psql, not through `run_recorded`, so nothing beats their
+# heartbeat: a healthy dump or an SFTP copy that takes longer than HEARTBEAT_FRESH_SECONDS would be
+# failed as orphaned, and the script's own final UPDATE (which is unconditional) would then
+# overwrite the sweep's verdict. Their staleness is already read from /health/data and the
+# external monitor's missed-run signal. Revisit if the backup scripts ever heartbeat.
+# Two writers of task_runs, on two protocols: the backup scripts' final write (task_finish in
+# infra/backup/lib.sh) is an unconditional `UPDATE ... WHERE id = :id`, while run_recorded's is
+# `AND status = 'running'` so that a swept row keeps the sweep's verdict. If the backups ever join
+# the sweep, that write becomes conditional IN THE SAME CHANGE.
+UNSWEPT_TASKS = (BACKUP, BACKUP_COPY)
+
+# Celery tasks that run IN THE INGEST WORKER. A fresh running row of one of these proves that worker
+# is alive (checks.ingest_worker reports `busy`). Deliberately not FRED_BACKFILL: the backfill is a
+# separate process (`python -m app.backfill`), and its heartbeat says nothing about the ingest
+# worker; counting it would let a wedged ingest worker look busy for the length of a backfill.
+INGEST_WORKER_TASKS = (FAKE_INGEST,)

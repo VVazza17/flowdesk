@@ -5,6 +5,7 @@ morning, and anything that degrades ready pages (ADR-0008 section 4). No infrast
 faked.
 """
 
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -49,6 +50,9 @@ class FakeProbes:
 
     async def migration_revisions(self) -> tuple[str | None, str]:
         return ("0002", "0002")
+
+    async def running_task_fresh(self, task_names: Sequence[str], now: datetime) -> str | None:
+        return getattr(self, "busy_task", None)
 
     async def provider_rows(self) -> list[FeedRow]:
         return []

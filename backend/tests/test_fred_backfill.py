@@ -31,6 +31,7 @@ from app.ingest.errors import SchemaMismatch
 from app.ingest.fred_feed import PROVIDER, history_body
 from app.ingest.macro import FredSeries, available_at_for
 from app.ingest.runner import RetryPolicy, run_feed
+from tests.recorded import recorded
 
 ADMIN_URL = os.environ.get("DATABASE_URL", "")
 pytestmark = pytest.mark.skipif(not ADMIN_URL, reason="DATABASE_URL not set")
@@ -213,11 +214,18 @@ async def _run(
     )
 
 
-def go(scratch_url: str, coro: Any) -> Any:
+def go(scratch_url: str, coro: Any, *, record: bool = True) -> Any:
+    """Run `coro(engine)` against the scratch database. By default inside a stand-in recorded task
+    (run_feed refuses to run outside one); `record=False` for a test that goes through the real
+    `run_recorded` itself and counts task_runs rows."""
+
     async def wrapper() -> Any:
         engine = create_async_engine(scratch_url)
         try:
-            return await coro(engine)
+            if not record:
+                return await coro(engine)
+            async with recorded(engine):
+                return await coro(engine)
         finally:
             await engine.dispose()
 
@@ -643,7 +651,7 @@ def test_a_manual_backfill_is_a_task_execution_with_a_task_runs_row(scratch_url:
         )
         return ok, both
 
-    ok, both = go(scratch_url, body)
+    ok, both = go(scratch_url, body, record=False)
     assert ok[0]["task_name"] == "ingest.fred_backfill" and ok[0]["status"] == "succeeded"
     assert ok[0]["heartbeat_at"] is not None and ok[0]["completed_at"] is not None
     assert [(r["status"], r["error_class"]) for r in both] == [

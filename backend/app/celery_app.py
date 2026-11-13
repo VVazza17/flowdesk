@@ -9,7 +9,8 @@ from celery import Celery
 
 from app import settings
 from app.logging import configure_logging
-from app.tasks.names import CANARY, FAKE_INGEST, INGEST_CANARY, INGEST_QUEUE, OPS_QUEUE
+from app.tasks.liveness import SWEEP_INTERVAL_SECONDS
+from app.tasks.names import CANARY, FAKE_INGEST, INGEST_CANARY, INGEST_QUEUE, OPS_QUEUE, SWEEP
 
 
 def create_celery() -> Celery:
@@ -23,7 +24,7 @@ def create_celery() -> Celery:
     app = Celery(
         "flowdesk",
         broker=broker,
-        include=["app.tasks.canary", "app.tasks.fake_ingest"],
+        include=["app.tasks.canary", "app.tasks.fake_ingest", "app.tasks.sweep"],
     )
     app.conf.update(
         timezone="America/New_York",
@@ -34,7 +35,12 @@ def create_celery() -> Celery:
         # Everything unrouted defaults to `ingest`: a new task nobody thought about lands where
         # starvation is survivable, not on the queue that has to stay free.
         task_default_queue=INGEST_QUEUE,
-        task_routes={CANARY: {"queue": OPS_QUEUE}, INGEST_CANARY: {"queue": INGEST_QUEUE}},
+        task_routes={
+            CANARY: {"queue": OPS_QUEUE},
+            INGEST_CANARY: {"queue": INGEST_QUEUE},
+            # The sweep fails the rows of dead tasks, so it must not wait behind ingest work.
+            SWEEP: {"queue": OPS_QUEUE},
+        },
         # Prefetch 1: a worker reserves only what it can start. The default (4 per process) lets a
         # worker hold tasks in its own memory behind a long one, where no other worker can
         # take them.
@@ -63,6 +69,12 @@ def create_celery() -> Celery:
                 "task": INGEST_CANARY,
                 "schedule": interval,
                 "options": {"expires": interval * 2, "queue": INGEST_QUEUE},
+            },
+            # Fails `running` rows nothing is alive behind (docs/HEALTH.md, "The sweep").
+            "sweep": {
+                "task": SWEEP,
+                "schedule": float(SWEEP_INTERVAL_SECONDS),
+                "options": {"expires": SWEEP_INTERVAL_SECONDS * 2, "queue": OPS_QUEUE},
             },
         },
     )

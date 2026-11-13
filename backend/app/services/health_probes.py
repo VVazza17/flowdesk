@@ -1,6 +1,7 @@
 """Real Postgres/Redis probes for the health endpoints. Imported lazily (see app.deps) so the
 /health/live path never pulls in sqlalchemy or redis."""
 
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -13,7 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.models.ops import BackfillRun, IngestionRun, ProvidersHealth, TaskRun
 from app.services.health import FeedRow
-from app.tasks.runs import STATUS_SUCCEEDED
+from app.tasks.liveness import stale_cutoff
+from app.tasks.runs import STATUS_RUNNING, STATUS_SUCCEEDED
 
 ALEMBIC_INI = Path(__file__).resolve().parents[2] / "alembic.ini"
 
@@ -83,6 +85,21 @@ class SqlRedisProbes:
                 )
             ).scalar()
             return newest
+
+    async def running_task_fresh(self, task_names: Sequence[str], now: datetime) -> str | None:
+        async with self._need_engine().connect() as conn:
+            name: str | None = (
+                await conn.execute(
+                    select(TaskRun.task_name)
+                    .where(
+                        TaskRun.status == STATUS_RUNNING,
+                        TaskRun.task_name.in_(list(task_names)),
+                        TaskRun.heartbeat_at >= stale_cutoff(now),
+                    )
+                    .limit(1)
+                )
+            ).scalar()
+            return name
 
     async def provider_rows(self) -> list[FeedRow]:
         async with self._need_engine().connect() as conn:

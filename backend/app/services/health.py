@@ -9,14 +9,21 @@ Documented states: docs/HEALTH.md.
 """
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Protocol
 
 import structlog
 
-from app.tasks.names import BACKUP, BACKUP_COPY, CANARY, INGEST_CANARY, STATUS_SKIPPED
+from app.tasks.names import (
+    BACKUP,
+    BACKUP_COPY,
+    CANARY,
+    INGEST_CANARY,
+    INGEST_WORKER_TASKS,
+    STATUS_SKIPPED,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -49,6 +56,11 @@ class HealthProbes(Protocol):
     async def provider_rows(self) -> list[FeedRow]: ...
     async def last_task_success(self, task_name: str) -> datetime | None:
         """completed_at of the newest task_runs row for this task with status 'succeeded'."""
+        ...
+
+    async def running_task_fresh(self, task_names: Sequence[str], now: datetime) -> str | None:
+        """The name of a task among `task_names` that is `running` with a fresh heartbeat, or None
+        (app.tasks.liveness defines fresh)."""
         ...
 
     async def data_state(self) -> dict[str, list[dict[str, Any]]]: ...
@@ -107,6 +119,7 @@ async def assemble_ready(
         started_at=started_at,
         stale_after=ingest_worker_stale_after,
         task=INGEST_CANARY,
+        busy_tasks=INGEST_WORKER_TASKS,
     )
     checks = {
         "postgres": pg,
@@ -136,6 +149,7 @@ async def _check_worker(
     started_at: datetime,
     stale_after: timedelta,
     task: str = CANARY,
+    busy_tasks: Sequence[str] = (),
 ) -> dict[str, Any]:
     if not pg_ok:
         return {"status": "unknown", "reason": "postgres_down"}
@@ -152,7 +166,22 @@ async def _check_worker(
         # Same stance as migrations: not being able to ask is not evidence that the worker is dead,
         # and a Postgres or schema problem already shows in its own check (and as not_ready).
         return {"status": "unknown", "error": result.get("error", "NoResult")}
-    return classify_worker(last, now, started_at, stale_after, task=task)
+    state = classify_worker(last, now, started_at, stale_after, task=task)
+    if state["status"] != "ok" and busy_tasks:
+        # The canary has not completed recently, but this worker may be busy rather than wedged:
+        # a task of its own with a fresh heartbeat proves the process is alive and reaches Postgres.
+        # `busy` does not degrade. It is asked only when the canary says otherwise, and a failure to
+        # ask changes nothing (the canary's verdict stands): not being able to ask is no evidence.
+        running: str | None = None
+        try:
+            running = await asyncio.wait_for(
+                probes.running_task_fresh(busy_tasks, now), timeout=CHECK_TIMEOUT_S
+            )
+        except Exception as exc:
+            log.warning("health_check_failed", check="ingest_worker_busy", error=type(exc).__name__)
+        if running is not None:
+            return {**state, "status": "busy", "running_task": running}
+    return state
 
 
 def classify_worker(
@@ -168,6 +197,9 @@ def classify_worker(
     its own check beside this one.
 
     ok               a canary succeeded within `stale_after`
+    busy             (ingest worker only, decided by the caller) the canary has not completed
+                     recently but a task of this worker is running with a fresh heartbeat: alive,
+                     not degraded
     stale            the last success is older than that: something stopped completing
     never_completed  no canary has ever succeeded. `in_grace` is true while the API itself has been
                      up for less than `stale_after`: a fresh stack has not had time to run one yet,

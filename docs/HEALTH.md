@@ -98,8 +98,8 @@ from (the same gap as IDEA-026), so the grace is measured from the API process's
 a long time over an empty `task_runs` is past its grace, which is right: something should have run by then.
 
 **What it does not catch yet.**
-- A task stuck in `running` after its process died. The canary is instant, so nothing to sweep exists yet; the
-  sweep arrives with the first long task (backfill, slice 10), using `heartbeat_at`.
+- ~~A task stuck in `running` after its process died.~~ Fixed in M2 slice 5, step 3, part C: every task beats
+  `heartbeat_at` and the sweep fails the rows nothing is alive behind. See "The sweep" below.
 - ~~A long task starving the canary.~~ Fixed in M2 slice 5, step 0: the canary has its own queue and its own
   worker process, and ingest work has another. See "The ingest worker check" for what that cost.
 
@@ -107,7 +107,7 @@ Settings: `CANARY_INTERVAL_SECONDS` (`app/settings.py`), read by the API and by 
 cannot disagree. The smoke test sets it to 3 so the stale threshold is 9 s.
 
 `checks.worker` is the **ops worker**: the `worker-ops` compose service, one slot, consuming the `ops` queue
-and nothing else, running `ops.canary` and nothing else. No amount of ingest work can make it wait, so a
+and nothing else, running `ops.canary` and the sweep (`ops.sweep`) and nothing else. No amount of ingest work can make it wait, so a
 `stale` here is never a long task. (`docker compose pause worker-ops` is the wedged case.)
 
 ### The ingest worker check (`checks.ingest_worker` in `/health/ready`)
@@ -122,22 +122,35 @@ two slots), and its own check. (Decided by Kyle, 2026-11-11, option (b).)
 It has the same states as the worker check (`ok`, `stale`, `never_completed` with `in_grace`, `unknown`) and
 the same fields, with `task` = `ops.canary_ingest`. It differs in one thing, the threshold:
 
-**`stale_after_seconds` = `INGEST_TASK_MAX_SECONDS` (default 1800) + 3 x `CANARY_INTERVAL_SECONDS`.** When both
-ingest slots are held by long tasks, the ingest canary waits behind them, expires, and the next one tries. A
-task is allowed to run for at most `INGEST_TASK_MAX_SECONDS` (Celery's hard `task_time_limit` kills it past
-that), so a healthy worker busy with a legal task can leave the canary waiting that long and no longer. A
-tighter threshold would page on a healthy backfill. The grace for a fresh stack is this same, longer window.
+**`stale_after_seconds` = 3 x `CANARY_INTERVAL_SECONDS`**, the same as the ops worker's. (Until M2 slice 5, step 3
+part C it was `INGEST_TASK_MAX_SECONDS` plus three intervals, half an hour by default, because a long task could
+starve the canary that long and a tighter number would have paged on a healthy backfill. Part C removed the
+reason, below.) `INGEST_TASK_MAX_SECONDS` is now only Celery's hard `task_time_limit`.
 
-**What it costs, stated plainly.**
-- A wedged ingest worker takes up to half an hour to show (the 1800 s is a guess, not a measurement: no real
-  feed has been timed). Lowering `INGEST_TASK_MAX_SECONDS` makes it faster, and means chunking long tasks.
-- **KNOWN GAP: this threshold can false-alarm until the heartbeat check lands (M2 slice 5, step 3).** It
-  assumes one long task at a time per slot. Two slots running long tasks back to back can, by chance of which
-  queued message a freed slot takes, keep the canary waiting past the threshold, and that pages a healthy
-  worker. Queue priority is rejected as the fix: it cannot help a canary waiting behind a task that already
-  started, and it would make the guarantee depend on Redis transport behaviour. The decided fix (Kyle,
-  2026-11-11) takes queue position out of it: the ingest worker is alive if a task completed recently **or**
-  one is running with a fresh `heartbeat_at`. Nothing runs long yet, so step 0 ships without it.
+**`busy`: alive, not degraded.** When the ingest canary has not completed within the threshold, the check asks
+one more question: is a task **of the ingest worker** running with a fresh `heartbeat_at`? If so the state is
+`busy` (`running_task` names it) and it does **not** degrade `/health/ready`: a worker that is doing its job
+behind a long task is alive. If not, the canary's verdict stands: `stale`, or `never_completed` past its grace.
+The question is asked only when the canary says otherwise, and a failure to ask changes nothing (not being able
+to ask is not evidence). Only the ingest worker can be `busy`: the ops worker runs the canary and the sweep and
+nothing long, so nothing excuses a stuck ops canary.
+
+- **Which tasks count** (`app.tasks.names.INGEST_WORKER_TASKS`): Celery tasks that run in the ingest worker. A
+  manual backfill (`python -m app.backfill`, a separate process) deliberately does **not**: its heartbeat says
+  nothing about the ingest worker, and counting it would let a wedged ingest worker look busy for the length of a
+  backfill.
+- **What a beat proves.** The worker PROCESS is alive and can reach Postgres (a thread writes it, so a body stuck
+  in a blocking call keeps beating). It does not prove the body is making progress; that is bounded by the
+  per-request timeouts and, last, the hard task time limit, which kills the process and so stops the beats.
+- **What it costs, stated plainly.** A wedged ingest worker with no task running shows `stale` within three
+  canary intervals (minutes, not half an hour). A worker **killed mid-task** reads `busy` until its last beat goes
+  stale (up to 120 s), then `stale` and degraded, and the sweep fails the orphaned rows within 120 to 240 s of the last
+  beat (`infra/smoke-m2-slice5-step3-sweep.sh` kills one with SIGKILL and watches exactly this). A wedged worker
+  *with a task that is itself stuck but still beating* reads `busy` until that task hits the hard limit. That is the
+  one case the heartbeat cannot see.
+- The old "KNOWN GAP" (two slots running long tasks back to back could keep the canary waiting past the
+  half-hour threshold and page a healthy worker) is gone with the threshold: `busy` does not depend on queue
+  position.
 - A task killed by the time limit leaves its `task_runs` and `ingestion_runs` rows `running`. The sweep that
   `runs.py` defers to "the first long task" is due with the same work: step 3's FRED backfill is the first
   long task, so that trigger fired early. Built together with the heartbeat check, at step 3.
@@ -145,6 +158,54 @@ tighter threshold would page on a healthy backfill. The grace for a fresh stack 
 Settings: `INGEST_TASK_MAX_SECONDS`, read by the workers (to enforce it) and the API (to judge by it).
 Verified by `infra/smoke-m2-slice5-step0.sh` (queues separate; ingest saturation leaves `ready` `ok`; each
 worker paused degrades it) and `backend/tests/test_worker_health.py`.
+
+### The sweep (M2 slice 5, step 3, part C): `running` rows nothing is alive behind
+
+**One definition of alive** (`app/tasks/liveness.py`; the writer, the probe and the sweep import it, none restates
+a number): a task beats `heartbeat_at` every `HEARTBEAT_INTERVAL_SECONDS` = 30 from a background thread started
+by `run_recorded` (the one wrapper every task goes through, **including a manual backfill**), and a beat is fresh
+for `HEARTBEAT_FRESH_SECONDS` = 120 (four intervals: three beats can be lost to a slow commit or a pause before a
+live task looks dead). A NULL heartbeat is never fresh. A test pins `FRESH >= 3 x INTERVAL`.
+
+**The rule, one for both tables** (`app/tasks/sweep.py`, task `ops.sweep` on the `ops` queue, every 120 s, so a
+saturated ingest queue cannot starve it):
+- a `task_runs` row that is `running` and not fresh becomes `failed`, `error_class = 'Orphaned'`;
+- an `ingestion_runs` row that is `running` and whose `task_run_id` does not point at a `running` task with a
+  fresh heartbeat becomes `failed`, `error = 'Orphaned: ...'`. A NULL `task_run_id` fails that test by itself.
+- Both in one transaction, `task_runs` first, so the two tables never disagree about the same run.
+- `ingestion_runs.task_run_id` (migration 0008, nullable, `ON DELETE SET NULL`) is written by `run_feed`, which
+  **refuses to run outside a recorded task** (`NotRecorded`, before writing anything). Rows from before the
+  migration have none and cannot be backfilled.
+
+**Detection time**: a dead task's rows are failed between 120 s and 240 s after its last beat.
+
+**A swept row whose task finishes later keeps the sweep's verdict**; the late result is a note appended to the row
+(`completed after sweep at <ts>, rows_written=<n>` or `failed after sweep at <ts>: <Class>`), never a status, and
+`task_completed_after_sweep` / `ingest_completed_after_sweep` is logged. Every completion write is
+`... WHERE id = :id AND status = 'running'`, so a sweep and a completion that race are serialized by the row
+lock. `providers_health` still records a provider call that succeeded (it is about the source, not the
+machinery). A task's heartbeat thread exits by itself when its row stops being `running`, and is stopped on every
+exit path of `run_recorded` (return, exception, `SystemExit`, a failing final write).
+
+**What the sweep deliberately does not touch**, each a reasoned exclusion and not a gap:
+- **`backfill_runs`.** A resumable backfill spans several task runs by design (slice 10: a worker restart mid-run,
+  after which a new task picks the same row up). A row that is `running` with no live task between a crash and the
+  resume is correct, not orphaned; "has anything picked this up recently" depends on the resume design (slice 10).
+  Pinned by a test. (Kyle, 2026-11-12.)
+- **`ops.backup` and `ops.backup_copy`** (`UNSWEPT_TASKS`). The backup container writes their rows with psql, not
+  through `run_recorded`, so nothing beats their heartbeat: a healthy dump or SFTP copy longer than 120 s would be
+  failed as orphaned, and the script's unconditional final `UPDATE` would then overwrite the verdict. Their
+  staleness is read from `/health/data` (`backups`) and the external monitor's missed-run signal. Found while
+  building part C; revisit if the backup scripts ever heartbeat. Pinned by a test. **Two writers of `task_runs`,
+  two protocols:** the backup scripts' final write (`task_finish`, `infra/backup/lib.sh`) is unconditional, while
+  `run_recorded`'s is `AND status = 'running'`. If the backups ever join the sweep, that write becomes
+  conditional in the same change.
+
+**Not yet watched, by decision (Kyle, 2026-11-13):** no check reads `ops.sweep`. The sweep shares the `ops` queue and
+worker with the canary, so the ops worker dying already degrades readiness (`checks.worker`). The uncovered case is
+narrow: the sweep task failing while the canary keeps succeeding, which leaves orphaned rows unswept with no state
+change. It leaves an `ops.sweep` row each run, so it is visible. Revisit if it is ever seen or a second task joins the
+`ops` queue.
 
 ## `GET /health/providers` — feed freshness (`providers_health`)
 

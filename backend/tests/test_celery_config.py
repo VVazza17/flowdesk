@@ -122,16 +122,18 @@ def test_ingest_task_max_is_overridable_and_must_be_positive(
         settings.ingest_task_max_seconds()
 
 
-def test_ingest_worker_threshold_is_the_longest_allowed_task_plus_three_intervals(
+def test_ingest_worker_threshold_is_three_canary_intervals_not_the_task_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # "Sized to the longest allowed task": a task allowed to run for the limit can starve the
-    # ingest canary for the limit and no longer, so waiting that long is not a failure.
+    # It used to be INGEST_TASK_MAX_SECONDS + 3 intervals, because a long task could starve the
+    # canary for that long. Part C (a heartbeat thread, and `busy` while a task of the ingest worker
+    # beats) removed the reason, so a wedged ingest worker shows in minutes, not half an hour.
     monkeypatch.delenv("CANARY_INTERVAL_SECONDS", raising=False)
     monkeypatch.delenv("INGEST_TASK_MAX_SECONDS", raising=False)
-    assert settings.ingest_worker_stale_after().total_seconds() == 1800 + 180
+    assert settings.ingest_worker_stale_after().total_seconds() == 180
     monkeypatch.setenv("CANARY_INTERVAL_SECONDS", "3")
     monkeypatch.setenv("INGEST_TASK_MAX_SECONDS", "30")
-    assert settings.ingest_worker_stale_after().total_seconds() == 30 + 9
-    # And it is never the ops threshold: that one would false-alarm during a long, legal task.
-    assert settings.ingest_worker_stale_after() > settings.worker_stale_after()
+    assert settings.ingest_worker_stale_after().total_seconds() == 9
+    # It does not move with the hard time limit any more.
+    monkeypatch.setenv("INGEST_TASK_MAX_SECONDS", "36000")
+    assert settings.ingest_worker_stale_after() == settings.worker_stale_after()

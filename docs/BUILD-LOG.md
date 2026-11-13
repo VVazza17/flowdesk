@@ -2176,3 +2176,84 @@ settled from data instead**, as he directed.
   only on this Windows host's temp directory pass in the container, so that error was host-only, as said.
 - **Still open:** the poll (commit C); part C (heartbeat thread in `run_recorded`, `ingestion_runs.task_run_id` as
   migration **0008**, the sweep); nothing is committed.
+
+### M2 slice 5, step 3, part C built: heartbeat thread, `task_run_id` (0008), and the sweep (2026-11-13)
+
+Built to the design Kyle decided on 2026-11-11/12 (step 3 plan, part C), after the two commits of the history backfill.
+The design's open item (a manual backfill needs a ledger row) is closed by Kyle's decision of today: **the entry point
+goes through `run_recorded`, so a manual backfill is a task execution with a real `task_runs` row, a live heartbeat and
+the sweep's rule applied to it unchanged, with no exception.** Nothing is committed.
+
+- **New:** `app/tasks/liveness.py` (the one definition of alive: interval 30 s, fresh 120 s, `stale_cutoff`, `is_fresh`),
+  `app/tasks/sweep.py` (+ task `ops.sweep`, `ops` queue, every 120 s), migration `0008_ingestion_runs_task_run_id`,
+  `NotRecorded`, `tests/{__init__,conftest,recorded}.py`, `test_liveness.py`, `test_task_heartbeat.py`, `test_sweep.py`.
+- **`run_recorded`** (`app/tasks/runs.py`, rewritten whole, it is small): publishes its row id in a `ContextVar`; runs a
+  daemon heartbeat thread (own event loop, own `NullPool` connection from `engine.url`) torn down by one `finally` on every
+  exit path; every final write is `WHERE id = :id AND status = 'running'`, and a zero-row match (swept) appends a note
+  instead of changing the verdict. **`run_feed`** reads the context variable, raises `NotRecorded` before writing
+  anything if it is unset, writes `task_run_id`, and has the same conditional final writes and note.
+- **Health:** `checks.ingest_worker` gains `busy` (alive, not degraded); its threshold reverts from `INGEST_TASK_MAX_SECONDS`
+  plus three intervals to **three intervals**, so a wedged ingest worker shows in minutes, not half an hour. The step 0
+  "KNOWN GAP" in HEALTH.md is gone. `HEALTH.md` has a new "The sweep" section with both exclusions and their reasons.
+- **The fake provider's task now goes through `run_recorded`** (it did not before), so it has a ledger row and counts for `busy`.
+
+**Decisions made while building, for Kyle to confirm or reverse:**
+1. **The sweep does not touch `ops.backup` and `ops.backup_copy` (`UNSWEPT_TASKS`). Found while building; not in the design.**
+   The backup container writes those rows with psql, not through `run_recorded`, so nothing beats their heartbeat. A generic
+   "running and stale" rule would fail a healthy dump or SFTP copy longer than 120 s as `Orphaned`, and the script's own
+   unconditional final `UPDATE` would then overwrite the verdict. A reasoned exclusion like `backfill_runs`, in the sweep's
+   docstring, in HEALTH.md, pinned by a test. The alternative (make the shell scripts heartbeat) is a larger change to code that
+   is working. **Two writers of `task_runs`, on two protocols.** The backup scripts' final write (`task_finish` in `infra/backup/lib.sh`) is an unconditional `UPDATE ... WHERE id = :id`; `run_recorded`'s is `WHERE id = :id AND status = 'running'`, so that a swept row keeps the sweep's verdict. If the backups ever join the sweep, that write becomes conditional **in the same change**, or the sweep's verdict is overwritten by the next `task_finish`.
+2. **`busy` counts only tasks that run in the ingest worker (`INGEST_WORKER_TASKS`), not the manual backfill.** The backfill is
+   a separate process; its beats say nothing about the ingest worker, and counting them would let a wedged ingest worker read
+   `busy` for the length of a backfill. A test pins that the backfill is in neither set.
+3. **A feed that finishes after the sweep still updates `providers_health`** (the source answered); the run row keeps the
+   sweep's `failed` with the note. The design said the sweep's verdict stands for the run row and was silent on this table.
+4. **Test infrastructure:** `run_feed` refusing to run unrecorded broke every test that called it directly, so there is a
+   `tests/recorded.py` stand-in and a shared `scratch_url` in `tests/conftest.py`; `tests/__init__.py` makes `tests` a package
+   (mypy rejected the cross-test import otherwise, and plain `pytest` would not find it without `python -m`).
+5. **`ingestion_runs` has a column section 8 lacks** (`task_run_id`), annotated in `test_ops_tables.py` like 0004's.
+
+**Verification.** In the pinned container: `ci-checks.sh lint` passes and `ci-checks.sh test` passes, **586 tests**. 17 mutations
+across the sweep (boundary, the backup exclusion, ingestion rows never swept, "live" meaning any row, `backfill_runs` swept), `run_recorded`
+(unconditional success write, thread never stopped, a beat that ignores a swept row, context variable not published, late
+note dropped), `run_feed` (guard removed, link not written, unconditional write), health (busy asked when ok, ops worker
+gets busy, probe's freshness filter removed) and `is_fresh` (`>=` to `>`): **all red**; one (`backfill_runs` swept) was first red
+for the wrong reason (a `NameError`) and was redone and is caught by its own test. **Smokes on the real stack, all pass:**
+`smoke-m2-slice1.sh` (two edits: it ran `truncate task_runs`, which a foreign key now refuses, so it is a `delete`), `smoke-m2-slice4.sh`
+(the fake provider, now through `run_recorded`), and `smoke-m2-slice5-step0.sh`, whose saturation scenario now asserts the part C
+mechanism: the ingest canary starved to 16 s (past the 9 s threshold), `checks.ingest_worker` read **`busy`**, readiness stayed `ok`.
+**The real Beat-scheduled sweep, observed:** a dead task and its orphaned ingestion run planted in the dev database were both
+failed (`Orphaned`) in about 110 s, the sweep recorded its own `task_runs` row, and `/health/ready` was `ok` at migration 0008.
+
+**Not done, on purpose:** a smoke that kills the ingest worker mid-task and waits for the sweep (the freshness window is a code
+constant, so it would take 4+ minutes; the unit tests and the planted-row run cover the rule, and the step 0 smoke covers the
+wedged-worker states); a check that watches the sweep itself (it is visible as `ops.sweep` rows, nothing reads them); the poll
+(commit C of the history work, still unbuilt); `backfill_runs` resume (slice 10).
+
+**One consequence worth knowing.** A laptop that sleeps through a backfill, as on 2026-11-13, now behaves as designed: when it wakes,
+the sweep may fail the backfill's task and its current series' ingestion run as `Orphaned` before the next beat lands; the backfill
+then carries on, its late result is appended as a note, and the series' rows are written all the same. The row says what happened.
+
+#### Part C follow-up (2026-11-13): decisions approved, the kill-and-sweep smoke, and the monitoring gap logged
+
+- **All three decisions above approved** by Kyle (the backup exclusion, `busy` counting only the ingest worker's own tasks,
+  `providers_health` on a late completion). Decision 1 now also records the two-writers fact.
+- **`infra/smoke-m2-slice5-step3-sweep.sh`: a real death leaves a sweepable row.** The unit tests and the planted-row run test
+  the SQL; only a hard kill tests that a process which dies mid-task leaves what the sweep looks for. It `SIGKILL`s the ingest
+  worker mid-task (a graceful `SIGTERM` would not do: Celery's warm shutdown lets the task finish, and `run_recorded`'s
+  `finally` then writes a status, so there would be nothing to sweep). It takes about five minutes by construction (a beat is fresh
+  for 120 s and Beat sweeps every 120 s); making the window an environment variable to shorten it would make it tunable in
+  production for the sake of a test. **Passed on the real stack (2026-11-13):** the task's heartbeat was seen to advance (29 s past its start, so the thread is live in
+  the real process); after the `SIGKILL` both the `task_runs` row and its linked `ingestion_runs` row stayed `running`; readiness
+  read `busy` while the dead worker's last beat was fresh and `stale` and degraded **119 s after the kill**; Beat's sweep failed both
+  rows as `Orphaned` **199 s after the kill, when the last beat was 199 s old** (the freshness window is 120 s: a live task is never
+  swept, and a dead one is found within 120 to 240 s); the rows stayed swept when the worker came back, the sweep had its own
+  succeeded `ops.sweep` row, and readiness recovered to `ok`. The documented cost showed too: a worker killed mid-task reads `busy`,
+  not `stale`, until its last beat goes stale.
+- **Sweep monitoring: a gap, logged and deliberately not built (Kyle, 2026-11-13).** Nothing watches `ops.sweep` itself. The
+  sweep shares the `ops` queue and the ops worker with `ops.canary`, so the death of the ops worker already degrades
+  `/health/ready` through `checks.worker`. What stays uncovered is narrow: **the sweep task failing (or being skipped) while the
+  canary keeps succeeding**, which leaves orphaned `running` rows unswept without any state changing. Revisit if that case is ever
+  seen, or when a second task joins the ops queue; the check would be "the newest `ops.sweep` success is within a few sweep
+  intervals", on the same pattern as `checks.worker`.

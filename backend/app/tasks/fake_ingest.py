@@ -16,6 +16,7 @@ from app.ingest.budget import RedisSpacingLimiter
 from app.ingest.fake import FakeProvider, RedisFakeStore, fake_body
 from app.ingest.runner import RetryPolicy, run_feed
 from app.tasks.names import FAKE_INGEST
+from app.tasks.runs import run_recorded
 
 
 async def run_fake_ingest() -> None:
@@ -32,21 +33,27 @@ async def run_fake_ingest() -> None:
     engine = create_async_engine(url, connect_args={"timeout": 5, "command_timeout": 5})
     redis = Redis.from_url(redis_url, decode_responses=True, socket_connect_timeout=2)
     try:
-        await run_feed(
-            engine,
-            provider_name,
-            feed,
-            fake_body(
-                FakeProvider(
-                    [settings.fake_provider_mode()],
-                    slow_seconds=settings.fake_provider_slow_seconds(),
+
+        async def body() -> None:
+            await run_feed(
+                engine,
+                provider_name,
+                feed,
+                fake_body(
+                    FakeProvider(
+                        [settings.fake_provider_mode()],
+                        slow_seconds=settings.fake_provider_slow_seconds(),
+                    ),
+                    # DECISION: redis-py types hgetall as sync-or-async; ours is the async client.
+                    RedisFakeStore(redis),  # type: ignore[arg-type]
                 ),
-                # DECISION: redis-py types hgetall as sync-or-async; ours is the async client.
-                RedisFakeStore(redis),  # type: ignore[arg-type]
-            ),
-            limiter=RedisSpacingLimiter(redis, settings.RATE_BUDGETS),
-            retry=RetryPolicy(initial_seconds=settings.ingest_retry_initial_seconds()),
-        )
+                limiter=RedisSpacingLimiter(redis, settings.RATE_BUDGETS),
+                retry=RetryPolicy(initial_seconds=settings.ingest_retry_initial_seconds()),
+            )
+
+        # Every task goes through run_recorded: it gives this run its task_runs row (the heartbeat,
+        # and the link run_feed needs), and the ingest worker `busy` state reads that row.
+        await run_recorded(engine, FAKE_INGEST, body)
     finally:
         await redis.aclose()
         await engine.dispose()

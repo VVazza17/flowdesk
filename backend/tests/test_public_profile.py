@@ -3,6 +3,7 @@
 No infrastructure needed: probes are faked via dependency_overrides.
 """
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -227,6 +228,9 @@ class SecretProbes:
 
     async def last_task_success(self, task_name: str) -> datetime | None:
         return None  # /health/data asks for the backup steps' newest successes
+
+    async def running_task_fresh(self, task_names: Sequence[str], now: datetime) -> str | None:
+        return None
 
     async def data_state(self) -> dict[str, list[dict[str, Any]]]:
         return {

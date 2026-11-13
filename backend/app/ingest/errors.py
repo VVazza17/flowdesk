@@ -52,6 +52,13 @@ class Permanent(ProviderError):
     kind = PERMANENT
 
 
+class NotRecorded(Permanent):
+    """A feed was run outside a recorded task, so its ingestion run would have no `task_runs` row to
+    link to (and the sweep could not tell a live run from an orphan). A bug in our own code, not a
+    provider failure: `run_feed` raises it before it writes anything. Run feeds inside
+    `app.tasks.runs.run_recorded`."""
+
+
 class GatewayTimeout(Transient):
     """FRED's gateway answered HTTP 504 (measured 2026-11-13: at exactly 60 s, for an
     `output_type=3` window of about 600 or more vintage dates).

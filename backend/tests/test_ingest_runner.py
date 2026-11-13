@@ -26,6 +26,7 @@ from app.ingest.fake import FakeProvider, InMemoryFakeStore, fake_body
 from app.ingest.runner import FeedContext, FeedResult, RetryPolicy, register_feeds, run_feed
 from app.services.health import assemble_providers
 from app.services.health_probes import SqlRedisProbes
+from tests.recorded import recorded
 
 ADMIN_URL = os.environ.get("DATABASE_URL", "")
 pytestmark = pytest.mark.skipif(not ADMIN_URL, reason="DATABASE_URL not set")
@@ -90,16 +91,17 @@ async def _run(
     secrets: Sequence[str] = (),
 ) -> FeedResult:
     fake = provider or FakeProvider(script)
-    return await run_feed(
-        engine,
-        "fake",
-        "ticks",
-        fake_body(fake, store or InMemoryFakeStore()),
-        limiter=limiter or CountingLimiter(),
-        retry=POLICY,
-        sleep=sleeps or Sleeps(),
-        secrets=secrets,
-    )
+    async with recorded(engine):
+        return await run_feed(
+            engine,
+            "fake",
+            "ticks",
+            fake_body(fake, store or InMemoryFakeStore()),
+            limiter=limiter or CountingLimiter(),
+            retry=POLICY,
+            sleep=sleeps or Sleeps(),
+            secrets=secrets,
+        )
 
 
 def test_a_successful_run_writes_both_ledgers(scratch_url: str) -> None:
@@ -250,7 +252,10 @@ def test_the_body_is_handed_the_ingestion_run_id(scratch_url: str) -> None:
     async def go() -> list[dict[str, Any]]:
         engine = create_async_engine(scratch_url)
         try:
-            await run_feed(engine, "fake", "ticks", body, limiter=CountingLimiter(), sleep=Sleeps())
+            async with recorded(engine):
+                await run_feed(
+                    engine, "fake", "ticks", body, limiter=CountingLimiter(), sleep=Sleeps()
+                )
             return await _all(engine, "SELECT id FROM ingestion_runs")
         finally:
             await engine.dispose()
@@ -333,16 +338,17 @@ def test_no_credential_reaches_the_stored_error_columns(
         engine = create_async_engine(scratch_url)
         try:
             with pytest.raises(Transient):
-                await run_feed(
-                    engine,
-                    "fred",
-                    "GDPC1",
-                    body,
-                    limiter=CountingLimiter(),
-                    retry=POLICY,
-                    sleep=Sleeps(),
-                    secrets=secrets,
-                )
+                async with recorded(engine):
+                    await run_feed(
+                        engine,
+                        "fred",
+                        "GDPC1",
+                        body,
+                        limiter=CountingLimiter(),
+                        retry=POLICY,
+                        sleep=Sleeps(),
+                        secrets=secrets,
+                    )
             health = await _all(engine, "SELECT row_to_json(h)::text AS j FROM providers_health h")
             runs = await _all(engine, "SELECT row_to_json(r)::text AS j FROM ingestion_runs r")
             served = assemble_providers(

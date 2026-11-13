@@ -6,8 +6,9 @@
 #   1. routing: the ingest worker never receives ops.canary; the ops worker never receives anything
 #      from the ingest queue; both canaries are completing
 #   2. saturation (the bug this step exists to fix): two slow ingest tasks hold BOTH ingest slots for
-#      longer than the ops stale window. /health/ready stays `ok` throughout, checks.worker stays ok,
-#      and the ingest canary's age is seen to exceed the ops threshold, so the test is not vacuous.
+#      longer than the stale window. /health/ready stays `ok` throughout, checks.worker stays ok, the
+#      ingest canary's age is seen to exceed the threshold, and checks.ingest_worker is seen `busy` (never
+#      `stale`), so the test is not vacuous.
 #      Before this step, with one worker and one queue, this exact sequence degraded /health/ready.
 #   3. a wedged ingest worker (paused) -> checks.ingest_worker stale -> degraded, ops worker still ok
 #      (machinery stopping must page even though every feed would only read stale; the readiness rule)
@@ -19,8 +20,12 @@
 # stack, and to pass on the new one. Only the cause of the failure matters: it must be the canary going
 # stale under saturation, not a missing service.
 #
-# CANARY_INTERVAL_SECONDS=3 (ops stale after 9 s), INGEST_TASK_MAX_SECONDS=40 (ingest stale after 49 s),
-# slow fake calls last 20 s. The fake's Beat schedule is pushed out to an hour: the two slow runs are
+# Since part C (step 3) the ingest canary's threshold is the same three intervals as the ops worker's, and
+# a starved canary behind a live task reads `busy` (a running task of the ingest worker with a fresh
+# heartbeat), not `ok`: scenario 2 asserts exactly that.
+#
+# CANARY_INTERVAL_SECONDS=3 (both canaries stale after 9 s), INGEST_TASK_MAX_SECONDS=40 (only the hard task
+# limit now), slow fake calls last 20 s. The fake's Beat schedule is pushed out to an hour: the two slow runs are
 # sent by hand, so exactly two slots fill and there is no race over which task gets a freed slot.
 # Run from the repo root (needs a .env; see .env.example).
 set -euo pipefail
@@ -135,13 +140,19 @@ until [ "$(one "SELECT count(*) FROM ingestion_runs WHERE provider='fake' AND st
   sleep 1
 done
 max_ingest_age=0
+saw_busy=0
 end=$((SECONDS + 15))
 while [ $SECONDS -lt $end ]; do
   get /health/ready
   [ "$(top_status)" = "ok" ] || fail "/health/ready is '$(top_status)' while the ingest slots are busy: $body"
   [ "$(ops_status)" = "ok" ] || fail "the ops worker read '$(ops_status)' while ingest work ran: the canary queued behind it: $body"
   if [ "$BASELINE" = 0 ]; then
-    [ "$(ingest_status)" = "ok" ] || fail "the ingest worker read '$(ingest_status)' during a task shorter than the limit: $body"
+    st=$(ingest_status)
+    case "$st" in
+      ok) ;;
+      busy) saw_busy=1 ;;
+      *) fail "the ingest worker read '$st' while its own tasks were running and beating: $body" ;;
+    esac
     age=$(check_field ingest_worker age_seconds)
     [ -n "$age" ] && [ "$age" -gt "$max_ingest_age" ] && max_ingest_age=$age
   fi
@@ -150,7 +161,9 @@ done
 if [ "$BASELINE" = 0 ]; then
   [ "$max_ingest_age" -gt "$OPS_STALE" ] \
     || fail "the ingest canary's age never exceeded ${OPS_STALE}s (max ${max_ingest_age}s): the slots were not starving it, so this proved nothing"
-  echo "   ingest canary starved up to ${max_ingest_age}s (past the ops threshold of ${OPS_STALE}s); ready stayed ok"
+  [ "$saw_busy" = 1 ] \
+    || fail "checks.ingest_worker never read 'busy' while the canary was starved: part C's liveness did not act"
+  echo "   ingest canary starved up to ${max_ingest_age}s (past the threshold of ${OPS_STALE}s); the worker read busy, ready stayed ok"
 fi
 deadline=$((SECONDS + 60))
 until [ "$(one "SELECT count(*) FROM ingestion_runs WHERE provider='fake' AND status='succeeded'")" -ge 2 ]; do
