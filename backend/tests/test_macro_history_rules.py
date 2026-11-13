@@ -123,7 +123,7 @@ def test_rule_4_exclusion_a_no_vintage_exists_is_counted_and_not_refused() -> No
     )
     assert v.ok
     assert v.no_vintage_excluded == 2  # EARLY and EARLIER: before the record, in no vintage
-    assert v.gaps_without_trace_skipped == 1  # P3
+    assert v.gaps_without_o4_first_print_skipped == 1  # P3
     assert v.revised_pre_vintage_excluded == 0
 
 
@@ -136,7 +136,7 @@ def test_the_two_exclusions_are_counted_apart_and_never_summed() -> None:
     assert v.ok
     assert v.revised_pre_vintage_excluded == 1  # B
     assert v.no_vintage_excluded == 2  # A, pre-vintage and never revised
-    assert v.gaps_without_trace_skipped == 1  # A, a "." nobody published
+    assert v.gaps_without_o4_first_print_skipped == 1  # A, a "." nobody published
     # No field adds them: B must not be read as a loss of A's kind (ADR-0003 addendum).
     assert not any("pre_vintage" == n for n in vars(v)) and not hasattr(v, "pre_vintage")
 
@@ -226,7 +226,7 @@ def test_drcclacbs_real_history_passes_all_rules_and_splits_into_both_kinds() ->
     assert v.ok, v.refusal_text()
     assert v.first_prints == 61  # one per first print
     assert v.revised_pre_vintage_excluded == 81  # exclusion B, as measured 2026-11-13
-    assert v.no_vintage_excluded == 0 and v.gaps_without_trace_skipped == 0
+    assert v.no_vintage_excluded == 0 and v.gaps_without_o4_first_print_skipped == 0
     assert v.duplicates_skipped == 0
     assert v.revisions > 0
     # Rule 1 has teeth on real data: one corrupted witness is caught.
@@ -278,4 +278,96 @@ def test_a_bare_row_is_ignored_and_cannot_become_an_empty_chain() -> None:
 
 def test_with_no_first_prints_at_all_every_real_latest_value_is_unexplained() -> None:
     v = check([], {}, {P1: D(1), P2: None})
-    assert rules(v) == {4} and v.gaps_without_trace_skipped == 1
+    assert rules(v) == {4} and v.gaps_without_o4_first_print_skipped == 1
+
+
+# ---- gap first prints that output_type=4 does not report (ADR-0003 addendum 2026-11-13, F2) ----
+
+P_GAP = date(2020, 2, 15)  # inside the record (after P1), "." from its first vintage on
+
+
+def test_a_chain_that_starts_with_a_gap_and_has_no_o4_row_is_a_stored_gap_first_print() -> None:
+    v = check(
+        [row(P1, V1=D(1)), row(P_GAP, V3=None)],
+        {P1: (V1, D(1))},
+        {P1: D(1), P_GAP: None},
+    )
+    assert v.ok, v.refusal_text()
+    assert v.chains[P_GAP] == (Revision(V3, None),)  # revision 0, NULL, dated by its vintage
+    assert v.gap_first_prints_without_o4_witness == 1
+    # Counted apart: it is neither exclusion, and the old count is untouched.
+    assert (v.no_vintage_excluded, v.gaps_without_o4_first_print_skipped) == (0, 0)
+    assert v.revised_pre_vintage_excluded == 0
+    assert v.first_prints == 2
+
+
+def test_a_chain_that_starts_with_a_number_and_has_no_o4_row_still_refuses() -> None:
+    v = check([row(P1, V1=D(1)), row(P_GAP, V3=D(7))], {P1: (V1, D(1))}, {P1: D(1), P_GAP: D(7)})
+    assert rules(v) == {2} and v.gap_first_prints_without_o4_witness == 0
+
+
+def test_a_gap_first_print_before_the_record_is_still_exclusion_b_not_stored() -> None:
+    v = check([row(P1, V1=D(1)), row(EARLY, V2=None)], {P1: (V1, D(1))}, {P1: D(1), EARLY: None})
+    assert v.ok and EARLY not in v.chains
+    assert v.revised_pre_vintage_excluded == 1 and v.gap_first_prints_without_o4_witness == 0
+
+
+def test_a_gap_first_print_is_still_held_to_rule_3() -> None:
+    # It starts with "." but the latest value for the period is a number: a chain that stops short.
+    v = check([row(P1, V1=D(1)), row(P_GAP, V3=None)], {P1: (V1, D(1))}, {P1: D(1), P_GAP: D(4)})
+    assert rules(v) == {3}
+
+
+def test_a_gap_first_print_whose_period_is_missing_from_the_latest_values_refuses() -> None:
+    v = check([row(P1, V1=D(1)), row(P_GAP, V3=None)], {P1: (V1, D(1))}, {P1: D(1)})
+    assert rules(v) == {3}
+
+
+def test_without_any_first_print_a_gap_chain_is_not_accepted() -> None:
+    # No witness at all and nothing to place the period against: refuse rather than guess.
+    v = check([row(P_GAP, V3=None)], {}, {P_GAP: None})
+    assert 2 in rules(v)
+
+
+def test_a_latest_gap_found_in_neither_output_is_the_renamed_exclusion_a_count() -> None:
+    v = check([row(P1, V1=D(1))], {P1: (V1, D(1))}, {P1: D(1), P3: None})
+    assert v.ok and v.gaps_without_o4_first_print_skipped == 1
+
+
+def test_vixcls_holidays_published_as_gaps_in_2014_are_stored_not_refused() -> None:
+    """LIVE responses (tests/fixtures/fred/, 2026-11-13). On the 2014-02-05 vintage FRED added "."
+    rows for market holidays. output_type=3 shows each with that publication date; output_type=4
+    for the same vintage returns one row and none of them. Under the first version of rule 2 this
+    refused the whole series; the 32 holidays inside VIXCLS's record are gap first prints."""
+    o3 = json.loads(load("ok_revisions_VIXCLS_holiday_gaps_2014-02-05")["body"])
+    o4 = json.loads(load("ok_first_prints_VIXCLS_2014-02-05")["body"])
+    rows, _ = _parse_wide_page(httpx2.Response(200, json=o3), "VIXCLS")
+    first_obs, _ = _parse_page(httpx2.Response(200, json=o4), "VIXCLS")
+    gaps = {r.effective_at for r in rows if None in r.values.values()}
+    assert len(gaps) == 93 and not gaps & {o.effective_at for o in first_obs}  # o4 omits every one
+    earliest = date(2010, 11, 22)  # VIXCLS's first covered period (settings.FRED_SERIES)
+    inside = {p for p in gaps if p >= earliest}
+    assert len(inside) == 32
+    first = {o.effective_at: FirstPrintRef(o.realtime_start, o.value) for o in first_obs}
+    first[earliest] = FirstPrintRef(date(2010, 11, 23), D("1"))  # anchor the record's start
+    v = check_history(
+        rows=[
+            r
+            for r in rows
+            if r.effective_at in gaps or r.effective_at in {o.effective_at for o in first_obs}
+        ],
+        vintage_dates=[date(2014, 2, 5)],
+        first_prints={
+            p: ref for p, ref in first.items() if p in {o.effective_at for o in first_obs}
+        }
+        | {earliest: first[earliest]},
+        latest={p: None for p in gaps} | {o.effective_at: o.value for o in first_obs},
+    )
+    # The anchor period has no chain in this single window, so rule 1 names it; every other rule is
+    # satisfied by what the holidays do.
+    assert rules(v) <= {1}
+    assert v.gap_first_prints_without_o4_witness == 32
+    assert (
+        v.revised_pre_vintage_excluded == 61
+    )  # the 93 minus the 32 inside the record: exclusion B
+    assert all(v.chains[p] == (Revision(date(2014, 2, 5), None),) for p in inside)

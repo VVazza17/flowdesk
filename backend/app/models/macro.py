@@ -56,6 +56,7 @@ class SeriesHistoryState(Base):
     first_prints: Mapped[int] = mapped_column(Integer)
     revisions: Mapped[int] = mapped_column(Integer)
     no_vintage_excluded: Mapped[int] = mapped_column(Integer)
-    gaps_without_trace_skipped: Mapped[int] = mapped_column(Integer)
+    gaps_without_o4_first_print_skipped: Mapped[int] = mapped_column(Integer)
+    gap_first_prints_without_o4_witness: Mapped[int] = mapped_column(Integer)
     revised_pre_vintage_excluded: Mapped[int] = mapped_column(Integer)
     duplicates_skipped: Mapped[int] = mapped_column(Integer)

@@ -152,7 +152,8 @@ async def commit_history(
             "first_prints": verdict.first_prints,
             "revisions": verdict.revisions,
             "no_vintage_excluded": verdict.no_vintage_excluded,
-            "gaps_without_trace_skipped": verdict.gaps_without_trace_skipped,
+            "gaps_without_o4_first_print_skipped": verdict.gaps_without_o4_first_print_skipped,
+            "gap_first_prints_without_o4_witness": verdict.gap_first_prints_without_o4_witness,
             "revised_pre_vintage_excluded": verdict.revised_pre_vintage_excluded,
             "duplicates_skipped": verdict.duplicates_skipped,
         }

@@ -2117,3 +2117,62 @@ misread an idle process as a stopped one; recorded because the earlier paragraph
   a refusal. It becomes an event carrying the outcome.
 - **Remaining after that:** `python -m app.backfill --series VIXCLS` (the other 16 are skipped by the state rows, which is
   also the test of the skip on real data); the full suite and the container lint/test re-run; commit.
+
+#### The VIXCLS amendment made, the sixteen checked from data, VIXCLS captured, container checks green (2026-11-13)
+
+**Why this exists as a second commit.** It exists *because of* the first. The history backfill (commit 1) was run for real;
+its rule 2 refused VIXCLS and wrote nothing, and that refusal is what exposed the unwitnessed gap first prints. **The
+refusal was the safety net working, not a defect**: a series with a chain `output_type=4` cannot corroborate was held
+back instead of being stored half-understood, and the amendment below was made from what the refusal showed. Commit 1
+is the backfill as designed; this commit is what running it taught.
+
+**A caveat about the workaround, not a repo defect.** The throwaway-venv checks used at commits A and B (ruff, format,
+mypy, pytest on the host) are **not equivalent to `bash infra/ci-checks.sh`**. The container lints all of `backend/`,
+including `alembic/`; the venv checks ran on `app` and `tests` only, which is why five over-long lines in two migration
+docstrings survived until the container lint ran. "Clean" in the commit A and B entries above means clean for the venv's
+scope. Use the container run as the gate; the venv is only a faster loop.
+
+Kyle approved points 1, 2, 3 and 5 of the amendment; **point 4 (no version bump) was rejected as an argument and
+settled from data instead**, as he directed.
+
+- **Logging first.** `fred_history_series_done` fired for failed series too and misled twice. It is gone: a series now
+  logs `fred_history_series_captured` or `fred_history_series_failed`, and a test pins that a failed series never emits
+  the first (nor the old name).
+- **Does the amendment change anything already stored? No, measured.** `gaps_without_trace_skipped` was **0 in all sixteen**
+  captured `series_history_state` rows, and a chain that starts with an unwitnessed `"."` would have refused its series, so
+  none is among the sixteen. Independently, FRED's latest values for **DGS10, DGS2 and T10Y2Y** (named as having holidays
+  "exactly like VIXCLS") against the table: every `"."` inside the record is stored as a NULL period, **229 of 229, 229 of
+  229, 138 of 138**; their holidays were reported by `output_type=4`, VIXCLS's were not. So skipping the bump is free
+  and `FRED_RULE_VERSION` stays 1. **The principle is corrected rather than the data bent to it:** *bump when a change makes
+  the rules stricter or changes what is stored; for a relaxation, first count whether any captured series would store
+  differently, and bump if any would.* (`macro.py` comment, 0006's docstring and ADR-0003 F2 all say this now.)
+- **Rename.** `gaps_without_trace_skipped` asserted "no trace of a publication exists"; that was false. It is now
+  **`gaps_without_o4_first_print_skipped`** (a latest `"."` found in neither output), in the verdict, the logs, the model and
+  the table (migration **0007**, a rename that keeps the sixteen rows). Old BUILD-LOG entries keep the old name, as history.
+- **Rule 2 amended.** A chain at or after the earliest first print that begins with `"."` and has no `output_type=4` row is a
+  **gap first print**: revision 0, NULL, dated by its vintage, held to rule 3, counted apart as
+  **`gap_first_prints_without_o4_witness`** (new column, same migration). A chain that begins with a number and lacks an
+  `output_type=4` row still refuses; a gap first print before the record is still exclusion B.
+- **ADR-0003 corrected, mechanism followed (F2).** The 2026-11-12 claim that VIXCLS's 32 holiday dates "appear in no
+  vintage ... no one published them" carries an inline `[Corrected ...]` marker, the Status line names F2, and F2 quotes the
+  assumption, says what its evidence covered (`output_type=4` only; the record had noted the inconsistency unexplained),
+  gives the measurement, and lists what survives and what is superseded. **Measured:** the 2014-02-05 vintage turned **93**
+  periods into `"."` (32 inside VIXCLS's record, 61 before it): `output_type=3` shows all 93, `output_type=4` for the same
+  vintage returns one row and none of them. New live fixtures: `ok_revisions_VIXCLS_holiday_gaps_2014-02-05`,
+  `ok_first_prints_VIXCLS_2014-02-05`.
+- **Sleep warning.** `python -m app.backfill` prints `KEEP THIS MACHINE AWAKE ...` to stderr before anything else and logs
+  `fred_history_keep_awake`; a test pins it.
+- **VIXCLS captured** (`python -m app.backfill`, nothing else named): the **sixteen were skipped with no request at all**
+  (the skip, proven on real data), VIXCLS took **92 s**: 4,169 first prints, 10 revisions, **32 gap first prints**,
+  exclusions A 5,257 + 0 and B 192, 44 rows created. The holidays are revision 0, NULL, available at 05:00 UTC on
+  2014-02-06 (the end of 2014-02-05 in New York). **`backfill_runs` 17 of 17 `succeeded`; the `task_runs` row `succeeded`.
+  `macro_metrics` holds 56,839 rows. The first real backfill is complete, all seventeen series.**
+- **Tests.** Mutations on the amendment (gap-first branch removed; number-first also accepted; gap-first accepted before the
+  record; unwitnessed count dropped; gap-first exempted from rule 3): the last was GREEN, which exposed a missing test (a gap
+  first print whose period is absent from the latest values), added; all five are now red. Local run on the real Postgres:
+  522 passed. **In the pinned container, `bash infra/ci-checks.sh lint` passes (ruff, format, mypy, locks, banned phrases)
+  and `bash infra/ci-checks.sh test` passes: 549 passed.** (The container lint also covers `alembic/`, which my local check
+  had skipped; it found five over-long migration docstring lines, fixed.) The 26 `test_banned_phrases` tests that errored
+  only on this Windows host's temp directory pass in the container, so that error was host-only, as said.
+- **Still open:** the poll (commit C); part C (heartbeat thread in `run_recorded`, `ingestion_runs.task_run_id` as
+  migration **0008**, the sweep); nothing is committed.

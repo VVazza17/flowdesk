@@ -2,7 +2,7 @@
 
 import pytest
 
-from app import settings
+from app import backfill, settings
 from app.backfill import parse_args, select_series
 
 
@@ -38,3 +38,16 @@ def test_an_unknown_series_is_refused_before_anything_runs(
         parse_args(["--series", "DGS10,NOTASERIES"])
     assert info.value.code == 2
     assert "NOTASERIES" in capsys.readouterr().err
+
+
+def test_the_start_of_a_run_tells_the_operator_to_keep_the_machine_awake(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A laptop slept mid-request on 2026-11-13 and the run sat for nine hours.
+    async def no_run(ids: object, force: bool) -> None:
+        return None
+
+    monkeypatch.setattr(backfill, "run", no_run)
+    assert backfill.main([]) == 0
+    err = capsys.readouterr().err
+    assert "KEEP THIS MACHINE AWAKE" in err and "nine hours" in err

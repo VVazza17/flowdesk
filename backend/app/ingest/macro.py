@@ -32,9 +32,12 @@ VINTAGE_CHUNK = 1900
 # knob would invite setting it to the cap.
 HISTORY_WINDOW = 100
 
-# Bumped whenever the rules in `check_history` change, so that every series captured under older
-# rules is captured again (the backfill's skip compares it, commit B). Changing a rule without
-# bumping this leaves history that no longer satisfies the rules marked as satisfying them.
+# Bump when a change to `check_history` makes the rules STRICTER or changes WHAT IS STORED, so that
+# every series captured under the older rules is captured again (the backfill's skip compares it).
+# For a RELAXATION, first count whether any captured series would now store differently, and bump
+# if any would (ADR-0003 addendum, F2: the VIXCLS gap-first-print amendment changed nothing already
+# stored, checked from data, and did not bump). Leaving a stricter rule unbumped leaves history that
+# no longer satisfies the rules it is marked as satisfying.
 FRED_RULE_VERSION = 1
 
 
@@ -148,7 +151,7 @@ class HistoryVerdict:
 
     `chains` holds only what may be stored. The counts are kept apart on purpose (ADR-0003
     addendum, "Two exclusions, two rules, two counts"): A, no vintage exists, is
-    `no_vintage_excluded` and `gaps_without_trace_skipped`; B, revised but pre-vintage, is
+    `no_vintage_excluded` and `gaps_without_o4_first_print_skipped`; B, revised but pre-vintage, is
     `revised_pre_vintage_excluded`. There is deliberately no field that adds them.
     """
 
@@ -157,7 +160,8 @@ class HistoryVerdict:
     first_prints: int
     revisions: int
     no_vintage_excluded: int
-    gaps_without_trace_skipped: int
+    gaps_without_o4_first_print_skipped: int
+    gap_first_prints_without_o4_witness: int  # stored; see rule 2
     revised_pre_vintage_excluded: int
     duplicates_skipped: int
 
@@ -193,11 +197,14 @@ def check_history(
     """The six rules of the ADR-0003 addendum (2026-11-13). Nothing may be written unless `ok`.
 
     Rule 1  the chain's earliest column equals the `output_type=4` first print (date and value).
-    Rule 2  a chain begins at a first print, or its period is before the earliest first print: it is
-            pre-vintage and revised, left out and counted (exclusion B).
+    Rule 2  a chain begins at a first print, or its period is before the earliest first print (it
+            is pre-vintage and revised: left out and counted, exclusion B), or it begins with a
+            "." that `output_type=4` does not report (a gap first print: stored, counted apart as
+            `gap_first_prints_without_o4_witness`). A chain beginning with a number and missing
+            from `output_type=4` is a lost first print and refuses.
     Rule 3  a chain ends at the latest value.
     Rule 4  every latest value is explained: it has a chain, or it is pre-vintage and unrevised
-            (exclusion A), or it is a "." that no vintage ever published (exclusion A).
+            (exclusion A), or it is a "." found in neither output (exclusion A).
     Rule 5  structure: every column is a known vintage date, one period never has two values for one
             vintage, and a column equal to the one before it is not a revision (skipped, counted).
     Rule 6  what is already stored is a prefix of what was fetched (`stored`, if given).
@@ -256,12 +263,22 @@ def check_history(
     earliest = min(first_prints) if first_prints else None
     kept: dict[date, tuple[Revision, ...]] = {}
     revised_pre_vintage: set[date] = set()
+    gap_first_unwitnessed: set[date] = set()
     lost_first_print: list[date] = []
     for period, chain in chains.items():
         if period in first_prints:
             kept[period] = chain
         elif earliest is not None and period < earliest:
             revised_pre_vintage.add(period)
+        elif earliest is not None and chain[0].value is None:
+            # A gap first print (ADR-0003 addendum 2026-11-13, F2): `output_type=4` does not always
+            # report a first print whose value is ".", so no second source corroborates it. The
+            # chain has a real publication date (a published gap is a stored NULL, decision 7), is
+            # still held to rule 3, and is counted apart so that nobody mistakes it for a witnessed
+            # first print. A chain that starts with a NUMBER and lacks an `output_type=4` row still
+            # refuses below: that is a lost first print.
+            kept[period] = chain
+            gap_first_unwitnessed.add(period)
         else:
             lost_first_print.append(period)
     if lost_first_print:
@@ -317,7 +334,8 @@ def check_history(
         first_prints=len(kept),
         revisions=sum(len(c) - 1 for c in kept.values()),
         no_vintage_excluded=no_vintage,
-        gaps_without_trace_skipped=gaps,
+        gaps_without_o4_first_print_skipped=gaps,
+        gap_first_prints_without_o4_witness=len(gap_first_unwitnessed),
         revised_pre_vintage_excluded=len(revised_pre_vintage),
         duplicates_skipped=duplicates,
     )

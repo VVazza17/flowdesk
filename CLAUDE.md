@@ -101,7 +101,7 @@ below).
   provider, a feed, the backup destination).** A killed provider is defined and tested in HEALTH.md; it is
   proven against the fake only, off by default (`FAKE_PROVIDER_ENABLED`). FRED and yfinance clients, their
   rate numbers and their error mappings are slices 5 and 6.
-- **FRED revision history: built through commit B (M2 slice 5, step 3, 2026-11-13); the poll (commit C) is not.**
+- **FRED revision history: built through commit B and run for real (M2 slice 5, step 3, 2026-11-13); the poll (commit C) is not.**
   `python -m app.backfill [--series A,B] [--force]` captures every series' **whole revision history** (`output_type=3`,
   each revision dated by FRED's vintage date) into `macro_metrics`, judged by the six rules of the ADR-0003 addendum
   (`app/ingest/macro.py`, `check_history`). It is an **entry point, not a Celery task** (Kyle's decision: one-time plus
@@ -113,7 +113,11 @@ below).
   exists" (no publication date; not recoverable) and B, "revised but pre-vintage" (every revision has a real date, the
   chain has no beginning; recoverable data we chose not to model). The window is 100 vintage dates (FRED's gateway
   504s at 60 s; about 0.16 s per vintage date), and a 504 halves the window. Migration 0006 is `series_history_state`
-  (a table section 8 lacks); part C's `task_run_id` migration is therefore 0007. See `docs/BUILD-LOG.md`.
+  (a table section 8 lacks), 0007 renames its gap count and adds the gap-first-print count; part C's `task_run_id`
+  migration is therefore 0008. **The first real backfill is complete: all 17 series captured.** `output_type=4` does not always
+  report a `"."` first print, so a chain starting with `"."` and absent from it is stored as a gap first print, counted apart
+  (ADR-0003 F2). `FRED_RULE_VERSION` bumps when a change makes the rules stricter or changes what is stored; for a
+  relaxation, count first. The entry point warns that the machine must stay awake. See `docs/BUILD-LOG.md`.
 - **The base image is pinned by digest** (M2 slice 0, 2026-11-08). The `FROM` line in `backend/Dockerfile` is
   the one definition. The CI tooling container, `lock-deps.sh` and the smokes read it through
   `infra/base-image.sh`, and lint fails on a second definition. The base no longer updates itself: the daily

@@ -154,6 +154,7 @@ async def backfill_all(
             continue
         await progress(current_unit=item.series_id)
         t0 = time.monotonic()
+        captured = False
         try:
             await run_feed(
                 engine,
@@ -173,18 +174,23 @@ async def backfill_all(
                 retry=retry,
                 secrets=[api_key],
             )
+            captured = True
             done += 1
             await progress(completed_units=done)
         except Exception:
             # run_feed has already written the failure (kind and class) to ingestion_runs.
             failed.append(item.series_id)
-        seconds = time.monotonic() - t0
-        log.info("fred_history_series_done", series=item.series_id, seconds=round(seconds, 1))
+        seconds = round(time.monotonic() - t0, 1)
+        # DECISION: two events, never one with a vague name. The first version logged
+        # `fred_history_series_done` for a failed series too, and a refusal read as a success
+        # twice in one day (2026-11-13). An event now says what happened.
+        if captured:
+            log.info("fred_history_series_captured", series=item.series_id, seconds=seconds)
+        else:
+            log.error("fred_history_series_failed", series=item.series_id, seconds=seconds)
         if seconds > SLOW_SERIES_SECONDS:
             log.warning(
-                "fred_history_series_over_twenty_minutes",
-                series=item.series_id,
-                seconds=round(seconds, 1),
+                "fred_history_series_over_twenty_minutes", series=item.series_id, seconds=seconds
             )
     await progress(current_unit=None, status=STATUS_FAILED if failed else STATUS_SUCCEEDED)
     if failed:
@@ -251,9 +257,19 @@ async def run(ids: Sequence[str] | None, force: bool) -> None:
         await engine.dispose()
 
 
+KEEP_AWAKE_NOTICE = (
+    "KEEP THIS MACHINE AWAKE until this finishes (about 45 minutes for every series). On "
+    "2026-11-13 a laptop slept mid-request and the run sat for nine hours before the dead "
+    "connection was retried. Disable sleep, or run it where the machine cannot sleep."
+)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     configure_logging()
     args = parse_args(argv)
+    # Plain text on stderr, ahead of the JSON logs, so that a person starting it sees it.
+    print(KEEP_AWAKE_NOTICE, file=sys.stderr, flush=True)
+    log.warning("fred_history_keep_awake", detail=KEEP_AWAKE_NOTICE)
     try:
         asyncio.run(run(args.series, args.force))
     except BackfillIncomplete as exc:

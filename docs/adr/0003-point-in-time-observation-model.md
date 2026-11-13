@@ -1,6 +1,6 @@
 # ADR-0003: Point-in-Time Observation Model
 
-**Status:** Accepted. **Decision 3's rationale is falsified** (Addendum 2026-11-13, F1); decision 4 is amended by the same addendum. Decisions 1, 2 and 5 to 8 stand.
+**Status:** Accepted. **Decision 3's rationale is falsified** (Addendum 2026-11-13, F1); decision 4 is amended by the same addendum; **a claim of the 2026-11-12 addendum about `"."` observations is corrected** (Addendum 2026-11-13, F2). Decisions 1, 2 and 5 to 8 stand.
 **Date:** 2026-08-15
 **Source:** M0 spike 3 and 3b (2026-07-31), §6.4
 
@@ -195,7 +195,7 @@ Applied to FRED:
 - **Pre-vintage observations stay out of `macro_metrics`.** `output_type=4` returns observations only from a
   series' first stored vintage onward, and says nothing about the earlier ones (GDPC1: 179 of 319 observations,
   1947 to 1991). Those exist in FRED's latest values and have no publication date. Not stored.
-- **A `"."` with no vintage trace is skipped, with a logged count.** VIXCLS has 32 market-holiday dates inside its
+- **[Corrected: Addendum 2026-11-13, F2: the 32 VIXCLS dates below WERE published, as gaps, in the 2014-02-05 vintage. They are stored, and the count is renamed.]** **A `"."` with no vintage trace is skipped, with a logged count.** VIXCLS has 32 market-holiday dates inside its
   covered range that are `"."` in the latest values and appear in no vintage. No one published them as anything, so
   there is no `available_at` to give them. (A `"."` that FRED *did* publish in a vintage stays a stored NULL
   row: decision 7.) The daily poll applies the same skip.
@@ -320,7 +320,7 @@ than the series' first vintage that was never revised since the record began, or
 published. **Nobody can state when it was published, so it has no `available_at`**; the rule of the 2026-11-12
 addendum applies exactly as written (nothing enters a point-in-time table without a real publication date). It is
 **not recoverable from FRED**: the information does not exist there. Counted as `no_vintage_excluded` (never-revised
-pre-vintage periods) and `gaps_without_trace_skipped` (trace-less `"."`), as before.
+pre-vintage periods) and `gaps_without_o4_first_print_skipped` (a `"."` in neither output; formerly `gaps_without_trace_skipped`, renamed by F2 because "trace" asserted something that was not observed), as before.
 
 *Exclusion B: revised but pre-vintage.* A period earlier than the first vintage **whose value was revised after the
 record began** (measured: CPIAUCSL 306, UNRATE 119, HOUST 18, CSUSHPINSA 475, DRCCLACBS 81, MORTGAGE30US 266,
@@ -356,13 +356,13 @@ check is per period, over the chain, and writes **nothing** for a series unless 
 2. **A chain begins at a first print or is pre-vintage.** A chain whose earliest column is not an `output_type=4`
    first print and whose period is *at or after* the earliest first print means a first print was lost: refuse.
    A chain of a period *before* it is pre-vintage and revised: leave it out and count it as
-   `revised_pre_vintage_excluded` (exclusion B above, never merged with exclusion A).
+   `revised_pre_vintage_excluded` (exclusion B above, never merged with exclusion A). **Amended by F2:** a chain at or after the earliest first print that begins with a `"."` which `output_type=4` does not report is accepted as a gap first print (below); one that begins with a number still refuses.
 3. **A chain ends at the latest value.** The last column of every stored chain equals the series' latest value for
    that period (`output_type=1`, fetched last). A mismatch refuses. A release that lands during a backfill can
    cause one honestly; the cost is a re-run, which is idempotent, and it is preferred to storing a chain that stops
    short. (Measured: no mismatch in the eleven series compared in full; the six sampled ones were not tested for it.)
 4. **Every real latest value is explained**: it has a stored chain, or it is pre-vintage and unrevised (absent from
-   both outputs, counted as `no_vintage_excluded`, exclusion A), or it is a `"."` that no vintage ever published (skipped, counted, as before). Anything
+   both outputs, counted as `no_vintage_excluded`, exclusion A), or it is a `"."` found in neither output (skipped, counted as `gaps_without_o4_first_print_skipped`). Anything
    else is a value with no history: refuse. A first print the latest values lack still refuses.
 5. **Chain structure.** Columns are strictly increasing in vintage date and each date is in `series/vintagedates`.
    A column equal in value to the one before it is not a revision (decision 3, "only when the value differs") and
@@ -390,3 +390,48 @@ element of each chain.
 fetch with 504 splitting and the six rules (commit A), then the history store, `series_history_state`, the skip and
 `python -m app.backfill` (commit B). The poll (commit C) is not built. The rules above are the ones in
 `app/ingest/macro.py` (`check_history`, `FRED_RULE_VERSION = 1`).
+
+### F2. "A `"."` that appears in no vintage was never published"
+
+The second falsification, and the first to correct a claim this ADR's own addendum made. Same mechanism as F1.
+
+**The assumption, quoted** (addendum of 2026-11-12, "The rule: nothing enters a point-in-time table without a real
+publication date", applied to FRED): "VIXCLS has 32 market-holiday dates inside its covered range that are `"."` in the
+latest values and appear in no vintage. No one published them as anything, so there is no `available_at` to give them."
+The count carrying the claim was named `gaps_without_trace_skipped`.
+
+**What the evidence covered.** That conclusion was drawn from `output_type=4` and the latest values only. The record
+that produced it already noted, unexplained, that some `"."` first prints *do* appear in `output_type=4` (BUILD-LOG,
+step 2c: "why FRED reports those and not these was not determined"). "Appears in no vintage" was true of
+`output_type=4`; it was never established for the vintages themselves.
+
+**The measurement that falsified it** (2026-11-13). The first real run of the history backfill refused VIXCLS under
+rule 2: 32 periods had an `output_type=3` chain and no `output_type=4` first print. Asked for the whole record,
+2010-11-25 and 2010-12-24 each carry one column, `VIXCLS_20140205 = "."`. The 2014-02-05 vintage itself, from both
+outputs (fixtures `ok_revisions_VIXCLS_holiday_gaps_2014-02-05` and `ok_first_prints_VIXCLS_2014-02-05`):
+`output_type=3` shows **93 periods that became `"."`** (32 inside VIXCLS's record, 61 before it); `output_type=4`
+for the same vintage returns **one row and none of the 93**. The dates were published, as gaps, with a publication
+date. `output_type=4` does not always report a `"."` first print (DGS10's, DGS2's and T10Y2Y's market holidays are
+reported, and are stored: 229, 229 and 138 NULL periods).
+
+**What survives.** The rule itself: nothing enters without a real publication date. These chains have one, so the rule
+admits them. Decision 7 (a published `"."` is a stored NULL row) covers them as written.
+
+**What is superseded.** The claim that these dates have no publication date, and the name that asserted it.
+- `gaps_without_trace_skipped` is renamed **`gaps_without_o4_first_print_skipped`** (code, `series_history_state`
+  by migration 0007): a latest-value `"."` found in neither output, which is all that is observed.
+- Rule 2 is amended (above, and `app/ingest/macro.py`): a chain at or after the earliest first print whose earliest
+  column is `"."` and that `output_type=4` does not report is stored as a **gap first print** (revision 0, NULL,
+  dated by its vintage) and counted apart as **`gap_first_prints_without_o4_witness`**. It is held to rule 3 like any
+  chain, and it has no second source, which is why it is counted rather than folded into the first-print count.
+  A chain that begins with a number and is missing from `output_type=4` still refuses: that is a lost first print.
+  A gap first print *before* the record is still exclusion B.
+
+**Did the sixteen captured series lose rows? Settled from data, 2026-11-13.** `gaps_without_o4_first_print_skipped`
+is 0 in all sixteen `series_history_state` rows (the only way the old rules left a `"."` unstored without refusing the
+series), and a chain starting with an unwitnessed `"."` would have refused its series, so none is among the sixteen.
+Independently, FRED's own latest values for DGS10, DGS2 and T10Y2Y were compared with the table: every `"."` inside
+the record is stored (229 of 229, 229 of 229, 138 of 138). So the new rule changes what *can* be stored for a series
+(VIXCLS), and changes nothing already stored. **`FRED_RULE_VERSION` is therefore not bumped**, and the principle is
+recorded with the evidence: *bump the version when a change makes the rules stricter or changes what is stored;
+for a relaxation, count whether any captured series would store differently, and bump if any would.* Here none would.

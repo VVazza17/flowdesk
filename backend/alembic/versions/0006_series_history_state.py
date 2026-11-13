@@ -16,8 +16,9 @@ A table section 8 does not have (the same kind of departure as `providers_health
   2. THE POLL'S WINDOW. `captured_through` is the latest vintage date the history held when it was
      captured; the daily poll asks FRED only for what changed from there.
 
-`rule_version` is `app.ingest.macro.FRED_RULE_VERSION`. Changing the six rules bumps it, and every
-series is captured again on purpose.
+`rule_version` is `app.ingest.macro.FRED_RULE_VERSION`. A change that makes the rules stricter, or
+that changes what is stored, bumps it, and every series is captured again on purpose; for a
+relaxation the count is checked first (ADR-0003 addendum, F2).
 
 The counts are the series' own summary and are kept APART, never summed (ADR-0003 addendum,
 2026-11-13, "Two exclusions, two rules, two counts"): `no_vintage_excluded` and
@@ -29,8 +30,7 @@ read B as a loss of A's kind.
 DECISION: unlike `macro_metrics` this table is mutable (a re-capture updates its row) and has no
 triggers: it is bookkeeping about the data, not the data.
 DECISION: part C's planned `ingestion_runs.task_run_id` migration is unbuilt and was going to be
-0006; whichever lands second takes the next number, and it is now
-0007.
+0006; whichever lands second takes the next number (it is now 0008; see 0007).
 """
 
 import sqlalchemy as sa

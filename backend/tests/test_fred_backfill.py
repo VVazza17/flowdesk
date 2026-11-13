@@ -18,6 +18,8 @@ from typing import Any
 
 import httpx2
 import pytest
+import structlog
+import structlog.testing
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import text
@@ -297,9 +299,38 @@ def test_the_two_exclusions_are_stored_apart_and_their_periods_are_not_stored(
     state, stored = go(scratch_url, body)
     assert stored == 4  # the four first prints; no pre-vintage period, revised or not
     assert state["no_vintage_excluded"] == 3  # exclusion A: no publication date exists
-    assert state["gaps_without_trace_skipped"] == 1  # exclusion A: a "." nobody published
+    assert state["gaps_without_o4_first_print_skipped"] == 1  # exclusion A: a "." nobody published
     assert state["revised_pre_vintage_excluded"] == 2  # exclusion B: recoverable, not modelled
     assert (state["first_prints"], state["revisions"]) == (4, 0)
+
+
+def test_gap_first_prints_that_output_type_4_omits_are_stored_and_counted_apart(
+    scratch_url: str,
+) -> None:
+    """The VIXCLS case: holidays published as "." in a later vintage, absent from output_type=4."""
+    holidays: dict[date, Chain] = {
+        START + timedelta(days=50 + i): [(START + timedelta(days=80), None)] for i in range(3)
+    }
+    fred = FakeFred(simple(4), pre_revised=holidays)  # in output_type=3 and latest, not in 4
+
+    async def body(engine: AsyncEngine) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        await _run(engine, fred)
+        state = (await _all(engine, "SELECT * FROM series_history_state"))[0]
+        rows = await _all(
+            engine,
+            "SELECT effective_at, revision, value, available_at FROM macro_metrics "
+            "WHERE effective_at >= :d ORDER BY effective_at".replace(
+                ":d", f"'{START + timedelta(days=50)}'"
+            ),
+        )
+        return state, rows
+
+    state, rows = go(scratch_url, body)
+    assert state["gap_first_prints_without_o4_witness"] == 3
+    assert state["gaps_without_o4_first_print_skipped"] == 0
+    assert state["revised_pre_vintage_excluded"] == 0 and state["no_vintage_excluded"] == 0
+    assert [(r["revision"], r["value"]) for r in rows] == [(0, None)] * 3
+    assert rows[0]["available_at"] == available_at_for(START + timedelta(days=80))
 
 
 def test_a_failed_rule_writes_nothing_not_even_the_state_row(scratch_url: str) -> None:
@@ -559,6 +590,32 @@ def test_backfill_all_continues_past_a_failed_series_then_reports_it(scratch_url
     ]
     assert (progress[0]["total_units"], progress[0]["completed_units"]) == (2, 1)
     assert progress[0]["status"] == "failed" and progress[0]["current_unit"] is None
+
+
+def test_a_failed_series_is_logged_as_failed_and_never_as_done_or_captured(
+    scratch_url: str,
+) -> None:
+    """A refusal once logged as `fred_history_series_done` and read as a success, twice in a day."""
+    routed = Routed({"GOODSER": FakeFred(simple(3))})  # BADSER is unknown to FRED: a 400
+
+    async def body(engine: AsyncEngine) -> list[Any]:
+        with structlog.testing.capture_logs() as logs, pytest.raises(BackfillIncomplete):
+            await _backfill(engine, routed, ["BADSER", "GOODSER"])
+        return list(logs)
+
+    logs = go(scratch_url, body)
+    by_series = {
+        entry["series"]: entry["event"]
+        for entry in logs
+        if entry["event"].startswith("fred_history_series_")
+        and "series" in entry
+        and entry["event"] in ("fred_history_series_captured", "fred_history_series_failed")
+    }
+    assert by_series == {
+        "BADSER": "fred_history_series_failed",
+        "GOODSER": "fred_history_series_captured",
+    }
+    assert not any(entry["event"] == "fred_history_series_done" for entry in logs)
 
 
 def test_a_manual_backfill_is_a_task_execution_with_a_task_runs_row(scratch_url: str) -> None:
