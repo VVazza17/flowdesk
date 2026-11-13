@@ -1763,3 +1763,357 @@ ADR's "initial history only" rests on the same assumption). What it does not cha
 vintage still have no first-print date. Not yet checked: that `output_type=3` values agree with `output_type=4` first
 prints for every series, and what the first vintage column holds for a period whose first print predates it.
 **No code changed; the poll is not built; waiting on Kyle's decision.**
+
+### M2 slice 5, step 3: Option 3 chosen; the two unchecked points measured; ADR-0003's rationale falsified (2026-11-13)
+
+**Kyle's decision: Option 3.** The backfill stores the whole revision history and the poll uses the true vintage dates.
+Reason on record: with the poll fixed and the backfill unchanged, a replay between a first print and today reads the
+original value and misses every revision published in between, so the system would answer "what was first said" when
+the question is "what was then believed."
+
+**The two unchecked points, measured** (real API, `output_type=3` against `output_type=4`, windows of about 100
+vintage dates; the probe is a scratch script and is not in the repo, like `probe_fred.py`):
+- *Do the two outputs agree on first prints?* **Yes: 0 differences in date or value in all 17 series.** Eleven were
+  compared in full; the six long dailies (DGS10, DGS2, T10Y2Y, VIXCLS, DFII10, T10YIE) over three windows each
+  (first, middle, last), not in full. For the eleven, the last column of every chain equals the latest value (0
+  differences) and no chain has two equal consecutive values.
+- *What does the first column hold for a period whose first print predates the vintage record?* A revision's date,
+  never the first print and never the series' first vintage. Such periods appear in `output_type=3` only if revised
+  after the record began (CPIAUCSL 306, UNRATE 119, HOUST 18, CSUSHPINSA 475, DRCCLACBS 81, MORTGAGE30US 266, DTWEXBGS
+  3,415); all are earlier than `first_covered_period`, none inside it. Their chains start at an unobserved base.
+  `"."` appears inside chains (DTWEXBGS has 211 periods whose only column is `"."`; CPIAUCSL has 247 mid-chain
+  `"."` columns followed by a number), which decision 7 already covers as a stored NULL.
+- **Not asked for, found, and it changes the plan: cost.** `output_type=3` takes about 0.16 s per vintage date in the
+  window. 100 dates: 17 s; 300: 48 s; **600 or more, and the 1,900 the backfill uses now, get a 504 from FRED's gateway
+  at exactly 60 s.** 34,244 vintage dates across the 17 series is about 90 minutes of server time. The client maps 504
+  to `transient`, so today a too-large window would be retried until the budget ran out. A first attempt at the probe
+  died on this (a 60 s read timeout), which is how it was found.
+
+**Built (this commit):** the "No vintage dates exist" 400 is context-dependent. `NoVintageDates` (a `Permanent`
+subclass; same kind, never retried) is raised by default, so the backfill is unchanged and fatal;
+`FredClient.observations(..., no_vintages_is_empty=True)` turns it into an empty result for a poll, for vintage output
+types only, and no other 400 is affected. Five tests (fatal by default, windowed request still fatal without the flag,
+quiet day with the flag and exactly one request, a bad key or unknown series is still a failure with the flag, the
+flag is refused for `output_type=1`). Ruff, format and mypy clean; 110 pass, 8 DB-gated tests skipped. **Run on the
+host with a throwaway venv, not in the pinned container: Docker Desktop was not running. Re-run `ci-checks.sh lint`
+and `test` when it is.** HEALTH.md says what each caller sees.
+
+**Recorded:** ADR-0003, Addendum 2026-11-13. It sets out how an ADR is falsified (assumption quoted, what the evidence
+covered, the measurement, what survives, inline markers, the Status line), applies it as F1, and replaces the backfill
+refusal check with six per-period rules (first-print agreement; a chain starts at a first print or is pre-vintage; a
+chain ends at the latest value; every latest value explained; chain structure; stored history is a prefix of fetched).
+It also states what no rule can see: a revision missing from the middle of a chain.
+
+**Decisions made while writing it, both reversible, for Kyle to confirm or reverse:**
+1. **Pre-vintage periods stay out even when revised.** *Approved by Kyle 2026-11-13, with a correction to how it is
+   recorded:* it is **two rules, not one**. A, "no vintage exists" (no publication date; not recoverable; counts
+   `no_vintage_excluded` and `gaps_without_trace_skipped`), and B, "revised but pre-vintage" (every revision has a
+   real date; the chain has no beginning; **recoverable data we choose not to model**; count
+   `revised_pre_vintage_excluded`). B must not inherit A's reason. ADR-0003 addendum, "Two exclusions, two rules, two
+   counts".
+2. **`output_type=4` stays in the backfill** as the independent witness that a chain begins at a real first print.
+
+**Not built, needs a plan (CLAUDE.md: more than one file):** the wide-format parser; the chain-aware store (revision
+numbers, prefix check); the windowed `output_type=3` fetch with 504 splitting (about 100 dates a window); the redesigned
+check; the poll; a resume design for a 90-minute run (part C's heartbeat now matters). The 38,294 `revision = 0` rows
+in the dev database stay valid. CLAUDE.md's M2 slice 5 notes need the same update when that lands.
+
+### M2 slice 5, step 3: plan for the revision history, the skip, and the poll (2026-11-13). PLAN, NOT BUILT; waiting on Kyle
+
+Decisions this plan rests on: Option 3; ADR-0003 addendum 2026-11-13 (decision 3 falsified, six-rule check, two
+exclusions A and B kept apart); `output_type=4` stays as the witness. Nothing below is built.
+
+**What the skip is, and is not.** The backfill **skips a series that is already fully captured**, so a re-run costs
+only the incomplete series. **This is not resume.** A series that was interrupted is fetched again from its first
+request; nothing resumes inside a series, and slice 10's resume design (what "picked up recently" means, orphaned
+`backfill_runs`) stays untouched. It cannot be finer than a series anyway: rules 3 and 4 need the whole series, so a
+series is committed all at once or not at all. "Fully captured" is a durable fact, not an inference: a row in the new
+`series_history_state` whose `rule_version` equals the code's current one. A change to the six rules bumps the
+version and every series is re-captured, on purpose. A `force` argument re-runs a named series.
+
+**Files, in three reviewable commits.** Each ends with something checkable, and I stop after each.
+
+*Commit A, no database.* The rules and the client, proven against stub transports and recorded real bodies.
+- `backend/app/ingest/fred.py` (changed): wide-format parser (`FredVintageRow`: period plus `{vintage date: value}`);
+  `revision_history(series_id)`: vintage dates, windows of `FRED_O3_WINDOW` (100) dates, **504 splitting** (halve the
+  window and retry each half, down to one date; a single date that still 504s is raised as it is today, transient);
+  **once a window has 504'd, the rest of that series uses the smaller size** so one slow day does not cost a 60 s
+  failure per window. New `GatewayTimeout(Transient)` so the split can tell a 504 from other 5xx; nothing else
+  changes for 5xx. **The read timeout for these requests is raised from 30 s to 70 s**: `TIMEOUT` is 30 s today and
+  a 300-date window takes 48 s, so at 30 s the client would give up on requests FRED would have answered, and see a
+  client timeout where it must see FRED's own 504 at 60 s. 70 s is above the gateway's 60.
+- `backend/app/ingest/errors.py`: `GatewayTimeout`.
+- `backend/app/ingest/macro.py` (changed, still pure): `build_chains` (union of windows, ordered, equal-neighbour
+  skip counted), `check_history` implementing the **six rules** and returning a verdict with **separate** counts
+  (`no_vintage_excluded`, `gaps_without_trace_skipped`, `revised_pre_vintage_excluded`, `duplicates_skipped`) and the
+  refusal reasons; `FRED_RULE_VERSION`. `account_for` is retired, not kept beside it (two accountings would drift).
+- `backend/app/settings.py`: `FRED_O3_WINDOW`, `FRED_READ_TIMEOUT`.
+- Tests: `test_fred_history_parser.py`, `test_fred_window_split.py`, `test_macro_history_rules.py`. **One test per rule
+  that goes red when that rule is removed** (the mutation habit of the last step), a test that A and B are never
+  summed, and fixtures recorded from the real API (a small revised series such as DRCCLACBS, a pre-vintage-revised
+  period, a `"."` column, a 400 and a 504 body) under `tests/fixtures/fred/`.
+
+*Commit B, the database and the real run.*
+- `backend/alembic/versions/0006_series_history_state.py` + model in `app/models/macro.py`: `series_history_state`
+  (`series_id` PK, `rule_version`, `captured_through` date, `completed_at`, `ingestion_run_id` FK SET NULL, counts:
+  `first_prints`, `revisions`, and the four exclusion counts as **separate columns**). **A table §8 does not have**,
+  by the same reasoning as `providers_health.first_seen_at`: it is the durable "fully captured" fact and the poll's
+  window start. `# DECISION` comment on it, not a silent addition. **Number: part C's planned `0006`
+  (`ingestion_runs.task_run_id`) is unbuilt, so whichever lands first takes 0006.**
+- `backend/app/services/macro_store.py` (changed): `insert_history` (revision numbers from chain position, one
+  transaction, the per-series advisory lock kept, **rule 6**: stored rows must be a prefix of the fetched chain, else
+  refuse and write nothing), `append_revisions` for the poll. `insert_first_prints` is replaced by `insert_history`
+  (the 17 stored `revision = 0` rows are its first elements, so nothing is migrated).
+- `backend/app/ingest/fred_feed.py` (changed): `history_body` replaces `backfill_body`: vintage dates, `output_type=4`
+  chunked (as now), `output_type=3` windowed, latest last, the six rules, write, then upsert `series_history_state`
+  **in the same transaction**, so "captured" can never be true without the rows.
+- `backend/app/tasks/fred_ingest.py` (changed): **the skip** (a series whose state row has the current
+  `rule_version` is not fetched; logged `fred_history_skipped`; `ingestion_runs` gets no row for a skip), the order
+  (smallest vintage count first), and the task layout under the 30-minute question below.
+- Tests: DB-backed (skipped without `DATABASE_URL`, run in the container): idempotent re-run writes 0; the skip
+  fetches nothing for a captured series and everything for an incomplete one; a rule-version bump re-captures; a
+  failing rule writes nothing and leaves no state row; prefix refusal; revision numbers; `available_at` of a revision
+  is the vintage date's end of day in New York.
+- **Real run on the dev database, timed per series and recorded here**, before Commit C. That run is the measurement
+  the 30-minute question needs.
+
+*Commit C, the poll.*
+- `backend/app/ingest/fred_feed.py`: `poll_body`: per series, window `[captured_through, today]`, `output_type=3`
+  with `no_vintages_is_empty=True` (a quiet day is a success with 0 rows), the same chain builder and the same rules
+  applied to the periods that changed (`output_type=4` over the same window witnesses a new period's first print);
+  appends revisions; advances `captured_through`. A series with no state row is **refused** (poll before backfill is
+  an error, not a silent first print).
+- `backend/app/tasks/fred_ingest.py` + `backend/app/celery_app.py`: `ingest.fred_poll` and its Beat entry (08:00
+  America/New_York, §6.4); one task, short windows, minutes. A gap after a sleeping laptop is handled by the same
+  windowed fetch.
+- `docs/HEALTH.md`, `CLAUDE.md`, this log, `.env.example` (window and timeout settings). **Not in C:** part C's
+  heartbeat/sweep and the stub-FRED smoke (E) stay separate steps, as before. Poll freshness thresholds per series
+  (decision 5) belong with them and are named here so that they are not forgotten.
+
+**How the 90 minutes meets the 30-minute task limit. UNRESOLVED; I need a decision, or a measurement first.**
+`task_time_limit` is `INGEST_TASK_MAX_SECONDS`, default 1800, a **hard kill** (`celery_app.py`). Its own comment says
+the number is a guess that "the FRED backfill ... could approach". It is now approached:
+- *One task for all 17 series cannot work.* About 90 minutes of FRED time in total at 0.16 s per vintage date, plus
+  one rate-budget slot (1 s) per window. Killed at 30 minutes, it leaves `task_runs`, `ingestion_runs` and
+  `backfill_runs` rows `running` (the sweep is part C, unbuilt; `backfill_runs` is outside it by decision), and
+  nothing says so.
+- *Per series, most fit, with less margin than they look.* Estimated from 34,244 vintage dates: DGS10, DGS2 and DFII10
+  (about 5,150 each) take about 15 minutes; T10YIE, T10Y2Y and VIXCLS (3,160 to 3,970) 9 to 11; SOFR about 5; the
+  other ten under 4 each. **The largest is half the limit, on a rate measured at two points on one series at one
+  time of day.** If FRED is twice as slow, DGS10 is killed at 30 minutes, *every time*, and because a series is
+  all-or-nothing it can never complete. The skip does not help that case: it only skips the finished.
+- *The limit is not free to raise.* The ingest canary's staleness threshold is built from it
+  (`docs/HEALTH.md`: `INGEST_TASK_MAX_SECONDS` + 3 canary intervals), so a per-task limit above the global one
+  invalidates the threshold's assumption, and raising the global one makes a wedged ingest worker take longer to show.
+  Part C's heartbeat removes that dependence (the threshold reverts to 3 intervals) and is not built.
+
+Options:
+1. **(Proposed default) One Celery task per series, queued smallest first, the global limit unchanged.** The
+   backfill task only enqueues; each series is its own task with its own `task_runs` row, so a kill costs one series
+   and says which. With two ingest slots the wall time is about 45 minutes. A `soft_time_limit` of the limit minus
+   60 s on these tasks lets the run record `failed` with a reason instead of being killed silently. The skip makes
+   re-enqueueing the whole set safe. **This does not remove the 2x risk**, it makes it visible and per-series.
+2. **A per-task limit for these tasks (for example 2 hours), after part C's heartbeat lands.** Fixes the 2x risk;
+   needs part C first, and a decision that a wedged ingest worker may take that long to show until then.
+3. **Do the real run in a scratch container with no limit** (it is a one-off, by hand, `celery call` not Beat).
+   Zero code, and it is a one-time exception to a guard that exists for a reason.
+
+My recommendation is 1, with the real run's per-series timings deciding whether 2 is needed before the poll goes to
+Beat. If any series takes more than about 20 minutes, I stop and bring it to you with the numbers.
+
+**Not covered by this plan:** mid-series resume; the sweep; the bar tables (slice 6); `IDEA-034`/`035` vocabulary.
+
+### M2 slice 5, step 3: the 30-minute question decided: Option 3, as a first-class entry point (Kyle, 2026-11-13)
+
+**Decision.** The history backfill is not a Celery task. It is `python -m app.backfill`, an ordinary entry point of the
+backend image, run by hand in the `worker` service's container (`docker compose run --rm` or `exec`; the precedent is
+`python -m app.seed` in the `migrate` service). It calls **the same `run_feed` per series**, so `ingestion_runs`,
+`providers_health`, the rate budget (the same Redis spacing limiter), the retries, the credential scrubbing and the
+provenance chain (`macro_metrics.ingestion_run_id`) behave exactly as under Celery. It is **not a scratch script**:
+it is tested, documented in the runbook and part of the repo.
+
+**Reasoning, on record.** The backfill is one-time plus occasional deliberate re-capture (a `rule_version` bump, a
+`force` of one series). **The poll is the only thing that runs forever**, and its windows are short, so it fits the
+task limit comfortably. Option 3 therefore **removes** the 90-minute question rather than managing it: the guard
+(`task_time_limit` = `INGEST_TASK_MAX_SECONDS`, the hard kill the ingest canary's threshold is built from) stays
+exactly as it is, and nothing long-running is ever put under it. The 2x-slower-FRED risk changes character: from "a
+series is killed at 30 minutes every time and can never complete" to "the run takes three hours instead of ninety
+minutes."
+
+**Consequences for the plan** (the plan's Commit B changes; Commit A is unaffected):
+- The Celery task `ingest.fred_backfill` and its `max_retries=0` task are **removed**, not kept beside the entry
+  point: a task that cannot fit its limit should not exist to be called by mistake. The one-task-per-series fan-out,
+  the soft limit and options 1 and 2 are dropped.
+- `app/backfill.py` (new, with `if __name__ == "__main__"`), arguments: none (all series not yet captured at the
+  current `rule_version`), `--series ID[,ID]` and `--force`. It writes `backfill_runs` as the task did. It does **not**
+  go through `run_recorded` (that wrapper is the Celery task's `task_runs` row and heartbeat thread, and a process
+  with no task limit does not need either); `ingestion_runs` rows therefore have a NULL `task_run_id`, which is
+  already legal (part C's `task_run_id` column is nullable and the sweep treats NULL as "not linked to a live task").
+  **That last point matters and is flagged for Kyle:** once part C's sweep exists, an `ingestion_runs` row with a NULL
+  `task_run_id` that is still `running` is failed as `Orphaned` after the sweep interval, *including a healthy
+  90-minute backfill's current series*. The entry point must either write its own heartbeat-fresh `task_runs` row or
+  the sweep must know about it. Decided before part C, not after; recorded here so it cannot be missed.
+- A killed or interrupted `python -m app.backfill` is finished by running it again: the skip bounds the cost to the
+  incomplete series.
+
+**Stop condition, unchanged.** The first real run is timed per series and recorded in this log. **Any series over
+twenty minutes: stop and tell Kyle with the numbers**, before the poll goes near Beat.
+
+### M2 slice 5, step 3, commit A built: the wide-format parser, the windowed fetch with 504 splitting, the six rules (2026-11-13)
+
+No database, no migration, no Celery change. The current backfill still runs as it did; nothing here is wired into it.
+
+- **`app/ingest/errors.py`:** `GatewayTimeout(Transient)`: a 504, same kind and still retryable.
+- **`app/ingest/fred.py`:** `_parse_wide_page` and `FredVintageRow`; `FredClient.revision_history(series_id, window=100)`
+  returning a `RevisionHistory` (vintage dates, rows, `splits`, `final_window`); `HISTORY_TIMEOUT` (read 70 s, above the
+  gateway's 60 s; the default stays 30 s for every other request). A window that 504s is **halved from the same start,
+  and the smaller size kept for the rest of the series**; a single date that still 504s is raised. Every attempt,
+  timed-out ones included, takes a rate-budget slot. A "No vintage dates exist" 400 inside a window built from the
+  series' own dates is `NoVintageDates` and fatal.
+- **`app/ingest/macro.py` (pure):** `HISTORY_WINDOW = 100` (measured), `FRED_RULE_VERSION = 1`, `Revision`,
+  `FirstPrintRef`, `Refusal`, `HistoryVerdict`, `check_history` with the six rules. **The counts are separate fields
+  and no field adds them:** `no_vintage_excluded` and `gaps_without_trace_skipped` (A), `revised_pre_vintage_excluded`
+  (B), `duplicates_skipped`.
+- **Fixtures, live and unmodified (`tests/fixtures/fred/`, 2026-11-13):** `ok_revisions_DRCCLACBS` (142 periods, 62
+  vintages), `ok_revisions_CSUSHPINSA_one_vintage_with_gaps` (515 rows, 144 of them "."), `error_gateway_timeout_o3_window`
+  (a real 504, 60 s). No credential in any (checked).
+
+**Real data corrected the parser (found by running the fixture, not by thinking).** `output_type=3` returns **bare
+rows**, `{"date": ...}` with no vintage column, for a period that exists in the window but did not change in it (32 of
+the 515 rows of the CSUSHPINSA fixture). The first parser rejected them as malformed. They are normal, carry no
+information, and are now parsed as empty rows and ignored by the check. The ADR addendum's sentence "a period that was
+never revised is in neither output" was corrected to say so.
+
+**Deviations from the plan, each small:** (1) **`account_for` is not retired yet.** The current `backfill_body` still
+calls it, so removing it here would break the working backfill; commit B replaces the body and deletes it in the same
+change, so the two accountings never coexist beyond this commit. (2) **No `FRED_O3_WINDOW` / `FRED_READ_TIMEOUT`
+settings:** the window is a property of FRED's gateway (a constant with its measurement beside it), and an operator
+knob would invite setting it to the cap. (3) Rule 6 is in `check_history` as a pure `stored` argument; reading the
+stored chain back from `macro_metrics` is commit B.
+
+**Checks.** Ruff, format and mypy clean. **404 pass, 100 skipped** (DB-gated) across the suite; the 139 FRED/macro tests
+all pass. Nine `test_banned_phrases.py` errors are a Windows `PermissionError` on pytest's temp directory on this host
+and occur identically with these changes stashed; they were not caused by this commit. **Ran on the host in a throwaway
+venv, not the pinned container (Docker Desktop was not running): re-run `ci-checks.sh lint` and `test` when it is.**
+**Mutation check, ten mutations, each turned the suite red and was reverted:** each of rules 1, 2, 3, 4 and 6 removed;
+rule 5's conflict check and its repeated-value skip removed separately; exclusion B not counted; A and B merged into
+one count; bare rows not skipped.
+
+### M2 slice 5, step 3, commit B built: the history store, the skip, and `python -m app.backfill` (2026-11-13)
+
+**Decision recorded (Kyle, 2026-11-13): a manual backfill is a task execution and belongs in `task_runs` like any
+other.** The entry point calls `run_recorded` (plain Python, not Celery-bound), so a backfill has a real ledger row
+and the sweep's rule works on it unchanged: no exception, no special case, and the NULL-fails-naturally property
+(`ingestion_runs.task_run_id` NULL is "not linked to a live task") survives. This supersedes the flag I raised after
+commit A (that the entry point would need its own `task_runs` row or a sweep exemption): neither is needed.
+**Two things this does not yet give, both part C and both already planned:** `run_recorded` writes its row at start and
+at end only, and the 30-second heartbeat thread belongs to part C's change to `run_recorded`, which the entry point
+inherits without changing; and `ingestion_runs.task_run_id` (the link from each series' run to this row) is part C's
+migration. Until part C lands there is no sweep to apply the rule, so nothing is wrongly failed in the meantime.
+
+- **New:** `app/backfill.py` (`python -m app.backfill [--series A,B] [--force]`; `backfill_all`, `execute`,
+  `parse_args`); `alembic/versions/0006_series_history_state.py` and `SeriesHistoryState` in `app/models/macro.py`;
+  `vintage_for` in `app/ingest/macro.py` (the inverse of `available_at_for`, tested across both clock-change days).
+- **Rewritten:** `app/services/macro_store.py` (`insert_first_prints` is replaced by `commit_history`: it takes the
+  per-series advisory lock, reads the stored chains, runs the judge, and only if every rule holds inserts each chain's
+  missing tail and upserts the state row, all in one transaction), `app/ingest/fred_feed.py` (`history_body`:
+  `output_type=3`, then `output_type=4` as the witness, then the latest values last, then the six rules).
+- **Removed:** the Celery task `ingest.fred_backfill` (`app/tasks/fred_ingest.py`, its `celery_app` include),
+  `account_for` and `Accounting` and their tests. The name `ingest.fred_backfill` survives only as the `task_runs`
+  ledger name.
+- **Migration 0006 is `series_history_state`**; part C's `task_run_id` migration is now `0007`. The table is a
+  departure from section 8 with a `DECISION` comment in the migration. Its counts are separate columns
+  (`no_vintage_excluded`, `gaps_without_trace_skipped`, `revised_pre_vintage_excluded`, `duplicates_skipped`): A is not B.
+- **The skip is not resume, and the code says so.** A series is skipped only if its state row has the current
+  `FRED_RULE_VERSION`; one that was interrupted is fetched again from its first request (a test pins that the first
+  call is `vintagedates`). `--force` needs `--series`: re-capturing everything must be asked for by name.
+- **One dropped item from the plan:** "smallest series first" existed to fit the 30-minute limit, which no longer
+  applies; series run in configured order.
+- **The slow-series warning:** `fred_history_series_over_twenty_minutes` is logged for any series over 20 minutes
+  (the stop condition). It does not stop the process; the person watching the run does.
+
+**Tests.** Run on the real compose Postgres (not skipped). The **full suite was 511 passed** (26 `test_banned_phrases`
+tests deselected for the host-only Windows `PermissionError` on pytest's temp directory noted at commit A); ruff,
+format and mypy clean. One test (the revision-number hole) was added after that run. It passes: the
+"stored revisions re-inserted" mutation run below executed `test_fred_backfill.py` and `test_backfill_cli.py` in full,
+unmutated in every other respect, and went green. **The full suite was not re-run after that addition**: the throwaway venv
+under the scratch directory lost its `Scripts` folder and the host was reported low on memory, so rebuilding it was
+left alone. Re-run `bash infra/ci-checks.sh lint` and `test` in the pinned container. New and rewritten: whole
+history stored with revision numbers, `available_at` from FRED's vintage date and gaps stored as NULL; a re-run
+writes 0 and a new revision is appended alone; the two exclusions stored apart; a failed rule writes nothing, not
+even the state row; stored history that disagrees refuses (rule 6) and changes nothing; **the 38,294 old `revision = 0`
+rows stay valid** (only revisions are added, `ingested_at` of the old rows untouched); a window that 504s is split and
+the stored history is identical to the unsplit one; a stored chain with a hole in its revision numbers is refused;
+skip, rule-version bump, `--force`, interrupted-restarts-from-the-first-request, continue-past-a-failed-series, and
+the `task_runs` row (succeeded, and failed with `BackfillIncomplete`).
+**Mutation check, ten mutations on the store, the skip and the ledger: nine turn the suite red** (refusal not raised;
+state row not written; hole check removed; B written into A's column; the skip never skipping; the skip ignoring the
+rule version; `--force` ignored; a skipped series not counted done; the `run_recorded` wrapper bypassed). **One stays
+green and is an equivalent mutant:** re-inserting the already-stored revisions changes nothing observable, because
+`ON CONFLICT DO NOTHING` and the primary key absorb them; the real guards there are the key, the immutability
+triggers and rule 6. Not a test gap, and not hidden.
+
+**The first real run on the dev database (started 2026-11-13 07:45 UTC; NOT finished, see below).**
+- *Stop condition (any series over 20 minutes):* **not triggered.** Per-series wall time, `python -m app.backfill` against
+  the real API with the real Redis budget: **DGS10 590 s (9.8 min), DGS2 435 s, T10Y2Y 269 s**, and the other eight finished
+  series 3 to 13 s each (MORTGAGE30US 11.9, BAMLH0A0HYM2 12.3, BAMLC0A0CM 11.1, CPIAUCSL 10.5, UNRATE 13.0, HOUST 11.7,
+  CSUSHPINSA 5.3, DRCCLACBS 3.3). **Eleven series, 22 minutes in all, no window split, no `fred_vintage_start_changed`
+  warning, no rule refusal.** The largest is under half the 20-minute line.
+- *The 90-minute estimate was wrong, and why.* It assumed 0.16 s per vintage date, measured on DGS10. The small series cost
+  about 0.015 s per vintage date: the cost follows the **rows a window returns**, not the number of vintage dates, and a
+  daily series returns far more rows per window. 34,244 vintage dates in total did not mean 90 minutes. The six series
+  still to run (VIXCLS, DTWEXBGS, DFII10, T10YIE, SOFR, IORB) include two daily series of DGS10's size.
+- *Cross-check of the two exclusions against the first backfill's single `pre_vintage_excluded` count.* A plus B equals it
+  where it was recorded: DGS10 11,320 + 24 = 11,344; CPIAUCSL 0 + 306 = 306; UNRATE 27 + 119 = 146; HOUST 0 + 18 = 18. The
+  split is new information the old count hid: UNRATE's 119 and CPIAUCSL's 306 are *revised* pre-vintage periods (B, recoverable),
+  DGS10's 11,320 are unrevised (A, not recoverable). `macro_metrics` went from 38,294 to 50,766 rows with the 11 series
+  done; the old `revision = 0` rows were extended, not rewritten (DGS10: 5 rows created, 4 of them revisions).
+- *What went wrong, and it is operational, not a code bug.* The laptop **slept** during VIXCLS's first request (07:45 UTC
+  start; VIXCLS began 08:07; the next event is a `transient` failure at 17:14, 9 hours later): the request hung until
+  the machine woke and the connection died, then `run_feed` treated it as an ordinary transient failure and began its
+  retry. That is the retry policy working as designed, and it is also a real hazard of a ~45-minute run on a laptop:
+  **do not let the machine sleep during a backfill** (and a stale `task_runs.heartbeat_at` will say so once part C's
+  heartbeat and sweep exist).
+- *The run was then interrupted by the environment.* The harness stopped the `docker compose run` client because the system
+  was low on memory. The container (`flowdesk-worker-run-...`) was still up at 17:15 UTC with 0% CPU and no new event after
+  the failed attempt, so what it is doing is unknown; **I did not restart it, as instructed for a memory-pressure stop.** State
+  in the database at that moment: **11 of 17 series captured** (`series_history_state` rows, rule version 1),
+  `backfill_runs` 11 of 17 `running` (current unit VIXCLS), one `ingestion_runs` row (VIXCLS) `running`, one `task_runs`
+  row `running`. Those three `running` rows will stay so until the process finishes or is stopped (the sweep is part C).
+  Finishing is `python -m app.backfill` again: the skip means the eleven cost nothing. **Waiting on Kyle** to say when
+  to start it (memory), and whether to stop the idle container first.
+- *My monitor of the run was wrong once:* a `cut` in the pipe buffered the lines, so a watch that should have seen DGS10
+  finish said nothing for 30 minutes. Fixed (line-buffered `grep` only); recorded because "no events" is not evidence that
+  nothing happened.
+
+#### The first real run, finished (2026-11-13 17:37 UTC). Corrects the paragraph above that said it was interrupted.
+
+The run was **not** dead when the previous paragraph said so: the harness had stopped the `docker compose run` client,
+but the container kept working, and it was in its retry backoff (0% CPU) when I looked. It finished on its own. I
+misread an idle process as a stopped one; recorded because the earlier paragraph is wrong about it.
+
+- **Outcome: 16 of 17 series captured; `backfill_runs` `failed` 16 of 17; the `task_runs` row `failed`
+  (`BackfillIncomplete`); no `ingestion_runs` row left `running`.** `macro_metrics` holds 56,795 rows over 17 metrics. The
+  16 captured series hold 34,173 first prints and 18,487 revisions. Exclusions across them, kept apart: A, never revised,
+  34,404 (`no_vintage_excluded`) and 0 (`gaps_without_trace_skipped`); B, revised but pre-vintage, 4,708.
+- **Stop condition (any series over 20 minutes): never triggered.** Slowest: DGS10 590 s, DFII10 537 s (two fast transient
+  failures, then success on a later attempt), T10YIE 480 s, DGS2 435 s, T10Y2Y 269 s, SOFR 183 s; the rest under 20 s
+  (DTWEXBGS 9.7, IORB 19.1). The whole run's compute was about 45 minutes; its wall time was 10 hours because the laptop
+  slept during VIXCLS.
+- **VIXCLS is the one failure, and it is a flaw in my rules, not in FRED or the code path.** Rule 2 refused it and wrote
+  nothing (correct behaviour for the rule as written): 32 periods have an `output_type=3` chain and no `output_type=4`
+  first print. They are the market-holiday dates the 2026-11-12 addendum called "in no vintage": **FRED added `"."` rows
+  for them in one bulk change on the 2014-02-05 vintage** (checked for 2010-11-25 and 2010-12-24 against the whole record),
+  so they have a real publication date. `output_type=4` does not report a first print whose value is `"."`. The 2026-11-12
+  claim was true only of `output_type=4`. VIXCLS keeps the 4,135 `revision = 0` rows from the first backfill and has no
+  `series_history_state` row.
+- **Proposed, not made, waiting on Kyle:** accept a chain that starts with `"."` and has no `output_type=4` row as a gap
+  first print (revision 0, NULL, dated by its vintage per ADR decision 7), counted apart as
+  `gap_first_prints_unwitnessed`; a chain that starts with a number and lacks an `output_type=4` row still refuses. No
+  `FRED_RULE_VERSION` bump, because the change only admits more and the 16 captured series already satisfy it. Principle to
+  record with it: bump the version when a change makes the rules stricter or changes what is stored, not when it relaxes a
+  refusal. A correction to the 2026-11-12 addendum goes in the same change.
+- **Logging flaw to fix with it:** `fred_history_series_done` is emitted for a failed series too, so "VIXCLS done 251 s" was
+  a refusal. It becomes an event carrying the outcome.
+- **Remaining after that:** `python -m app.backfill --series VIXCLS` (the other 16 are skipped by the state rows, which is
+  also the test of the skip on real data); the full suite and the container lint/test re-run; commit.

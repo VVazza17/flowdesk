@@ -24,6 +24,19 @@ NEW_YORK = ZoneInfo("America/New_York")
 VINTAGE_DATE_CAP = 2000
 VINTAGE_CHUNK = 1900
 
+# The window the revision-history fetch (output_type=3) asks for, in vintage dates. MEASURED
+# 2026-11-13: FRED spends about 0.16 s per vintage date in the window (100 dates 17 s, 300 dates
+# 48 s) and its gateway answers 504 at 60 s (600 dates and up, and the 1,900 above). 100 leaves a
+# 3.5x margin for a slower FRED; a window that still times out is halved by the client
+# (FredClient.revision_history). Not an operator setting: it is a property of FRED's gateway, and a
+# knob would invite setting it to the cap.
+HISTORY_WINDOW = 100
+
+# Bumped whenever the rules in `check_history` change, so that every series captured under older
+# rules is captured again (the backfill's skip compares it, commit B). Changing a rule without
+# bumping this leaves history that no longer satisfies the rules marked as satisfying them.
+FRED_RULE_VERSION = 1
+
 
 @dataclass(frozen=True)
 class FredSeries:
@@ -56,6 +69,15 @@ def available_at_for(realtime_start: date) -> datetime:
     return datetime.combine(next_day, time(0, 0), tzinfo=NEW_YORK).astimezone(UTC)
 
 
+def vintage_for(available_at: datetime) -> date:
+    """The publication date a stored `available_at` came from: the inverse of `available_at_for`.
+
+    `available_at_for(d)` is 00:00 New York the day after `d`, so one microsecond earlier is still
+    day `d` there. This is how stored revisions are compared with fetched ones (rule 6).
+    """
+    return (available_at - timedelta(microseconds=1)).astimezone(NEW_YORK).date()
+
+
 def chunk_vintage_dates(
     dates: Sequence[date], size: int = VINTAGE_CHUNK
 ) -> list[tuple[date, date]]:
@@ -73,47 +95,229 @@ def chunk_vintage_dates(
     ]
 
 
-@dataclass(frozen=True)
-class Accounting:
-    """Where every date in the latest values went, and what could not be explained."""
+# --------------------------------------------------------------------------------------------
+# The revision history (ADR-0003 addendum, 2026-11-13). Everything below is pure.
+#
+# This is the only accounting. `account_for`, the first-prints-only one it replaced, is gone: two
+# accountings side by side would drift apart.
+# --------------------------------------------------------------------------------------------
 
-    pre_vintage: int  # earlier than the first first-print: no publication date, left out
-    gaps_without_trace: int  # "." in the latest values, never published as anything: left out
-    unaccounted: tuple[date, ...]  # a real value with no first print: the backfill refuses
-    not_in_latest: tuple[date, ...]  # a first print the latest values lack: the backfill refuses
+
+@dataclass(frozen=True)
+class FredVintageRow:
+    """One row of `output_type=3`: a period and every vintage in which it changed.
+
+    FRED's wide format is `{"date": ..., "<SERIES>_<YYYYMMDD>": value, ...}`; `values` is that
+    mapping with the keys turned into the vintage dates (publication dates) they name.
+    """
+
+    effective_at: date
+    values: Mapping[date, Decimal | None]
+
+
+@dataclass(frozen=True)
+class Revision:
+    """One step of a period's history: its value as of one vintage. Position in the chain is the
+    revision number (0 is the first print)."""
+
+    vintage: date
+    value: Decimal | None
+
+
+@dataclass(frozen=True)
+class FirstPrintRef:
+    """What `output_type=4` says a period's first print was: the independent witness of rule 1."""
+
+    vintage: date
+    value: Decimal | None
+
+
+@dataclass(frozen=True)
+class Refusal:
+    """One rule that failed. Fixed text and dates only: nothing FRED sent is copied into it."""
+
+    rule: int
+    count: int
+    sample: tuple[date, ...]
+    reason: str
+
+
+@dataclass(frozen=True)
+class HistoryVerdict:
+    """The outcome of the six rules for one series.
+
+    `chains` holds only what may be stored. The counts are kept apart on purpose (ADR-0003
+    addendum, "Two exclusions, two rules, two counts"): A, no vintage exists, is
+    `no_vintage_excluded` and `gaps_without_trace_skipped`; B, revised but pre-vintage, is
+    `revised_pre_vintage_excluded`. There is deliberately no field that adds them.
+    """
+
+    chains: Mapping[date, tuple[Revision, ...]]
+    refusals: tuple[Refusal, ...]
+    first_prints: int
+    revisions: int
+    no_vintage_excluded: int
+    gaps_without_trace_skipped: int
+    revised_pre_vintage_excluded: int
+    duplicates_skipped: int
 
     @property
-    def complete(self) -> bool:
-        return not self.unaccounted and not self.not_in_latest
+    def ok(self) -> bool:
+        return not self.refusals
+
+    def refusal_text(self) -> str:
+        """For an exception message: rule numbers, counts and the first few dates."""
+        return "; ".join(
+            f"rule {r.rule} ({r.reason}): {r.count} periods, from "
+            f"{[d.isoformat() for d in r.sample]}"
+            for r in self.refusals
+        )
 
 
-def account_for(
-    latest: Mapping[date, Decimal | None], first_print_dates: Collection[date]
-) -> Accounting:
-    """Compare the first prints with the latest values. This is the check that does not trust
-    FRED's response to be complete.
+_SAMPLE = 3
 
-    `output_type=4` does not say what it left out (measured 2026-11-12). A date in the latest
-    values is explained if (a) it has a first print; (b) it is earlier than the earliest first
-    print (pre-vintage history); or (c) its latest value is a gap ("."), which FRED never
-    published as anything. Anything else is a value that should have a first print and does not.
+
+def _refusal(rule: int, reason: str, bad: Collection[date]) -> Refusal:
+    ordered = sorted(set(bad))
+    return Refusal(rule, len(ordered), tuple(ordered[:_SAMPLE]), reason)
+
+
+def check_history(
+    *,
+    rows: Sequence[FredVintageRow],
+    vintage_dates: Collection[date],
+    first_prints: Mapping[date, FirstPrintRef],
+    latest: Mapping[date, Decimal | None],
+    stored: Mapping[date, Sequence[Revision]] | None = None,
+) -> HistoryVerdict:
+    """The six rules of the ADR-0003 addendum (2026-11-13). Nothing may be written unless `ok`.
+
+    Rule 1  the chain's earliest column equals the `output_type=4` first print (date and value).
+    Rule 2  a chain begins at a first print, or its period is before the earliest first print: it is
+            pre-vintage and revised, left out and counted (exclusion B).
+    Rule 3  a chain ends at the latest value.
+    Rule 4  every latest value is explained: it has a chain, or it is pre-vintage and unrevised
+            (exclusion A), or it is a "." that no vintage ever published (exclusion A).
+    Rule 5  structure: every column is a known vintage date, one period never has two values for one
+            vintage, and a column equal to the one before it is not a revision (skipped, counted).
+    Rule 6  what is already stored is a prefix of what was fetched (`stored`, if given).
+
+    FRED's response never says what it left out, so none of this trusts completeness: it checks the
+    outputs against each other. What it cannot see is a revision missing from the MIDDLE of a chain.
     """
-    have = set(first_print_dates)
-    first = min(have) if have else None
-    pre_vintage = gaps = 0
-    unaccounted: list[date] = []
-    for day, value in latest.items():
-        if day in have:
+    known = set(vintage_dates)
+    raw: dict[date, dict[date, Decimal | None]] = {}
+    conflicts: set[date] = set()
+    unknown_vintage: set[date] = set()
+    for row in rows:
+        if not row.values:
+            continue  # a period listed without a change in this window: no information
+        per = raw.setdefault(row.effective_at, {})
+        for vintage, value in row.values.items():
+            if vintage not in known:
+                unknown_vintage.add(row.effective_at)
+            if vintage in per and per[vintage] != value:
+                conflicts.add(row.effective_at)
+            per[vintage] = value
+
+    chains: dict[date, tuple[Revision, ...]] = {}
+    duplicates = 0
+    for period, per in raw.items():
+        built: list[Revision] = []
+        for vintage, value in sorted(per.items()):
+            if built and built[-1].value == value:
+                duplicates += 1  # not a revision (ADR-0003 decision 3: only when the value differs)
+                continue
+            built.append(Revision(vintage, value))
+        chains[period] = tuple(built)
+
+    refusals: list[Refusal] = []
+    if conflicts or unknown_vintage:
+        refusals.append(
+            _refusal(
+                5,
+                "a period has two values for one vintage, or a column is no vintage of the series",
+                conflicts | unknown_vintage,
+            )
+        )
+
+    # Rule 1.
+    bad1 = [
+        period
+        for period, ref in first_prints.items()
+        if period not in chains or chains[period][0] != Revision(ref.vintage, ref.value)
+    ]
+    if bad1:
+        refusals.append(
+            _refusal(1, "output_type=3 and output_type=4 disagree on the first print", bad1)
+        )
+
+    # Rule 2: split chains into storable and revised-but-pre-vintage.
+    earliest = min(first_prints) if first_prints else None
+    kept: dict[date, tuple[Revision, ...]] = {}
+    revised_pre_vintage: set[date] = set()
+    lost_first_print: list[date] = []
+    for period, chain in chains.items():
+        if period in first_prints:
+            kept[period] = chain
+        elif earliest is not None and period < earliest:
+            revised_pre_vintage.add(period)
+        else:
+            lost_first_print.append(period)
+    if lost_first_print:
+        refusals.append(
+            _refusal(
+                2,
+                "a chain has no first print although its period is inside the record",
+                lost_first_print,
+            )
+        )
+
+    # Rule 3.
+    bad3 = [
+        period
+        for period, chain in kept.items()
+        if period not in latest or chain[-1].value != latest[period]
+    ]
+    if bad3:
+        refusals.append(_refusal(3, "a chain does not end at the latest value", bad3))
+
+    # Rule 4.
+    no_vintage = gaps = 0
+    unexplained: list[date] = []
+    for period, value in latest.items():
+        if period in chains:
             continue
-        if first is not None and day < first:
-            pre_vintage += 1
+        if earliest is not None and period < earliest:
+            no_vintage += 1
         elif value is None:
             gaps += 1
         else:
-            unaccounted.append(day)
-    return Accounting(
-        pre_vintage=pre_vintage,
-        gaps_without_trace=gaps,
-        unaccounted=tuple(sorted(unaccounted)),
-        not_in_latest=tuple(sorted(have - latest.keys())),
+            unexplained.append(period)
+    if unexplained:
+        refusals.append(_refusal(4, "a latest value has no history", unexplained))
+
+    # Rule 6.
+    if stored:
+        bad6 = [
+            period
+            for period, have in stored.items()
+            if period not in kept
+            or len(have) > len(kept[period])
+            or tuple(kept[period][: len(have)]) != tuple(have)
+        ]
+        if bad6:
+            refusals.append(
+                _refusal(6, "stored history is not a prefix of the fetched history", bad6)
+            )
+
+    return HistoryVerdict(
+        chains=kept,
+        refusals=tuple(sorted(refusals, key=lambda r: r.rule)),
+        first_prints=len(kept),
+        revisions=sum(len(c) - 1 for c in kept.values()),
+        no_vintage_excluded=no_vintage,
+        gaps_without_trace_skipped=gaps,
+        revised_pre_vintage_excluded=len(revised_pre_vintage),
+        duplicates_skipped=duplicates,
     )

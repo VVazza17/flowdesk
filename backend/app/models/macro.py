@@ -35,3 +35,27 @@ class MacroMetric(Base):
     ingestion_run_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("ingestion_runs.id", ondelete="SET NULL")
     )
+
+
+class SeriesHistoryState(Base):
+    """Which series' revision history is fully captured (migration 0006 carries the reasoning).
+
+    A row exists only if the history was written, in the same transaction. The exclusion counts are
+    separate columns on purpose: A (no vintage exists) is not B (revised but pre-vintage).
+    """
+
+    __tablename__ = "series_history_state"
+
+    series_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    rule_version: Mapped[int] = mapped_column(Integer)
+    captured_through: Mapped[date] = mapped_column(Date)
+    completed_at: Mapped[datetime] = mapped_column(TZ, server_default=text("now()"))
+    ingestion_run_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("ingestion_runs.id", ondelete="SET NULL")
+    )
+    first_prints: Mapped[int] = mapped_column(Integer)
+    revisions: Mapped[int] = mapped_column(Integer)
+    no_vintage_excluded: Mapped[int] = mapped_column(Integer)
+    gaps_without_trace_skipped: Mapped[int] = mapped_column(Integer)
+    revised_pre_vintage_excluded: Mapped[int] = mapped_column(Integer)
+    duplicates_skipped: Mapped[int] = mapped_column(Integer)

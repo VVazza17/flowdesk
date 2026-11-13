@@ -1,0 +1,8 @@
+{
+  "captured_on": "2026-11-13",
+  "source": "https://api.stlouisfed.org/fred/series/observations",
+  "request": "series_id=DGS10&output_type=3&limit=100000&realtime_start=2005-06-28&realtime_end=2008-05-23&file_type=json",
+  "status": 504,
+  "content_type": "text/html",
+  "body": "<html>\r\n<head><title>504 Gateway Time-out</title></head>\r\n<body>\r\n<center><h1>504 Gateway Time-out</h1></center>\r\n</body>\r\n</html>\r\n"
+}

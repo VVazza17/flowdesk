@@ -5,8 +5,11 @@ Five kinds, all taken from the spec and the ADRs rather than guessed:
   transient         the network or the provider hiccuped; a retry can help
   rate_limited      the provider said slow down (429 and its relatives); a retry can help, later
   permanent         the request itself is wrong or refused: a bad series ID, a bad key, FRED's
-                    "No vintage dates exist" 400 (ADR-0003: a configuration bug, never "no data").
-                    A retry cannot help
+                    "No vintage dates exist" 400 when a BACKFILL sends it (ADR-0003 decision 4: a
+                    window built from the series' own vintage dates holds at least one, so none is
+                    a bug). A retry cannot help. The same 400 from a POLL over a short window is a
+                    quiet day, not a failure: see NoVintageDates and the ADR-0003 addendum of
+                    2026-11-13
   empty_result      yfinance's silent empty frame. ADR-0002 and §6.12: this is a failure that
                     degrades the feed, never "no new data". A retry cannot be assumed to help
   schema_mismatch   the payload is not the shape the client knows (a column set that varies by
@@ -47,6 +50,30 @@ class RateLimited(ProviderError):
 
 class Permanent(ProviderError):
     kind = PERMANENT
+
+
+class GatewayTimeout(Transient):
+    """FRED's gateway answered HTTP 504 (measured 2026-11-13: at exactly 60 s, for an
+    `output_type=3` window of about 600 or more vintage dates).
+
+    Still `transient` and retryable like every other 5xx, so nothing that handles Transient
+    changes. It is a subclass only so that the windowed fetch can tell "this window is too big" from
+    "FRED is unwell": the first is answered by halving the window, and retrying the same window
+    can never succeed.
+    """
+
+
+class NoVintageDates(Permanent):
+    """FRED's HTTP 400 "No vintage dates exist for the specified real-time period".
+
+    It is one response with two meanings, and only the CALLER knows which. A backfill builds its
+    windows from the series' own vintage dates, so for it the 400 means the request is wrong or
+    FRED's record moved: it stays `permanent` and fails the run. A poll asks "what changed since
+    the last poll", and on a day nothing was published the honest answer is this 400: for it, it is
+    an empty result. The client returns [] only when the caller says so
+    (`FredClient.observations(..., no_vintages_is_empty=True)`); otherwise this is raised and
+    classified exactly as Permanent was before (same kind, never retried).
+    """
 
 
 class EmptyResult(ProviderError):

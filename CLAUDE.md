@@ -30,7 +30,12 @@ Where §3 and §16 disagree, **§16 governs**.
 
 The eight ADRs in `docs/adr/` are binding where they interpret the spec. ADR-0001 … 0007 record what
 the M0 spikes actually measured — several findings falsify what the spec originally assumed. ADR-0008
-records M1 slice 10's heartbeat decisions.
+records M1 slice 10's heartbeat decisions. **ADR-0003 is the first ADR whose own rationale was falsified by a later
+measurement** (decision 3: revisions are dated by the poll, which `output_type=3` disproves; Addendum 2026-11-13). That is
+not a spec defect and goes in the ADR, not in `SPEC-DEFECTS.md`: the assumption is quoted, what survives is listed,
+and the superseded text stays in place with an inline `[Falsified: ...]` marker. **Read the addendum before touching
+FRED ingest.** Its decision 3 and the backfill's refusal check are rewritten there, and built (see the M2 slice 5 bullet
+below).
 
 ## Current state
 
@@ -96,6 +101,19 @@ records M1 slice 10's heartbeat decisions.
   provider, a feed, the backup destination).** A killed provider is defined and tested in HEALTH.md; it is
   proven against the fake only, off by default (`FAKE_PROVIDER_ENABLED`). FRED and yfinance clients, their
   rate numbers and their error mappings are slices 5 and 6.
+- **FRED revision history: built through commit B (M2 slice 5, step 3, 2026-11-13); the poll (commit C) is not.**
+  `python -m app.backfill [--series A,B] [--force]` captures every series' **whole revision history** (`output_type=3`,
+  each revision dated by FRED's vintage date) into `macro_metrics`, judged by the six rules of the ADR-0003 addendum
+  (`app/ingest/macro.py`, `check_history`). It is an **entry point, not a Celery task** (Kyle's decision: one-time plus
+  deliberate re-capture, about 90 minutes, so it must not live under the 30-minute task limit that the ingest canary's
+  threshold is built from), but it calls the same `run_feed` per series **and `run_recorded`: a manual backfill is a
+  task execution and has a `task_runs` row like any other.** **The skip is not resume**: a series whose
+  `series_history_state` row has the current `FRED_RULE_VERSION` is not fetched; an interrupted series restarts from its
+  first request. Changing the rules means bumping `FRED_RULE_VERSION`. **Two exclusions, never summed:** A, "no vintage
+  exists" (no publication date; not recoverable) and B, "revised but pre-vintage" (every revision has a real date, the
+  chain has no beginning; recoverable data we chose not to model). The window is 100 vintage dates (FRED's gateway
+  504s at 60 s; about 0.16 s per vintage date), and a 504 halves the window. Migration 0006 is `series_history_state`
+  (a table section 8 lacks); part C's `task_run_id` migration is therefore 0007. See `docs/BUILD-LOG.md`.
 - **The base image is pinned by digest** (M2 slice 0, 2026-11-08). The `FROM` line in `backend/Dockerfile` is
   the one definition. The CI tooling container, `lock-deps.sh` and the smokes read it through
   `infra/base-image.sh`, and lint fails on a second definition. The base no longer updates itself: the daily
@@ -259,6 +277,7 @@ bash infra/smoke-m2-slice4.sh     # M2 slice 4: fake provider on the real stack;
 bash infra/smoke-m2-slice3.sh     # M2 slice 3: migrate + seed (24 symbols, 5 universes, sessions), idempotent, provider_mappings rules
 bash infra/smoke-m2-slice5-step0.sh # M2 slice 5 step 0: two workers on two queues; ingest saturation never delays the ops canary; each worker wedged degrades ready
 bash infra/smoke-m2-slice2.sh     # M2 slice 2: encrypt, SFTP copy to stand-in sshd (3 permission policies), restore with the private key only
+docker compose run --rm worker python -m app.backfill   # FRED revision history, every series not yet captured; --series A,B [--force]
 bash infra/backup.sh              # dump + manifest into dumps/. Restoring and the version trap: docs/BACKUP.md
 bash infra/restore.sh dumps/<name>.dump --db <new-or-empty-db>   # refuses a non-empty target
 bash infra/restore-backup.sh <name>.tar.age --identity <age key> --db <new-or-empty-db>   # a scheduled backup, on the desktop

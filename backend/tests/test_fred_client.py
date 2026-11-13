@@ -27,6 +27,7 @@ import structlog
 from app import settings
 from app.ingest.errors import (
     SCHEMA_MISMATCH,
+    NoVintageDates,
     Permanent,
     ProviderError,
     RateLimited,
@@ -326,7 +327,7 @@ def test_a_refusal_is_permanent_and_never_retried(code: int) -> None:
     [
         (
             "Bad Request.  No vintage dates exist for the specified real-time period.",
-            "configuration bug",
+            "no vintage dates exist",
         ),
         ("Bad Request.  The series does not exist.", "unknown series"),
         ("Bad Request.  Variable api_key is not registered.", "api key"),
@@ -339,11 +340,74 @@ def test_each_400_is_permanent_and_says_what_it_is(message: str, needle: str) ->
     assert not is_retryable(err)
 
 
-def test_the_vintage_400_is_never_called_no_data() -> None:
-    # ADR-0003 decision 4: a wrong-parameter error, "never 'no data yet'".
-    msg = "Bad Request.  No vintage dates exist for the specified real-time period."
-    err = fails_with(status(400, {"error_code": 400, "error_message": msg}), Permanent)
+_NO_VINTAGES = {
+    "error_code": 400,
+    "error_message": "Bad Request.  No vintage dates exist for the specified real-time period.",
+}
+
+
+def _poll(handler: Callable[[httpx2.Request], httpx2.Response], **kw: object) -> list[object]:
+    async def go() -> list[object]:
+        async with make(handler) as fred:
+            return list(
+                await fred.observations(
+                    "GDPC1",
+                    output_type=3,
+                    realtime_start=date(2026, 11, 12),
+                    realtime_end=date(2026, 11, 12),
+                    **kw,  # type: ignore[arg-type]
+                )
+            )
+
+    return asyncio.run(go())
+
+
+def test_the_vintage_400_is_fatal_by_default_and_has_its_own_type() -> None:
+    # ADR-0003 decision 4 as amended 2026-11-13: for a backfill it is a bug, never "no data yet".
+    err = fails_with(status(400, _NO_VINTAGES), Permanent)
+    assert isinstance(err, NoVintageDates)
+    assert err.kind == "permanent" and not is_retryable(err)
     assert "no data" not in str(err).lower()
+
+
+def test_without_the_flag_the_vintage_400_fails_a_windowed_request_too() -> None:
+    with pytest.raises(NoVintageDates):
+        _poll(status(400, _NO_VINTAGES))
+
+
+def test_a_poll_that_says_so_reads_the_vintage_400_as_a_quiet_day() -> None:
+    sent: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        sent.append(request)
+        return httpx2.Response(400, json=_NO_VINTAGES)
+
+    assert _poll(handler, no_vintages_is_empty=True) == []
+    assert len(sent) == 1  # no retry, no second page
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Bad Request.  The series does not exist.",
+        "Bad Request.  Variable api_key is not registered.",
+    ],
+)
+def test_the_quiet_day_reading_does_not_swallow_other_400s(message: str) -> None:
+    # Only the vintage 400 is a quiet day. A bad key or unknown series in a poll is a failure.
+    body = {"error_code": 400, "error_message": message}
+    with pytest.raises(Permanent) as info:
+        _poll(status(400, body), no_vintages_is_empty=True)
+    assert not isinstance(info.value, NoVintageDates)
+
+
+def test_the_quiet_day_flag_is_refused_for_the_latest_output_type() -> None:
+    async def go() -> None:
+        async with make(status(200, {})) as fred:
+            await fred.observations("GDPC1", no_vintages_is_empty=True)
+
+    with pytest.raises(ValueError, match="vintage output types"):
+        asyncio.run(go())
 
 
 @pytest.mark.parametrize(

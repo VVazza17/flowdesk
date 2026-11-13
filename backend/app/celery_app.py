@@ -23,7 +23,7 @@ def create_celery() -> Celery:
     app = Celery(
         "flowdesk",
         broker=broker,
-        include=["app.tasks.canary", "app.tasks.fake_ingest", "app.tasks.fred_ingest"],
+        include=["app.tasks.canary", "app.tasks.fake_ingest"],
     )
     app.conf.update(
         timezone="America/New_York",

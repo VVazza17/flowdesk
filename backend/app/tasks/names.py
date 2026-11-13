@@ -34,6 +34,10 @@ STATUS_SUCCEEDED = "succeeded"
 STATUS_FAILED = "failed"
 STATUS_SKIPPED = "skipped"
 
-# The FRED backfill (M2 slice 5, step 3). Started by hand (`celery call`), never by Beat: it fetches
-# every series' whole first-print history, which is slow and is not something to repeat on a timer.
+# The FRED history backfill (M2 slice 5, step 3). NOT a Celery task: it is the entry point
+# `python -m app.backfill`, run by hand (BUILD-LOG, 2026-11-13: one-time plus deliberate
+# re-capture, and at about 90 minutes it must not live under the task limit). This is only its
+# name in the `task_runs` ledger, where it belongs like any other execution: the entry point
+# goes through `run_recorded`, so a manual backfill has a real row and the sweep's rule applies
+# unchanged.
 FRED_BACKFILL = "ingest.fred_backfill"

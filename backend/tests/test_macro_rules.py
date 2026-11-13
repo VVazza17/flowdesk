@@ -4,7 +4,6 @@ The rule they enforce: nothing enters a point-in-time table without a real publi
 """
 
 from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal
 
 import pytest
 
@@ -12,9 +11,9 @@ from app import settings
 from app.ingest.macro import (
     VINTAGE_CHUNK,
     VINTAGE_DATE_CAP,
-    account_for,
     available_at_for,
     chunk_vintage_dates,
+    vintage_for,
 )
 
 
@@ -113,58 +112,6 @@ def test_chunking_refuses_unsorted_or_duplicate_dates_and_a_bad_size() -> None:
         chunk_vintage_dates([d(1)], size=0)
 
 
-# --- accounting for the latest values ------------------------------------------------------------
-
-
-def v(x: str | None) -> Decimal | None:
-    return None if x is None else Decimal(x)
-
-
-def test_a_complete_series_accounts_for_every_date() -> None:
-    latest = {d(0): v("1"), d(1): v("2"), d(2): v("3")}
-    acc = account_for(latest, {d(0), d(1), d(2)})
-    assert acc.complete
-    assert (acc.pre_vintage, acc.gaps_without_trace) == (0, 0)
-
-
-def test_dates_before_the_first_first_print_are_pre_vintage_not_an_error() -> None:
-    # GDPC1 looks like this: 179 of 319 observations predate the first vintage.
-    latest = {d(i): v(str(i)) for i in range(10)}
-    acc = account_for(latest, {d(i) for i in range(4, 10)})
-    assert acc.complete
-    assert acc.pre_vintage == 4
-
-
-def test_a_gap_that_was_never_published_is_skipped_and_counted() -> None:
-    # VIXCLS holidays: "." in the latest values, in no vintage, inside the covered range.
-    latest = {d(0): v("1"), d(1): None, d(2): v("3")}
-    acc = account_for(latest, {d(0), d(2)})
-    assert acc.complete
-    assert acc.gaps_without_trace == 1
-
-
-def test_a_real_value_inside_the_range_with_no_first_print_is_unaccounted() -> None:
-    # The missing-data-in-a-complete-costume case: this must refuse, not pass.
-    latest = {d(0): v("1"), d(1): v("2"), d(2): v("3")}
-    acc = account_for(latest, {d(0), d(2)})
-    assert not acc.complete
-    assert acc.unaccounted == (d(1),)
-
-
-def test_a_first_print_the_latest_values_lack_refuses() -> None:
-    acc = account_for({d(0): v("1")}, {d(0), d(1)})
-    assert not acc.complete
-    assert acc.not_in_latest == (d(1),)
-
-
-def test_no_first_prints_at_all_leaves_every_real_value_unaccounted() -> None:
-    # There is no boundary to be "before", so nothing is explained as pre-vintage.
-    acc = account_for({d(0): v("1"), d(1): None}, set())
-    assert not acc.complete
-    assert acc.unaccounted == (d(0),)
-    assert acc.gaps_without_trace == 1
-
-
 # --- the configured series --------------------------------------------------------------------
 
 
@@ -179,3 +126,27 @@ def test_each_series_records_where_its_point_in_time_record_starts() -> None:
         # and never after it by more than a few days (IORB's rate is dated ahead of publication).
         assert s.first_covered_period <= s.first_vintage + timedelta(days=7), s.series_id
         assert s.first_vintage.year >= 1960
+
+
+# --- vintage_for: the inverse of available_at_for ---------------------------------------------
+
+
+def test_vintage_for_inverts_available_at_for_including_the_clock_change_days() -> None:
+    # 2025-03-09 is the 23-hour spring-forward day and 2025-11-02 the 25-hour fall-back day in New
+    # York; the publication date must come back unchanged on both, and on either side of them.
+    for day in (
+        date(2025, 3, 8),
+        date(2025, 3, 9),
+        date(2025, 3, 10),
+        date(2025, 11, 1),
+        date(2025, 11, 2),
+        date(2025, 11, 3),
+        date(2020, 1, 7),
+    ):
+        assert vintage_for(available_at_for(day)) == day
+
+
+def test_one_microsecond_before_the_end_of_the_day_is_still_that_day() -> None:
+    boundary = available_at_for(date(2025, 5, 29))
+    assert vintage_for(boundary) == date(2025, 5, 29)
+    assert vintage_for(boundary + timedelta(microseconds=1)) == date(2025, 5, 30)
