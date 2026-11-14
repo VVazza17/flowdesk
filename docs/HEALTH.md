@@ -428,7 +428,7 @@ three 400s in the table were observed; the rest is documentation:
 |---|---|---|---|
 | 429 | `rate_limited` | yes | Documented past 120 requests a minute, with "a temporary block" for ignoring it. The status and every header except cookies are logged on the first natural one: whether FRED sends `Retry-After` is unknown. |
 | 400, "No vintage dates exist" | **depends on the caller** | no | **Backfill: `permanent`**, fails the run (the window was built from the series' own vintage dates, so none in it is a bug or a moved record). **Poll: not a failure at all**, an empty result and a normal quiet day (nothing was published in the window), so it must never show as a stuck or failed feed. The client raises `NoVintageDates` (a `Permanent`) unless the caller passes `no_vintages_is_empty=True`. ADR-0003 addendum, 2026-11-13. The default window can still not be sent with a vintage output type. **The daily poll never sends this 400 by construction (an INVARIANT, see `FredClient.revisions_since`): it reads `series/vintagedates` first and only requests windows containing a vintage, so a quiet day merges to zero new rows. Removing that read as an "optimisation" brings the 400 back on every quiet day; a test (`test_the_poll_reads_the_vintage_dates_first_...`) fails if it goes.** |
-| 504 on a large `output_type=3` window | `transient` today | yes (**useless**) | **Observed 2026-11-13.** FRED's gateway answers 504 at 60 s for a window of about 600 or more vintage dates (about 0.16 s per vintage date). Retrying the same window can never succeed; the windowed fetch must split it (ADR-0003 addendum). Not built yet. |
+| 504 on a large `output_type=3` window | `transient` today | yes (**useless**) | **Observed 2026-11-13.** FRED's gateway answers 504 at 60 s for a window of about 600 or more vintage dates (about 0.16 s per vintage date). Retrying the same window can never succeed; the windowed fetch splits it: windows of 100 vintage dates, halved on a 504 (built, M2 slice 5 step 3; `tests/test_fred_window_split.py`). |
 | 400, "exceeds the maximum number of vintage dates ... (2000)" | `permanent` | no | **Observed.** An explicit refusal, never a silent truncation; the backfill splits the real-time window (BUILD-LOG, step 2c). |
 | 400, "series does not exist" | `permanent` | no | ADR-0003 decision 8. **Observed**: HTTP 400, not 404. |
 | 400, anything naming `api_key` | `permanent` | no | Missing, malformed or unregistered key. **Observed**: all three arrive as HTTP 400 with a JSON body (fixtures in `tests/fixtures/fred/`, `tests/test_fred_real_bodies.py`). |
@@ -455,6 +455,20 @@ that one is a fault in our own Redis, not a provider.)
 off for ingest tasks. Beat is the outer retry: the next firing tries again. A Celery retry would also write a second
 `ingestion_runs` row for one logical run, which would break the record that idempotency is measured against
 (the §6.11 / §11 overlap is IDEA-042).
+
+### What has and has not been shown for a killed FRED (M2 slice 5 gate, 2026-11-14)
+
+- **Shown on the real stack against real FRED: success only.** The backfill (17 series), the manual `ingest.fred_poll` runs and the Beat-fired run
+  (`task_runs` 2725, ingest queue) all succeeded; `/health/providers` showed the FRED feeds `fresh` and `/health/data` `data_age` showed all 17 series `fresh`.
+- **Shown on a real database against fakes: the failure mapping and the state walk.** Every status and network failure in the table above maps to its kind
+  (`tests/test_fred_client.py`, recorded real bodies in `tests/test_fred_real_bodies.py`); `run_feed` records them and a killed provider walks
+  fresh, stale, recovered (`tests/test_ingest_runner.py`, `tests/test_provider_health_states.py`, which use the provider-neutral framework, not FRED itself).
+- **Shown on the real stack: FRED returning 500, 423 and 429** (`infra/smoke-m2-slice5-fred-failures.sh`, 2026-11-14). One call per status through the real worker, against a stub that echoes the request
+  URL and canary key; each maps to its kind (`transient`, `transient`, `rate_limited`), is retried, and the key appears nowhere: not in the exception text, `providers_health.last_error` (exactly `<kind>:<Class>`),
+  `ingestion_runs.error`, `/health/providers` or `/health/data`; `/health/ready` stays `ok`. Mutation-checked both ways (BUILD-LOG, slice 5 gate). **httpx2's own `raise_for_status()` message contains the full URL
+  with `api_key=`** (checked 2026-11-14), which is why the client builds fixed-text messages and the smoke checks the exception text itself.
+- **Not shown on the real stack:** the other statuses and kinds in the table (400, 401/403, 404, 504, schema mismatch) are unit-tested only, and so is recovery for FRED (slice 4's smoke shows it for the fake).
+- **No FRED 429, 423 or 500 has ever been seen** (accepted permanently). Never having seen FRED do it is fine; our handling of them is tested (above). What each means is documented behaviour plus judgement, not observation.
 
 ### The documented states, in order
 

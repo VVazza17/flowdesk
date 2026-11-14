@@ -143,6 +143,9 @@ below).
   (psql-written, they never heartbeat).** A swept row whose task finishes later keeps the sweep's verdict plus a note. `checks.ingest_worker`
   has a `busy` state (alive, not degraded) and its threshold is three canary intervals again, not the task limit. Tests that call
   `run_feed` directly use `tests/recorded.py`. A manual backfill is a task execution and has a `task_runs` row.
+- **Slice 5 gate review is written (2026-11-14, `docs/BUILD-LOG.md`); it closes with two named gaps:** Beat's 08:00 firing on an awake machine is unobserved
+  (schedule, queue and DST pinned by test; a Beat container recreate dropping a missed firing is ASSUMED, untested), and no real FRED 429/423/500 has ever been seen
+  (handling is tested: `infra/smoke-m2-slice5-fred-failures.sh` runs each through the real worker and proves the api_key is in no stored or served text). Step 6 is done.
 - **The base image is pinned by digest** (M2 slice 0, 2026-11-08). The `FROM` line in `backend/Dockerfile` is
   the one definition. The CI tooling container, `lock-deps.sh` and the smokes read it through
   `infra/base-image.sh`, and lint fails on a second definition. The base no longer updates itself: the daily
@@ -322,6 +325,7 @@ bash infra/smoke-m2-slice4.sh     # M2 slice 4: fake provider on the real stack;
 bash infra/smoke-m2-slice3.sh     # M2 slice 3: migrate + seed (24 symbols, 5 universes, sessions), idempotent, provider_mappings rules
 bash infra/smoke-m2-slice5-step0.sh # M2 slice 5 step 0: two workers on two queues; ingest saturation never delays the ops canary; each worker wedged degrades ready
 bash infra/smoke-m2-slice5-step3-sweep.sh # M2 slice 5 step 3 part C: SIGKILL the ingest worker mid-task -> busy, then stale, then the sweep fails both rows (~5 min)
+bash infra/smoke-m2-slice5-fred-failures.sh # M2 slice 5: FRED 500/423/429 via a URL-echoing stub through the real worker; the api_key is in no stored or served text
 bash infra/smoke-m2-slice2.sh     # M2 slice 2: encrypt, SFTP copy to stand-in sshd (3 permission policies), restore with the private key only
 docker compose run --rm worker python -m app.backfill   # FRED revision history, every series not yet captured; --series A,B [--force]
 bash infra/backup.sh              # dump + manifest into dumps/. Restoring and the version trap: docs/BACKUP.md

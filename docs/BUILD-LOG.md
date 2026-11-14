@@ -2496,3 +2496,52 @@ The home the readiness rule points to: a stale series is visible without degradi
 - **Beat and `ingest.fred_poll`.** Observed (not exact-time): `task_runs` id 2725, a Beat-fired run on the `ingest` queue, succeeded, fired 2026-11-14 13:34 NY on wake after an
   ~18 h sleep (Beat catches up). The 08:00 firing with an awake machine is **still unobserved** (next expected 2026-11-15 13:00Z). Pinned deterministically instead:
   `tests/test_beat_schedule.py` (entry, ingest queue with no per-entry override, 6 h expiry, 08:00 New York in winter and summer); mutants on the hour and the queue are red.
+
+### M2 slice 5, step 6 and gate review (2026-11-14). Not committed; the gate is Kyle's call
+
+**Step 6.** `docs/HEALTH.md` gains "What has and has not been shown for a killed FRED" and drops a stale "Not built yet" on the 504 splitter. `.env.example` now says what
+`FRED_API_KEY` is required for and what a blank does (`NotConfigured`, loud, in both the backfill and the poll; read from the code, not assumed). `FRED_USER_AGENT` and
+`FRED_BASE_URL` were already documented.
+
+**The stub-FRED smoke (Kyle: close this one first, 2026-11-14).** A full poll against a stub was not built: it needs a seeded baseline per series, and it would run on the development
+database. What was built is narrower and aimed at what the column protects. `bash infra/smoke-m2-slice5-fred-failures.sh` runs ONE FRED call per status (500, 429, 423)
+through the real mapping path (`FredClient` -> `run_feed` -> `ingestion_runs` / `providers_health`), inside the worker container (real image, real Redis limiter, real Postgres), against a local stub
+that answers that status and **echoes the whole request URL, canary key included, in its body**. Feeds are `SMOKE_<status>` under provider `fred`, removed afterwards; no real series is touched.
+- **Why not a closed port** (Kyle's point, confirmed): a refused connection's text is `All connection attempts failed`, no URL. **Checked 2026-11-14 on httpx2 itself:** `Response.raise_for_status()`
+  raises `HTTPStatusError` with the message `Server error '500 Internal Server Error' for url '<full URL including api_key=...>'`. So the leak is real the day someone replaces our status mapping with
+  httpx2's. Our `_raise_for_status` never calls it: every message is fixed text, and `_get` catches `httpx2.HTTPError` and keeps only the class name.
+- **What it asserts:** a positive control (the stub does echo the key, so "absent" can fail); 500 and 423 map to `transient`, 429 to `rate_limited`, each retried (2 requests for 2 attempts); the exception text has
+  no key, no `api_key`, no URL; `providers_health.last_error` is exactly `<kind>:<Class>`; `ingestion_runs.error` is `failed <kind>:<Class>...` without the key; `/health/providers` and `/health/data`
+  serve the key nowhere (and `/health/providers` does list the SMOKE feeds, so the absence is not an empty answer); `/health/ready` stays 200.
+- **Mutation, run against rebuilt worker images, both red:** (1) the 500/423 branch appends `response.url` to its message: FAIL at "the exception text carries the key" (the stored columns would still
+  have been clean, because `ingestion_runs.error` is scrubbed by exact value and `last_error` takes the class only, so the text check is the one that catches layer 1 failing);
+  (2) `health_error` returns `kind:Class:text`: FAIL at "providers_health.last_error is 'transient:Transient:FRED answered 500', expected 'transient:Transient'". Sources restored, worker rebuilt clean, smoke green.
+- **Not covered:** 401/403, 404, 504, 400 and the schema-mismatch kinds through the real worker (unit-tested only); the poll's merge under failure; recovery from failure on the real stack (slice 4's smoke shows
+  recovery for the fake). 429's `Retry-After` is not known: the stub sends none, and no real 429 has been seen.
+
+**Beat: accepted** (Kyle). The schedule is pinned deterministically across DST (`tests/test_beat_schedule.py`), the queue is pinned, and the task ran through the real worker (task_runs 2725, ingest queue, succeeded).
+- **The near-miss, recorded:** due 13:00Z (08:00 New York), ran 18:34Z: **5 h 34 min late** after an ~18 h sleep.
+- **Whether the 6 h expiry was nearly hit: it was not, and this is checked, not assumed.** Celery computes a seconds-valued `expires` from the moment the message is SENT (`celery/app/amqp.py`, `add_seconds_to_datetime(now, expires)`),
+  and Beat sent it at 18:34Z. Lateness before sending does not consume it. The expiry bites only if the message waits more than 6 h in the queue AFTER Beat sends it (worker down or saturated through the morning).
+  For a laptop that sleeps, Beat and the worker wake together, so 6 h is not too short for that case.
+- **What can drop a day's poll silently** (stated so nobody rediscovers it mid-outage): (a) the expiry case above; (b) **Beat's schedule file is `/tmp/celerybeat-schedule` inside the container**, so recreating the `beat`
+  container (a rebuild, `up --force-recreate`) loses its last-run memory. **ASSUMED, not tested:** a fresh Beat then waits for the next 08:00 and does not run the missed one.
+- **Benign, by design:** a dropped poll loses nothing. The poll asks FRED for every vintage since `captured_through` (inclusive) and merges onto the stored chains, revisions dated by FRED's vintage, never by the poll,
+  so the next day's poll catches up and a double run merges zero new rows. This is the intended behaviour.
+- **Visibility, corrected:** one dropped poll is invisible by design. FRED feeds go stale in `/health/providers` after **72 h** (three missed polls; a threshold of poll health), and `/health/data` `data_age` after
+  the series' own threshold (9 days for the dailies). So an outage is seen at 3 days, not "over a week".
+- **On the expiry number:** I would not change 6 h for the sleeping-laptop case. If you want the poll to survive a worker outage through the morning, **20 h** (**ASSUMED**, chosen to stay under the next firing's 24 h, not
+  measured) costs nothing because a late or doubled poll is idempotent. Not changed; your call.
+
+**No FRED 429, 423 or 500 observed: accepted as an observation gap, permanently.** Two different sentences, now separate:
+1. *We have never seen FRED do it.* Fine forever; it is the provider's behaviour. HEALTH.md says so for each status.
+2. *We have never tested our handling.* **No longer true** for 500, 423 and 429: the smoke above runs each through the real worker and the credential invariant. Still not exercised through the real worker: the other
+   statuses in the table (above).
+
+**Slice 5 against its steps and the M2 gate clauses**
+- Steps 0 to 5 built and committed; step 6 above. Container gate: lint passes, 682 tests pass (2026-11-14); the new smoke passes.
+- "Re-ingesting identical payloads yields identical canonical rows": shown by `rows_written` 0 on re-runs and a second poll (real data), and by the idempotency tests.
+- Backfill resume: not built (slice 10); the skip is not resume.
+- **Slice 5 closes with two named gaps, not three:**
+  1. *Beat's 08:00 firing on an awake machine is unobserved* (accepted). Check `task_runs` after 2026-11-15 13:00Z with the machine awake; a Beat container recreate dropping a missed firing is ASSUMED, untested.
+  2. *No real FRED 429, 423 or 500 has ever been seen* (accepted permanently; the handling is now tested).
