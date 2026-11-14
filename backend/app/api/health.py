@@ -87,15 +87,24 @@ async def data(
     now: Annotated[datetime, Depends(get_now)],
     mode: Mode,
 ) -> dict[str, Any]:
-    async def load() -> tuple[dict[str, list[dict[str, Any]]], dict[str, datetime | None]]:
+    async def load() -> tuple[
+        dict[str, list[dict[str, Any]]], dict[str, datetime | None], list[dict[str, Any]]
+    ]:
         state = await probes.data_state()
         # The newest *success* of each backup step, which the latest-run rows cannot give.
         successes = {name: await probes.last_task_success(name) for name in (BACKUP, BACKUP_COPY)}
-        return state, successes
+        return state, successes, await probes.macro_age()
 
     loaded, failure = await _from_postgres(response, "data", load)
     if failure is not None or loaded is None:
         return failure or {"status": "unavailable", "error": "NoResult"}
-    state, successes = loaded
-    body = svc.assemble_data(state, now, successes, settings.backup_stale_after())
+    state, successes, macro_age = loaded
+    body = svc.assemble_data(
+        state,
+        now,
+        successes,
+        settings.backup_stale_after(),
+        macro_age,
+        settings.data_stale_after_all(),
+    )
     return body if mode == "private" else svc.redact_data(body)

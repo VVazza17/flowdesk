@@ -2447,3 +2447,38 @@ verifies is the drift this project keeps finding); **(2) the live oracle as a sk
 
 **Next, unchanged:** step 5, per-series data age on `/health/data` from `max(available_at)`, thresholds from each series' own observed `available_at - effective_at` lag as
 generous multiples; step 6, smoke, `HEALTH.md`, `.env.example`.
+
+### M2 slice 5, step 5 built: per-series data age on `/health/data` (2026-11-14)
+
+The home the readiness rule points to: a stale series is visible without degrading `/health/ready`. Not committed.
+
+- **One deviation from the recorded plan, decided by the data.** The 2026-11-11 plan said to size thresholds from each series' **lag** (`available_at - effective_at`). "Has a new
+  period stopped arriving?" is a question about the **gap between publications**, and the two differ widely on the real data (measured, five years of first prints):
+  DRCCLACBS publishes about every **91** days but its lag is **143**; HOUST about every 30 with a lag of 48; MORTGAGE30US weekly with a lag of 1; IORB's lag is zero or negative.
+  Sized from lag, the quarterly series would have taken over a year to read stale. So: **threshold = 3 x p95 of the gaps between consecutive publication days, rounded up
+  to whole days (floor 2)**; lag stays on the response as information. **p95, not the maximum**, so that the 2025 shutdown (CPI's longest gap 55 days against a median of 29,
+  HOUST's 114 against 30) does not set the threshold for five years. Result: daily series **9 days**, weekly **21 to 24**, monthly **105 to 109**, DRCCLACBS **286**.
+- **First prints only.** Age is `now - max(available_at)` over `revision = 0`: a revision proves the source is alive, not that new periods arrive, and DRCCLACBS revises almost
+  weekly. A test with a revision published long after the first print pins it.
+- **Thresholds are config, measured once** (`settings.FRED_DATA_STALE_AFTER`, dated 2026-11-14), like `FRED_SERIES`' boundaries, not computed per request. `python -m app.measure_cadence`
+  (read-only) prints gaps, the rule's suggestion and the configured value; **for all 17 series the suggestion equals the configured value**. A live-data test fails loudly in a
+  development stack if a threshold leaves 2 to 6 x its measured p95 (skips loudly on a fresh database, allowed by the gate).
+- **Four states, and the two non-fresh non-stale ones are deliberate:** `unjudged` (stored, no threshold: never reported fresh) and `no_data` (configured, nothing stored: not captured
+  yet, not stale). The age is **clamped at zero** because `available_at` is tonight's midnight for a value published today.
+- **Changed:** `app/services/health.py` (`assemble_data_age`, `assemble_data` gains `data_age`; the `HealthProbes` protocol gains `macro_age`), `health_probes.py`, `api/health.py`,
+  `settings.py`. **New:** `app/ingest/cadence.py` (pure), `app/measure_cadence.py`, `tests/{fakeprobes,test_cadence,test_data_age,test_macro_age_db,test_data_age_live,livedb}.py`.
+  `tests/livedb.py` is the shared "is there real captured data" gate (the step 4 live oracle now uses it). No migration. The public profile serves `data_age` unchanged (series ids and
+  ages are not secrets); a test pins it.
+- **A bug caught on the way, in my own measuring query:** `available_at` is 00:00 New York on the day AFTER publication, so a plain `AT TIME ZONE 'America/New_York'` date is one day late.
+  The gaps were unaffected (a constant shift) but the dates would have been wrong; the query subtracts a microsecond first (the inverse of `available_at_for`), and a test pins the
+  exact publication dates.
+- **Mutation: 17 mutants on the probe, the measuring query, the assembly, the route, the cadence maths and the config; all red.** One was green at first: removing the floor, because my
+  floor test landed on exactly 2 days through the ceiling (1.2 rounds up to 2). The floor only bites when 3 x p95 is under 2 days, which real data (whole-day gaps, p95 >= 1) never reaches;
+  the test now reaches it directly with a synthetic p95 of 0.2, and the floor is documented as a guard.
+- **Real endpoint, dev stack, 2026-11-14:** all 17 series `fresh`; e.g. DGS10 0.61 days against 9, CPIAUCSL 3.61 against 105 (newest period 2026-10-01, lag 40), DRCCLACBS 80.65 against 286
+  (lag 146), IORB's newest period 2026-11-16 (lag -3). **Cost, with its row count:** `macro_age` is one grouped scan, **11.3 ms median (11.6 max) over 56,852 `macro_metrics` rows
+  (38,355 first prints, 17 series)**. That is the macro load only; it is not a conclusion about any larger table.
+- **A hazard that bit me and is now guarded.** A `ruff format .` run from the repo root (a failed `cd`) reformatted the Python code blocks inside the FROZEN `docs/architecture.md`
+  and five spike files; git undid it, and a root `ruff.toml` now excludes `docs`, `spikes`, `tests` and `infra` (committed in `7966d94`).
+
+**Next:** step 6, smoke, `HEALTH.md`, `.env.example` (`FRED_API_KEY`), and the slice 5 gate review.

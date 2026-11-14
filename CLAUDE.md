@@ -118,7 +118,11 @@ below).
   report a `"."` first print, so a chain starting with `"."` and absent from it is stored as a gap first print, counted apart
   (ADR-0003 F2). `FRED_RULE_VERSION` bumps when a change makes the rules stricter or changes what is stored; for a
   relaxation, count first. The entry point warns that the machine must stay awake. See `docs/BUILD-LOG.md`.
-- **The point-in-time read is built (M2 slice 5, step 4, 2026-11-14; not yet committed).** `app/services/macro_read.py`: `series_as_of`,
+- **Per-series data age is built (M2 slice 5, step 5, 2026-11-14; not yet committed).** `/health/data` has `data_age`: each macro series' age (newest
+  **first print**, revisions excluded) against its own threshold, `fresh` / `stale` / `unjudged` / `no_data`. Thresholds are in `settings.FRED_DATA_STALE_AFTER`,
+  **measured from the gaps between publication days, not from lag** (3 x p95 over five years); regenerate with `python -m app.measure_cadence`. It never degrades
+  `/health/ready` and nothing pages on it. `tests/fakeprobes.py` is the complete fake of the probes: new tests use it.
+- **The point-in-time read is built (M2 slice 5, step 4, 2026-11-14), committed `e636804` and `7966d94`.** `app/services/macro_read.py`: `series_as_of`,
   `value_as_of`, `latest_as_of`, `revisions_of`. A row is visible when `available_at <= as_of` (inclusive; `as_of` must be timezone-aware), a filter on
   row **existence**; a stored NULL is a published gap (an `Observation` with `value=None`), never `Missing`. **No answer comes in five distinct kinds**
   (`Missing.reason`, decided in this order): `UNKNOWN_METRIC`, `BEFORE_VINTAGE_RECORD` (T precedes the series' first vintage), `PREDATES_VINTAGE_RECORD`

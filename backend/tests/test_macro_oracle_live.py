@@ -27,53 +27,19 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import pytest
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from app.ingest.macro import available_at_for
 from app.services.macro_read import Missing, Observation, Reason, revisions_of, value_as_of
-from tests.liveskips import live_reason
+from tests.livedb import require_live_series
 
 SPIKE = Path(__file__).resolve().parents[2] / "spikes" / "spike3b_evidence.json"
 NY = ZoneInfo("America/New_York")
 
 
-async def _captured(url: str) -> bool:
-    engine = create_async_engine(url, connect_args={"timeout": 3, "command_timeout": 3})
-    try:
-        async with engine.connect() as conn:
-            n = (
-                await conn.execute(
-                    text("SELECT count(*) FROM series_history_state WHERE series_id = 'CPIAUCSL'")
-                )
-            ).scalar_one()
-            return bool(n)
-    finally:
-        await engine.dispose()
-
-
 @pytest.fixture
 def live_url() -> Iterator[str]:
-    url = os.environ.get("DATABASE_URL", "")
-    if not url:
-        pytest.skip(live_reason("DATABASE_URL is not set"))
-    try:
-        captured = asyncio.run(_captured(url))
-    except Exception as exc:
-        pytest.skip(
-            live_reason(
-                f"the database is unreachable or not migrated ({type(exc).__name__}), "
-                "so there is no stored CPIAUCSL to check"
-            )
-        )
-    if not captured:
-        pytest.skip(
-            live_reason(
-                "CPIAUCSL has no captured history in this database (python -m app.backfill). "
-                "A fresh database, such as CI's, never does"
-            )
-        )
-    yield url
+    yield require_live_series(os.environ.get("DATABASE_URL", ""), "CPIAUCSL")
 
 
 def go(url: str, fn: Callable[[AsyncEngine], Awaitable[Any]]) -> Any:

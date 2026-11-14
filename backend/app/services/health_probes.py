@@ -12,6 +12,7 @@ from redis.asyncio import Redis
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from app.models.macro import MacroMetric
 from app.models.ops import BackfillRun, IngestionRun, ProvidersHealth, TaskRun
 from app.services.health import FeedRow
 from app.tasks.liveness import stale_cutoff
@@ -100,6 +101,25 @@ class SqlRedisProbes:
                 )
             ).scalar()
             return name
+
+    async def macro_age(self) -> list[dict[str, Any]]:
+        # revision = 0 on purpose: see HealthProbes.macro_age. One scan of macro_metrics grouped by
+        # metric: measured in the BUILD-LOG (step 5) with its row count, not assumed.
+        async with self._need_engine().connect() as conn:
+            result = await conn.execute(
+                select(
+                    MacroMetric.metric,
+                    func.max(MacroMetric.available_at),
+                    func.max(MacroMetric.effective_at),
+                )
+                .where(MacroMetric.revision == 0)
+                .group_by(MacroMetric.metric)
+                .order_by(MacroMetric.metric)
+            )
+            return [
+                {"metric": m, "newest_available_at": avail, "newest_effective_at": eff}
+                for m, avail, eff in result
+            ]
 
     async def provider_rows(self) -> list[FeedRow]:
         async with self._need_engine().connect() as conn:

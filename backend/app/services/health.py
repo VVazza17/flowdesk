@@ -16,6 +16,7 @@ from typing import Any, Protocol
 
 import structlog
 
+from app.ingest.macro import vintage_for
 from app.tasks.names import (
     BACKUP,
     BACKUP_COPY,
@@ -61,6 +62,12 @@ class HealthProbes(Protocol):
     async def running_task_fresh(self, task_names: Sequence[str], now: datetime) -> str | None:
         """The name of a task among `task_names` that is `running` with a fresh heartbeat, or None
         (app.tasks.liveness defines fresh)."""
+        ...
+
+    async def macro_age(self) -> list[dict[str, Any]]:
+        """Per stored macro metric: `newest_available_at` (when its newest first print became
+        available) and `newest_effective_at`. First prints only (revision 0): a revision proves the
+        source is alive, not that new periods are arriving."""
         ...
 
     async def data_state(self) -> dict[str, list[dict[str, Any]]]: ...
@@ -375,11 +382,67 @@ def assemble_backups(
     }
 
 
+def assemble_data_age(
+    rows: list[dict[str, Any]], now: datetime, thresholds: dict[str, timedelta]
+) -> dict[str, Any]:
+    """How old each macro series' newest NEW period is, against its own threshold (step 5).
+
+    This is DATA freshness, which `/health/providers` is not: `providers_health` moves whenever a
+    poll succeeds, changed data or not. A series is `stale` when the age of its newest first print
+    exceeds its threshold (`settings.FRED_DATA_STALE_AFTER`, measured from the series' own
+    publication gaps: app/ingest/cadence.py). It never degrades `/health/ready`: a source going
+    quiet is not the machinery stopping (the readiness rule), and a government shutdown reads
+    `stale` here, truthfully.
+
+    Per series: `fresh`, `stale`, `unjudged` (stored, no threshold), `no_data` (configured, nothing
+    stored: not captured yet). Boundary inclusive, like every health check: age == stale_after is
+    fresh. The age is clamped at zero: `available_at` is the END of the publication day in New York
+    (ADR-0003 addendum), so a value published today is "available" at tonight's midnight, in the
+    future, until then. `period_lag_days` (publication day minus period) is information, never
+    judged.
+    """
+    by_metric = {r["metric"]: r for r in rows}
+    series: list[dict[str, Any]] = []
+    for metric in sorted(set(by_metric) | set(thresholds)):
+        stale_after = thresholds.get(metric)
+        entry: dict[str, Any] = {
+            "metric": metric,
+            "stale_after_seconds": None
+            if stale_after is None
+            else int(stale_after.total_seconds()),
+        }
+        row = by_metric.get(metric)
+        if row is None:
+            series.append({**entry, "status": "no_data", "stale": None})
+            continue
+        available: datetime = row["newest_available_at"]
+        effective = row["newest_effective_at"]
+        age = max(timedelta(0), now - available)
+        entry |= {
+            "newest_effective_at": effective.isoformat(),
+            "newest_available_at": _iso(available),
+            "age_seconds": int(age.total_seconds()),
+            "period_lag_days": (vintage_for(available) - effective).days,
+        }
+        if stale_after is None:
+            series.append({**entry, "status": "unjudged", "stale": None})
+        else:
+            stale = age > stale_after
+            series.append({**entry, "status": "stale" if stale else "fresh", "stale": stale})
+    statuses = {e["status"] for e in series}
+    for status in ("stale", "no_data", "unjudged", "fresh"):
+        if status in statuses:
+            return {"status": status, "series": series}
+    return {"status": "no_series", "series": series}
+
+
 def assemble_data(
     state: dict[str, list[dict[str, Any]]],
     now: datetime,
     successes: dict[str, datetime | None],
     backup_stale_after: timedelta,
+    macro_age: list[dict[str, Any]] | None = None,
+    data_stale_after: dict[str, timedelta] | None = None,
 ) -> dict[str, Any]:
     """Pipeline state as recorded. The runs are reported without a verdict; `backups` has states.
 
@@ -392,7 +455,13 @@ def assemble_data(
     """
     empty = not any(state.get(k) for k in ("ingestion", "backfills", "tasks"))
     backups = assemble_backups(state.get("tasks", []), successes, now, backup_stale_after)
-    return {"status": "no_runs" if empty else "reported", **state, "backups": backups}
+    data_age = assemble_data_age(macro_age or [], now, data_stale_after or {})
+    return {
+        "status": "no_runs" if empty else "reported",
+        **state,
+        "backups": backups,
+        "data_age": data_age,
+    }
 
 
 def redact_providers(body: dict[str, Any]) -> dict[str, Any]:

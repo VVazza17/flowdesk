@@ -265,6 +265,44 @@ of an identical payload therefore reads N and writes 0, and that 0 is the observ
 clause "re-ingesting identical payloads yields identical canonical rows". Do not change it to count attempts:
 that would make a correct idempotent re-run look as if it had written everything again.
 
+### `data_age`: how old each macro series' newest NEW period is (M2 slice 5, step 5)
+
+`/health/data` carries `data_age: {status, series[]}`. **This is data freshness, and `/health/providers` is not that**:
+`providers_health.last_success_at` moves whenever a poll succeeds, changed data or not, so a quarterly series polled
+daily always reads fresh there. Here a series is judged by the age of its **newest first print** (`now -
+max(available_at)` over `revision = 0` rows) against a threshold of its own.
+
+Per series: `newest_effective_at` (the period), `newest_available_at`, `age_seconds`, `stale_after_seconds`,
+`period_lag_days` (publication day minus period: **information, never judged**; IORB's is negative because it
+publishes values for dates that have not happened yet), and a `status`:
+
+| `status` | Meaning | `stale` |
+|---|---|---|
+| `fresh` | age <= threshold (inclusive, like every health check) | `false` |
+| `stale` | age > threshold: no new period has appeared for longer than this series ever goes | `true` |
+| `unjudged` | stored, but no threshold configured. **Not** reported fresh | `null` |
+| `no_data` | configured, nothing stored (not captured yet). Not stale | `null` |
+
+The top-level `status` is the worst series, in the order `stale`, `no_data`, `unjudged`, `fresh` (`no_series` if none).
+
+- **First prints only, on purpose.** A revision proves the source is alive, not that new periods are arriving, and DRCCLACBS
+  gets a new vintage nearly every week: counting revisions would hide a quarter-long stall.
+- **The age is clamped at zero.** `available_at` is the end of the publication day in New York, so a value published today
+  is "available" at tonight's midnight, in the future, until then.
+- **Thresholds are measured from each series' own publication gaps, not its lag** (this departs from the 2026-11-11 plan,
+  which said lag; the data decided it). `settings.FRED_DATA_STALE_AFTER` = 3 x the 95th percentile of the gaps between
+  consecutive publication days over the last five years, rounded up to whole days (`app/ingest/cadence.py`): daily series
+  9 days, weekly 21 to 24, monthly 105 to 109, DRCCLACBS 286. p95 and not the maximum, so a shutdown does not set the
+  threshold for five years. **It reads `stale` during a shutdown, and that is true** (no new data is arriving) **and harmless**:
+  see below.
+- **It never degrades `/health/ready`, and nothing pages on it.** A source going quiet is not the machinery stopping (the
+  readiness rule), and the external heartbeat is gated on `/health/ready` alone (ADR-0008).
+- **Re-measure after a release-schedule change:** `docker compose run --rm worker python -m app.measure_cadence` prints gaps,
+  the suggested threshold and the configured one; a live-data test (`tests/test_data_age_live.py`) fails in a development
+  stack if a configured threshold leaves 2 to 6 x its measured p95.
+- **Cost:** the probe is one grouped scan of `macro_metrics`: **11 ms median over 56,852 rows (38,355 first prints, 17 series)**,
+  measured 2026-11-14. That is the macro load; it must be re-measured, not inherited, if this ever reads a larger table.
+
 ### Known bias: `available_at` for a FRED first print is up to a day late (M2 slice 5)
 
 Anything on this endpoint (or later, in the per-series data age) that is computed from `macro_metrics.available_at`

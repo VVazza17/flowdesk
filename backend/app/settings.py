@@ -331,6 +331,44 @@ def fred_base_url() -> str:
     return os.environ.get("FRED_BASE_URL", "").strip() or BASE_URL
 
 
+# --- Data age: how long without a NEW period is too long, per FRED series (M2 slice 5, step 5) ---
+# `/health/data` judges each series by the age of its newest first print against these. MEASURED,
+# not derived at request time: `python -m app.measure_cadence` prints the gaps between publication
+# days over the last five years and the threshold the rule (app/ingest/cadence.py: 3 x p95, rounded
+# up to whole days, at least 2) would choose; this table is updated from it by a person. A
+# live-data test (tests/test_data_age_live.py) fails loudly in a development stack if one drifts.
+#
+# MEASURED 2026-11-14 on the dev database (5 years of first prints). Daily series publish every
+# business day (gap p95 3 days); weekly: 7 to 8; monthly: 28 to 36; DRCCLACBS quarterly: 91.
+FRED_DATA_STALE_AFTER: dict[str, timedelta] = {
+    "DGS10": timedelta(days=9),
+    "DGS2": timedelta(days=9),
+    "T10Y2Y": timedelta(days=9),
+    "MORTGAGE30US": timedelta(days=21),
+    "BAMLH0A0HYM2": timedelta(days=9),
+    "BAMLC0A0CM": timedelta(days=9),
+    "CPIAUCSL": timedelta(days=105),
+    "UNRATE": timedelta(days=105),
+    "HOUST": timedelta(days=109),  # its longest gap, 114 days, is the 2025 US government shutdown
+    "CSUSHPINSA": timedelta(days=105),
+    "DRCCLACBS": timedelta(days=286),
+    "VIXCLS": timedelta(days=9),
+    "DTWEXBGS": timedelta(days=24),
+    "DFII10": timedelta(days=9),
+    "T10YIE": timedelta(days=9),
+    "SOFR": timedelta(days=9),
+    "IORB": timedelta(days=9),
+}
+
+
+def data_stale_after(metric: str) -> timedelta | None:
+    return FRED_DATA_STALE_AFTER.get(metric)
+
+
+def data_stale_after_all() -> dict[str, timedelta]:
+    return dict(FRED_DATA_STALE_AFTER)
+
+
 # The series of §6.4, with the two dates that bound each one's point-in-time record. MEASURED
 # 2026-11-12 against the real API (docs/BUILD-LOG.md, step 2c), not derived and not documented by
 # FRED: `first_vintage` is the first date from series/vintagedates; `first_covered_period` is the

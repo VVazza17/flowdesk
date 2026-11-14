@@ -232,6 +232,9 @@ class SecretProbes:
     async def running_task_fresh(self, task_names: Sequence[str], now: datetime) -> str | None:
         return None
 
+    async def macro_age(self) -> list[dict[str, Any]]:
+        return []
+
     async def data_state(self) -> dict[str, list[dict[str, Any]]]:
         return {
             "ingestion": [{"provider": "p", "feed": "f", "status": "failed", "error": SECRET}],

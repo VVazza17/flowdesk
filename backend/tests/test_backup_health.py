@@ -54,6 +54,9 @@ class FakeProbes:
     async def running_task_fresh(self, task_names: Sequence[str], now: datetime) -> str | None:
         return getattr(self, "busy_task", None)
 
+    async def macro_age(self) -> list[dict[str, Any]]:
+        return []
+
     async def provider_rows(self) -> list[FeedRow]:
         return []
 
