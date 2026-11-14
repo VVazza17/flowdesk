@@ -2331,3 +2331,115 @@ Kyle approved all three decisions and asked for four things, done before the pol
 - **A bonus from the models-match-migrations check:** it compares column comments, so it failed until the model carried the same words as
   migration 0009. The model's comments are now generated from the migration's literals, and from here on `alembic check` fails if the
   semantics on the database and in the model ever differ. The container gate (`lint` clean, `test` 614 passed) was green only after that.
+
+### M2 slice 5, step 4 plan: the point-in-time read (2026-11-14). PLAN, NOT BUILT; waiting on Kyle
+
+The slice's step list (2026-11-11) says: "4 point-in-time read in `services/`, tested against the GDPC1 oracle (23,526.085 on 2025-05-01, one
+2025 quarter then) · 5 per-series data age · 6 smoke, HEALTH.md, `.env.example`." Steps 0 to 3 are done and committed. This is step 4 only.
+
+**What it is.** The one place that answers "what did we know about metric M, about period P, at instant T": a row-**existence** filter on `available_at`
+(ADR-0003 decision 2), not a value filter. It is the primitive that live and replay will both read through (ADR-0004), so it takes `as_of` as an
+argument and reads no clock. It lives in `services/` because it touches the database; `signals/` stays pure.
+
+**Evidence the data is ready, found while planning (real data, dev database).** CPIAUCSL 2025-01-01 is stored as revision 0 = **319.086**, available
+2025-02-13 05:00 UTC, and revision 1 = **318.961**, available 2026-02-14 05:00 UTC. M0 spike 3b recorded first print 319.086 and current 318.961 for that
+period, independently, through `output_type=4`. The backfill's `output_type=3` chain reproduces both, and dates the revision to FRED's vintage
+(2026-02-13, CPI's annual seasonal-factor revision) where the old design would have dated it by whichever poll saw it first.
+
+**Proposed interface** (`app/services/macro_read.py`; frozen dataclasses; `as_of` must be timezone-aware, a naive one raises):
+- `value_as_of(engine, metric, period, as_of)` -> `Observation` or `Missing(reason)`.
+- `series_as_of(engine, metric, as_of, *, start=None, end=None)` -> `Snapshot(observations, coverage)`: for each period the **latest revision with
+  `available_at <= as_of`** (`DISTINCT ON (effective_at) ... ORDER BY effective_at, revision DESC`), periods with no such row absent.
+- `latest_as_of(engine, metric, as_of)` -> the newest period known at `as_of`. ADR-0003 decision 6 (a signal at the open resolves to the prior
+  session's value) needs no extra code: `available_at` is already the end of the publication day in New York, so 09:30 on day D cannot see D's print.
+- `revisions_of(engine, metric, period, as_of=None)` -> the chain as it stood, for diagnosis and for M5 ("what was believed when").
+- **Boundary:** `available_at <= as_of`, inclusive; a test pins the exact instant and one microsecond either side.
+- **A stored NULL is a published gap** (decision 7), returned as `Observation(value=None)`, never as `Missing`, and never forward-filled.
+- **`Missing` carries a reason, not a bare absence** (value objects, not exceptions): `NOT_PUBLISHED_AS_OF` (no row at or before `as_of`);
+  `PREDATES_VINTAGE_RECORD` (the period is earlier than the series' `first_covered_period`: a value exists in FRED's latest values but no publication
+  date does, exclusion A/B); `BEFORE_VINTAGE_RECORD` (`as_of` is earlier than the series' `first_vintage`: no replay of that day is possible);
+  `UNKNOWN_METRIC`. `Coverage` carries `first_vintage` and `first_covered_period` from `settings.FRED_SERIES`, so a caller sees the boundary and
+  "no value exists" is never confused with "a value exists but predates the vintage record" (the ADR-0003 addendum's own requirement of this step).
+- **No new index** (migration 0005 said: add `(metric, available_at)` when a measured query needs it). The acceptance check measures the largest series
+  (DGS10, about 5,600 rows) and the plan changes only if it is slow.
+
+**Tests.**
+1. `tests/test_macro_read.py` (scratch DB, synthetic chains): the exact boundary; **existence, not value** (a period first printed after `as_of` is absent,
+   one revised after `as_of` shows its earlier revision); a published gap versus a missing period; each `Missing` reason; ordering and `start`/`end`;
+   decision 6 (a daily series read at the next open); a naive `as_of` raises; and **two metrics with different chains, asserting one read never returns
+   the other's rows** (CLAUDE.md rule 9, checked by deleting the `WHERE metric`).
+2. A **recorded-real-data oracle** (`tests/fixtures/fred/ok_revisions_DRCCLACBS.json`, 142 periods and 62 vintages, live data): seed it through the
+   real `check_history` and `commit_history`, then for every vintage date (and one instant before it) compare `series_as_of` with an **independent
+   pure-Python resolution computed straight from the fixture's columns**. That tests the read against data it did not produce.
+3. `tests/test_macro_oracle_live.py`: the M0 spike 3b numbers for CPIAUCSL, PAYEMS excluded (not stored), against the **real stored data**: as of
+   2025-02-14 the 2025-01-01 CPI is 319.086; as of 2026-02-13 still 319.086; from 2026-02-14 05:00 UTC it is 318.961. It reads the main database
+   read-only and **skips when the series is not captured** (the container's fresh database), so it runs in a development stack after any rule change.
+4. Mutations as before: the comparison `<=` to `<`; revision order; the `metric` filter; `Missing` reasons swapped.
+
+**Files.** New: `app/services/macro_read.py`, `tests/test_macro_read.py`, `tests/test_macro_oracle.py` (the recorded-fixture oracle),
+`tests/test_macro_oracle_live.py`. Changed: `app/settings.py` (a small `fred_series(metric)` lookup), `docs/BUILD-LOG.md`, `CLAUDE.md`. **No migration, no
+route, no change to the writers.**
+
+**Decisions I need from Kyle.**
+1. **The oracle.** GDPC1 is **not** one of the 17 stored series (it was the M0 spike's test series, not in section 6.4's list), so the original
+   "GDPC1 oracle" cannot be run against stored data. I propose CPIAUCSL (above: independent M0 values, already reproduced by the real data) plus the
+   recorded DRCCLACBS fixture. The alternative is adding GDPC1 as an 18th series (a config row, two measured boundary dates, one backfill of a few
+   minutes), which is outside the spec's list and the feature freeze's spirit for the sake of one test. **Recommend CPIAUCSL.**
+2. **The live oracle as a skip-unless-captured test against the main database** (read-only; runs only in a development stack), rather than a one-off
+   recorded check. It costs a test that depends on a developer's data being present. **Recommend yes**, because it re-validates the stored data after
+   any rule change, which the container cannot.
+3. **No HTTP route in step 4.** Every number shown must exist in Postgres first, and the read is the primitive for it, but a route would need the
+   section 9 envelope (`{data, as_of, stale}`, which the health endpoints deliberately do not use, SPEC-DEFECTS) and the public-profile route invariant
+   (IDEA-019). Service-level only until a consumer needs it. **Recommend yes.**
+4. **`Missing` as a value, `as_of` inclusive and timezone-aware.** Confirm.
+
+**After step 4, unchanged:** 5 per-series data age on `/health/data` from `max(available_at)`, thresholds from each series' own observed
+`available_at - effective_at` lag as generous multiples (the 2026-11-11 decision); 6 smoke, `HEALTH.md`, `.env.example`. Not step 4: ADR-0004's snapshots and
+watermarks (M3), signals, bars (slice 6).
+
+### M2 slice 5, step 4 built: the point-in-time read (2026-11-14)
+
+Decisions taken by Kyle on the plan: **(1) both oracles**: CPIAUCSL as the live oracle, and GDPC1 captured once as a recorded fixture so that ADR-0003's
+stated assertion runs (GDPC1 is **not** added to the ingest list: a production scope change for a test is not worth it, but an ADR assertion nothing
+verifies is the drift this project keeps finding); **(2) the live oracle as a skip-unless-captured test, with the skip made loud**; **(3) no HTTP route**; **(4)
+`Missing` as a value, `as_of` inclusive and timezone-aware**, with the absence reasons specified up front. Not committed.
+
+- **New:** `app/services/macro_read.py` (`series_as_of`, `value_as_of`, `latest_as_of`, `revisions_of`; frozen `Observation`, `Missing`, `Coverage`, `Snapshot`;
+  `Reason`), `tests/{seedfred,liveskips,test_liveskips,test_macro_read,test_macro_oracle,test_macro_oracle_live}.py`, four recorded GDPC1 fixtures
+  (`tests/fixtures/fred/ok_{vintagedates,revisions,first_prints,latest}_GDPC1.json`, about 200 KB, captured 2026-11-14). **Changed:** `tests/conftest.py` (the
+  banner hook). No migration, no route, no writer changed.
+- **The five kinds of no answer** (the module docstring is the specification; precedence is the order): `UNKNOWN_METRIC` (nothing configured or stored);
+  `BEFORE_VINTAGE_RECORD` (T is before the series' first vintage, so no replay of that instant is possible for any period); `PREDATES_VINTAGE_RECORD` (the period is
+  earlier than `first_covered_period`: FRED's latest values hold a number but no publication date exists, exclusion A or B); `NOT_PUBLISHED_AS_OF` (a revision of
+  the period exists, none at or before T); `UNKNOWN_PERIOD` (no revision of that date exists at any time: not an observation date, or beyond what we hold).
+  `first_covered_period` is what keeps the second-to-last two distinct; a test shows the same question collapsing to `UNKNOWN_PERIOD` without the bounds, and
+  another shows all three on real GDPC1 data. A stored NULL is a published gap and is an `Observation`, never a `Missing`.
+- **ADR-0003's assertion, run.** On the recorded GDPC1: 23,526.085 as of 2025-05-01 (one 2025 quarter), 23,548.210 as of 2026-07-31 (+0.094%, four quarters). **The
+  assertion has to be pinned to the spike's date, not to "today":** the fixture shows Q1-2025 now reads **23,650.213**, revised by BEA's 2026-09-30 annual
+  update. The six rules also accept GDPC1's whole real history (a series the pipeline had never processed).
+- **The read against an independent resolution.** For every vintage date of two real series (DRCCLACBS 62, GDPC1 420; the instant itself and one microsecond before)
+  `series_as_of` equals a pure-Python resolution computed straight from the fixture's columns, which uses neither the database nor the read module. No instant
+  disagrees.
+- **The live oracle found nothing wrong and one thing worth recording.** Against the real stored data it reproduces all twelve of M0's CPIAUCSL points (first
+  print at its publication, the value then current at the spike's run time), the stored revision dated 2026-02-13 (CPI's annual seasonal revision, FRED's own date),
+  **and the one period M0 recorded as `"."`: October 2025 CPI, never collected during the US government shutdown, stored as a published NULL.** Two independent
+  paths (`output_type=4` in M0, `output_type=3` here) agree on every point.
+- **The loud skip, and a gate it would have broken.** The live oracle needs captured data, so on a fresh database it skips permanently, which is an
+  absent test unless it says so. Its reason carries a marker and `tests/conftest.py` prints a banner from `pytest_terminal_summary` listing every skipped
+  live-data check **whatever the verbosity** (CI passes no `-rs`); the banner is a pure function with its own tests. **Then I found what I had not checked:
+  `ci-checks.sh test` runs against the development stack's own Postgres, so on this machine the live oracle RAN in the container and passed; and GitHub's runner,
+  which runs the same script against a fresh database, would have skipped it, and the script's gate (`grep skipped="0"`) would have turned CI permanently
+  red** (or invited someone to weaken the gate). The docstring I had written, "not run by the container", was wrong. The gate is now
+  `python -m tools.junit_skips`: **any skip fails the run, except a skip whose reason carries the live-data marker, which is allowed and PRINTED again**, so it is
+  loud twice (pytest's banner, then the gate). Tested (a live skip passes and prints; a `DATABASE_URL not set` skip still fails; one bad skip among allowed ones
+  fails), and **verified in the pinned image against an empty database (what GitHub has): 3 skipped, the banner printed, the gate printed each one, exit 0**.
+- **Performance, measured on the real DGS10 (5,583 rows), no index added:** the whole series 54 ms (mostly transfer), one year 5 ms, a point read 3 ms. Migration
+  0005's "add `(metric, available_at)` when a measured query needs it" is not triggered.
+- **Mutation, 13 mutants on the read, all red**, after a correction: two stayed green at first (dropping `WHERE metric` from `value_as_of` and `latest_as_of`),
+  because my two-metric test gave both metrics chains of the same shape and the right answer arrived by luck of ordering. **The other key's data must be able
+  to WIN the ordering** (a higher revision of the same period, a newer period); that refinement is in CLAUDE.md rule 9.
+- **Verification:** in the pinned container `ci-checks.sh lint` passes and `ci-checks.sh test` passes, **650 tests**, with the live oracle running (it reads the dev
+  stack's database there); 618 locally before the gate tool and its tests were added. The mutations above and the empty-database run are the other evidence.
+
+**Next, unchanged:** step 5, per-series data age on `/health/data` from `max(available_at)`, thresholds from each series' own observed `available_at - effective_at` lag as
+generous multiples; step 6, smoke, `HEALTH.md`, `.env.example`.

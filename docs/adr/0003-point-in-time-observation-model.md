@@ -446,3 +446,13 @@ bare date range (`no_vintages_is_empty=True`); for the poll's own windows, a 400
 the vintage-date read as an optimisation brings the 400 back on every quiet day, as a permanent failure.** Pinned by
 `tests/test_fred_poll.py::test_the_poll_reads_the_vintage_dates_first_and_only_asks_for_windows_that_hold_one`, against a fake that answers a
 vintage-less window with FRED's real 400.
+
+### The Evidence section's GDPC1 assertion is now verified (2026-11-14)
+
+The Evidence section states that Q1-2025 GDP read 23,526.085 to an observer on 2025-05-01 and 23,548.210 on 2026-07-31 (+0.094%), and that one
+2025 quarter existed on the first date and four on the second. Until M2 slice 5 step 4, nothing re-checked that. `tests/test_macro_oracle.py::
+test_adr_0003_gdpc1_assertion_as_measured_in_m0_spike_3` now runs it against a recorded live GDPC1 history, loaded through the real rules and the real
+store and read through `app/services/macro_read.py`. GDPC1 is deliberately not one of the ingested series; the data is a fixture. **"Today" in that
+sentence is the spike's own date**: the same period now reads 23,650.213, revised by the 2026-09-30 annual update, so the assertion is pinned to
+2026-07-31 and not to the present. The end-of-day rule shows too: the print was published on 2025-04-30 and is invisible at 23:59:59 New York that day,
+visible at 00:00 on 2025-05-01.

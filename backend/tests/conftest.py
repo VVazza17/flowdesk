@@ -6,6 +6,7 @@ import os
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from alembic import command
@@ -13,6 +14,8 @@ from alembic.config import Config
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
+
+from tests.liveskips import banner_lines
 
 ALEMBIC_INI = Path(__file__).resolve().parent.parent / "alembic.ini"
 
@@ -39,3 +42,12 @@ def scratch_url(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
         yield url
     finally:
         asyncio.run(_admin(admin_url, f'DROP DATABASE "{name}" WITH (FORCE)'))
+
+
+def pytest_terminal_summary(terminalreporter: Any) -> None:
+    """Print every skipped live-data check, loudly, whatever the verbosity (tests/liveskips.py)."""
+    lines = banner_lines(terminalreporter.stats.get("skipped", []))
+    if lines:
+        terminalreporter.write_sep("=", "LIVE-DATA CHECKS NOT RUN", yellow=True, bold=True)
+        for line in lines:
+            terminalreporter.write_line(line, yellow=True)

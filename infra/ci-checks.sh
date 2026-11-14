@@ -77,8 +77,10 @@ check_test() {
     -e "DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}" -- '
     pip install --quiet --require-hashes -r requirements-dev.lock
     python -m pytest -p no:cacheprovider -W default --junitxml=/tmp/junit.xml
-    # DB tests skip without DATABASE_URL, so a broken setup would otherwise pass with no DB coverage.
-    grep -q "skipped=\"0\"" /tmp/junit.xml || { echo "FAIL: tests were skipped" >&2; exit 1; }
+    # DB tests skip without DATABASE_URL, so a broken setup would otherwise pass with no DB coverage:
+    # any skip fails the run, EXCEPT a live-data check, which skips by design on a fresh database
+    # (GitHub) and is allowed and printed, never silent (backend/tools/junit_skips.py).
+    python -m tools.junit_skips /tmp/junit.xml
   '
 }
 

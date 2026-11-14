@@ -118,7 +118,15 @@ below).
   report a `"."` first print, so a chain starting with `"."` and absent from it is stored as a gap first print, counted apart
   (ADR-0003 F2). `FRED_RULE_VERSION` bumps when a change makes the rules stricter or changes what is stored; for a
   relaxation, count first. The entry point warns that the machine must stay awake. See `docs/BUILD-LOG.md`.
-- **The daily FRED poll is built (2026-11-13), not yet committed.** `ingest.fred_poll`, Beat 08:00 America/New_York: per series, ask FRED only for the
+- **The point-in-time read is built (M2 slice 5, step 4, 2026-11-14; not yet committed).** `app/services/macro_read.py`: `series_as_of`,
+  `value_as_of`, `latest_as_of`, `revisions_of`. A row is visible when `available_at <= as_of` (inclusive; `as_of` must be timezone-aware), a filter on
+  row **existence**; a stored NULL is a published gap (an `Observation` with `value=None`), never `Missing`. **No answer comes in five distinct kinds**
+  (`Missing.reason`, decided in this order): `UNKNOWN_METRIC`, `BEFORE_VINTAGE_RECORD` (T precedes the series' first vintage), `PREDATES_VINTAGE_RECORD`
+  (the period is earlier than `first_covered_period`: a value exists upstream but cannot be dated), `NOT_PUBLISHED_AS_OF` (we know the period, T is too
+  early), `UNKNOWN_PERIOD` (no revision of that date exists at any time). It reads no clock and has no route. **Tests include a live-data oracle that checks the stored CPIAUCSL
+  against M0 spike 3b.** It runs wherever the series are captured (`ci-checks.sh test` reads the dev stack's database) and skips on a fresh one (GitHub), where
+  a banner prints and `tools/junit_skips.py` allows exactly that marked skip and prints it; any other skip still fails the gate.
+- **The daily FRED poll is built (2026-11-13), committed `2947902`.** `ingest.fred_poll`, Beat 08:00 America/New_York: per series, ask FRED only for the
   vintages since `captured_through` (inclusive), merge onto the stored chains, run the same six rules, append the new tail. Revisions are dated by FRED's
   vintage, never by the poll. It refuses a series with no captured history (`NoBaseline`). Run it by hand: `docker compose exec worker celery -A app.worker
   call ingest.fred_poll`. FRED feeds are judged at 72 h (three missed polls): poll health, not data freshness. Beat's first scheduled firing is unobserved.
@@ -276,7 +284,10 @@ elaboration is the most comfortable way to avoid execution.*
    and in production it would have advanced all seventeen rows), and the same hole was then found by mutation in
    `providers_health`. Anything keyed per series, feed, metric or provider needs a test with **two keys** that
    changes one and asserts the other is exactly as it was, and you check the test by deleting the `WHERE` and
-   watching it fail. A green suite over one-key fixtures says nothing about this.
+   watching it fail. A green suite over one-key fixtures says nothing about this. **And the other key's data must be able to WIN:**
+   give it a higher revision of the same period and a newer period, so that a read which lost its filter returns the wrong row
+   instead of the right one by luck. (Step 4's first two-metric test used chains of the same shape, and `value_as_of` and
+   `latest_as_of` could drop `WHERE metric` and still pass; mutation found it.)
 
 ## Commands
 
