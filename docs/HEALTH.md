@@ -135,7 +135,7 @@ The question is asked only when the canary says otherwise, and a failure to ask 
 to ask is not evidence). Only the ingest worker can be `busy`: the ops worker runs the canary and the sweep and
 nothing long, so nothing excuses a stuck ops canary.
 
-- **Which tasks count** (`app.tasks.names.INGEST_WORKER_TASKS`): Celery tasks that run in the ingest worker. A
+- **Which tasks count** (`app.tasks.names.INGEST_WORKER_TASKS`: `ingest.fake` and the daily `ingest.fred_poll`): Celery tasks that run in the ingest worker. A
   manual backfill (`python -m app.backfill`, a separate process) deliberately does **not**: its heartbeat says
   nothing about the ingest worker, and counting it would let a wedged ingest worker look busy for the length of a
   backfill.
@@ -211,6 +211,13 @@ change. It leaves an `ops.sweep` row each run, so it is visible. Revisit if it i
 
 Postgres only: a Redis outage does not affect it. Postgres unreachable, or tables missing →
 `503 {"status":"unavailable","error":"<Class>"}`.
+
+**FRED feeds (M2 slice 5, step 3).** Each of the 17 series is a feed, judged against **72 hours: three missed daily polls**
+(`settings.FRED_POLL_STALE_AFTER`, the same "three missed" rule as the canaries). This is **poll health, not data
+freshness**: `last_success_at` moves whenever a poll or backfill of the series succeeds, whether or not any data
+changed, so a quarterly series polled daily is fresh. How old the DATA is against its series' own publication cadence
+(ADR-0003 decision 5) is a different question, answered by step 4's point-in-time read. A poll that is refused for a
+series with no captured history (`NoBaseline`) or whose rules fail is a failed run, visible as `last_attempt_failed`.
 
 Top-level `status`, in precedence order. **Only `stale` means something broke.**
 
@@ -382,7 +389,7 @@ three 400s in the table were observed; the rest is documentation:
 | FRED answers | Kind | Retried within the run? | Note |
 |---|---|---|---|
 | 429 | `rate_limited` | yes | Documented past 120 requests a minute, with "a temporary block" for ignoring it. The status and every header except cookies are logged on the first natural one: whether FRED sends `Retry-After` is unknown. |
-| 400, "No vintage dates exist" | **depends on the caller** | no | **Backfill: `permanent`**, fails the run (the window was built from the series' own vintage dates, so none in it is a bug or a moved record). **Poll: not a failure at all**, an empty result and a normal quiet day (nothing was published in the window), so it must never show as a stuck or failed feed. The client raises `NoVintageDates` (a `Permanent`) unless the caller passes `no_vintages_is_empty=True`. ADR-0003 addendum, 2026-11-13. The default window can still not be sent with a vintage output type. |
+| 400, "No vintage dates exist" | **depends on the caller** | no | **Backfill: `permanent`**, fails the run (the window was built from the series' own vintage dates, so none in it is a bug or a moved record). **Poll: not a failure at all**, an empty result and a normal quiet day (nothing was published in the window), so it must never show as a stuck or failed feed. The client raises `NoVintageDates` (a `Permanent`) unless the caller passes `no_vintages_is_empty=True`. ADR-0003 addendum, 2026-11-13. The default window can still not be sent with a vintage output type. **The daily poll never sends this 400 by construction (an INVARIANT, see `FredClient.revisions_since`): it reads `series/vintagedates` first and only requests windows containing a vintage, so a quiet day merges to zero new rows. Removing that read as an "optimisation" brings the 400 back on every quiet day; a test (`test_the_poll_reads_the_vintage_dates_first_...`) fails if it goes.** |
 | 504 on a large `output_type=3` window | `transient` today | yes (**useless**) | **Observed 2026-11-13.** FRED's gateway answers 504 at 60 s for a window of about 600 or more vintage dates (about 0.16 s per vintage date). Retrying the same window can never succeed; the windowed fetch must split it (ADR-0003 addendum). Not built yet. |
 | 400, "exceeds the maximum number of vintage dates ... (2000)" | `permanent` | no | **Observed.** An explicit refusal, never a silent truncation; the backfill splits the real-time window (BUILD-LOG, step 2c). |
 | 400, "series does not exist" | `permanent` | no | ADR-0003 decision 8. **Observed**: HTTP 400, not 404. |

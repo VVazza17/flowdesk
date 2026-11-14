@@ -42,6 +42,10 @@ STATUS_SKIPPED = "skipped"
 # unchanged.
 FRED_BACKFILL = "ingest.fred_backfill"
 
+# The daily FRED poll (M2 slice 5, step 3). A Celery task on the ingest queue, scheduled by Beat at
+# 08:00 America/New_York (6.4): it asks FRED only for what changed since each series was captured.
+FRED_POLL = "ingest.fred_poll"
+
 # The sweep (M2 slice 5, step 3, part C): fails the `running` rows nothing is alive behind.
 # Runs on the `ops` queue, so a saturated ingest queue cannot starve it.
 SWEEP = "ops.sweep"
@@ -62,4 +66,4 @@ UNSWEPT_TASKS = (BACKUP, BACKUP_COPY)
 # is alive (checks.ingest_worker reports `busy`). Deliberately not FRED_BACKFILL: the backfill is a
 # separate process (`python -m app.backfill`), and its heartbeat says nothing about the ingest
 # worker; counting it would let a wedged ingest worker look busy for the length of a backfill.
-INGEST_WORKER_TASKS = (FAKE_INGEST,)
+INGEST_WORKER_TASKS = (FAKE_INGEST, FRED_POLL)

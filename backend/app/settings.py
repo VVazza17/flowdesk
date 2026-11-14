@@ -67,11 +67,22 @@ def heartbeat_interval_seconds() -> int:
 # without an entry reports stale=null rather than being judged against an invented number.
 FEED_STALE_AFTER: dict[tuple[str, str], timedelta] = {}
 
+# The daily FRED poll runs at this time, America/New_York (6.4; Beat's timezone is the same).
+FRED_POLL_HOUR, FRED_POLL_MINUTE = 8, 0
+FRED_POLL_STALE_AFTER = timedelta(hours=72)  # three missed daily runs
+
 
 def feed_stale_after() -> dict[tuple[str, str], timedelta]:
     """FEED_STALE_AFTER plus the fake provider's feed when it is switched on. Read at call time, so
     the API (which judges) and the worker (which ingests) share one environment variable."""
     thresholds = dict(FEED_STALE_AFTER)
+    # DECISION: every FRED feed is judged by the POLL, three missed daily runs (72 h), the same
+    # "three missed" rule as the canaries. This is poll health, not data freshness: last_success_at
+    # moves whenever a poll or backfill of the series succeeds, changed data or not, so a quarterly
+    # series polled daily is fresh. How stale the DATA is against its own publication cadence
+    # (ADR-0003 decision 5) is a separate question, answered by step 4's point-in-time read.
+    for item in FRED_SERIES:
+        thresholds[("fred", item.series_id)] = FRED_POLL_STALE_AFTER
     if fake_provider_enabled():
         thresholds[FAKE_FEED] = timedelta(
             seconds=fake_provider_interval_seconds() * WORKER_STALE_MULTIPLIER

@@ -167,3 +167,34 @@ def test_a_window_outside_what_fred_accepts_is_refused_before_any_request(window
     with pytest.raises(ValueError, match="window"):
         run(fake, window=window)
     assert fake.windows == []
+
+
+def test_revisions_since_asks_only_for_the_vintages_from_that_date_but_knows_them_all() -> None:
+    fake = FakeFred(250, limit=1000)
+    since = START + timedelta(days=200)
+    result = asyncio.run(_since(fake, since))
+    assert result.window_dates == tuple(d for d in fake.dates if d >= since)  # 50 of 250
+    assert result.vintage_dates == tuple(fake.dates)  # rule 5 needs every known date
+    assert all(s >= since for s, _e, _bad in fake.windows)  # nothing earlier was requested
+    assert fake.windows[0][0] == since  # inclusive: the last captured vintage is re-read
+    assert len(result.rows) == 50
+
+
+def test_revisions_since_a_date_with_no_later_vintage_asks_for_nothing() -> None:
+    fake = FakeFred(10, limit=1000)
+    result = asyncio.run(_since(fake, START + timedelta(days=500)))
+    assert result.window_dates == () and result.rows == () and fake.windows == []
+
+
+def test_revisions_since_splits_a_window_that_times_out_like_the_full_history() -> None:
+    fake = FakeFred(250, limit=10)
+    result = asyncio.run(_since(fake, START + timedelta(days=100)))
+    assert result.splits > 0 and result.final_window <= 10
+    assert len(result.rows) == 150  # nothing skipped, nothing repeated
+
+
+async def _since(fake: FakeFred, since: date) -> RevisionHistory:
+    async with FredClient(
+        KEY, user_agent="FlowDesk-test", transport=httpx2.MockTransport(fake)
+    ) as fred:
+        return await fred.revisions_since("S", since)

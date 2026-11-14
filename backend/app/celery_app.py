@@ -6,11 +6,20 @@ times in UTC internally (enable_utc), so the zone only decides what a crontab sc
 """
 
 from celery import Celery
+from celery.schedules import crontab
 
 from app import settings
 from app.logging import configure_logging
 from app.tasks.liveness import SWEEP_INTERVAL_SECONDS
-from app.tasks.names import CANARY, FAKE_INGEST, INGEST_CANARY, INGEST_QUEUE, OPS_QUEUE, SWEEP
+from app.tasks.names import (
+    CANARY,
+    FAKE_INGEST,
+    FRED_POLL,
+    INGEST_CANARY,
+    INGEST_QUEUE,
+    OPS_QUEUE,
+    SWEEP,
+)
 
 
 def create_celery() -> Celery:
@@ -24,7 +33,12 @@ def create_celery() -> Celery:
     app = Celery(
         "flowdesk",
         broker=broker,
-        include=["app.tasks.canary", "app.tasks.fake_ingest", "app.tasks.sweep"],
+        include=[
+            "app.tasks.canary",
+            "app.tasks.fake_ingest",
+            "app.tasks.fred_ingest",
+            "app.tasks.sweep",
+        ],
     )
     app.conf.update(
         timezone="America/New_York",
@@ -69,6 +83,15 @@ def create_celery() -> Celery:
                 "task": INGEST_CANARY,
                 "schedule": interval,
                 "options": {"expires": interval * 2, "queue": INGEST_QUEUE},
+            },
+            # The daily FRED poll, 08:00 America/New_York (Beat's timezone, above), on the default
+            # `ingest` queue. It expires after six hours: a poll that sat in the queue through an
+            # outage is not worth running at 3 pm, and the next morning's poll catches up anyway
+            # (it asks for everything since the last captured vintage).
+            "fred_poll": {
+                "task": FRED_POLL,
+                "schedule": crontab(hour=settings.FRED_POLL_HOUR, minute=settings.FRED_POLL_MINUTE),
+                "options": {"expires": 6 * 3600},
             },
             # Fails `running` rows nothing is alive behind (docs/HEALTH.md, "The sweep").
             "sweep": {

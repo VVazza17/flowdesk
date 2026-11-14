@@ -101,7 +101,7 @@ below).
   provider, a feed, the backup destination).** A killed provider is defined and tested in HEALTH.md; it is
   proven against the fake only, off by default (`FAKE_PROVIDER_ENABLED`). FRED and yfinance clients, their
   rate numbers and their error mappings are slices 5 and 6.
-- **FRED revision history: built through commit B and run for real (M2 slice 5, step 3, 2026-11-13); the poll (commit C) is not.**
+- **FRED revision history: built and run for real, including the daily poll (M2 slice 5, step 3, 2026-11-13).**
   `python -m app.backfill [--series A,B] [--force]` captures every series' **whole revision history** (`output_type=3`,
   each revision dated by FRED's vintage date) into `macro_metrics`, judged by the six rules of the ADR-0003 addendum
   (`app/ingest/macro.py`, `check_history`). It is an **entry point, not a Celery task** (Kyle's decision: one-time plus
@@ -118,6 +118,10 @@ below).
   report a `"."` first print, so a chain starting with `"."` and absent from it is stored as a gap first print, counted apart
   (ADR-0003 F2). `FRED_RULE_VERSION` bumps when a change makes the rules stricter or changes what is stored; for a
   relaxation, count first. The entry point warns that the machine must stay awake. See `docs/BUILD-LOG.md`.
+- **The daily FRED poll is built (2026-11-13), not yet committed.** `ingest.fred_poll`, Beat 08:00 America/New_York: per series, ask FRED only for the
+  vintages since `captured_through` (inclusive), merge onto the stored chains, run the same six rules, append the new tail. Revisions are dated by FRED's
+  vintage, never by the poll. It refuses a series with no captured history (`NoBaseline`). Run it by hand: `docker compose exec worker celery -A app.worker
+  call ingest.fred_poll`. FRED feeds are judged at 72 h (three missed polls): poll health, not data freshness. Beat's first scheduled firing is unobserved.
 - **Task liveness: heartbeat, `task_run_id` and the sweep are built (M2 slice 5, step 3, part C, 2026-11-13).** `run_recorded`
   beats `task_runs.heartbeat_at` every 30 s from a daemon thread (fresh for 120 s; `app/tasks/liveness.py` is the one
   definition) and publishes its row id; **`run_feed` refuses to run outside a recorded task** (`NotRecorded`) and links each
@@ -266,6 +270,13 @@ elaboration is the most comfortable way to avoid execution.*
 7. **Never shorten to hit a length target.** If something doesn't fit, say so — don't cut
    content to fit a line budget.
 8. **Commit directly to main.** Solo build, no review workflow, no feature branches.
+9. **Test keyed code with at least two keys.** A fixture with one series, one feed or one metric cannot catch an
+   `UPDATE` or `DELETE` that lost its `WHERE`: the one row it touches is the one row there is. This shipped once
+   (M2 slice 5: the poll's `UPDATE series_history_state` had no `WHERE series_id`, every test had a single series,
+   and in production it would have advanced all seventeen rows), and the same hole was then found by mutation in
+   `providers_health`. Anything keyed per series, feed, metric or provider needs a test with **two keys** that
+   changes one and asserts the other is exactly as it was, and you check the test by deleting the `WHERE` and
+   watching it fail. A green suite over one-key fixtures says nothing about this.
 
 ## Commands
 

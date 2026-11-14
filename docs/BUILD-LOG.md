@@ -2257,3 +2257,77 @@ then carries on, its late result is appended as a note, and the series' rows are
   canary keeps succeeding**, which leaves orphaned `running` rows unswept without any state changing. Revisit if that case is ever
   seen, or when a second task joins the ops queue; the check would be "the newest `ops.sweep` success is within a few sweep
   intervals", on the same pattern as `checks.worker`.
+
+### M2 slice 5, step 3: the daily FRED poll built (2026-11-13)
+
+After the three commits (the history backfill, the VIXCLS amendment, part C). **Not committed.**
+
+- **What it is.** `ingest.fred_poll` (`app/tasks/fred_ingest.py`), a Celery task on the ingest queue, Beat `crontab(08:00)`
+  America/New_York (the app timezone), expires after six hours. Every series in `settings.FRED_SERIES`, one after another, each
+  through `run_feed` (its own `ingestion_runs` and `providers_health` row), inside one `run_recorded` task; a failed series does not
+  stop the others and the task raises `PollIncomplete` naming them.
+- **How a series is polled** (`poll_body`, `app/ingest/fred_feed.py`). It reads `series_history_state.captured_through`, asks FRED
+  only for the vintages from that date **inclusive** (`FredClient.revisions_since`: the same windows, 504 splitting and 70 s timeout as
+  the backfill), takes the first prints of that window from `output_type=4` as the witness for new periods and the latest values
+  from `output_type=1`, **merges the new columns onto the stored chains and runs the same six rules (`check_history`) over the merged
+  history**, and `commit_history` appends only the tail that is new. So the poll cannot drift from the backfill's rules, and a quiet
+  day writes 0. **Every revision is dated by FRED's vintage, never by the poll** (ADR-0003 addendum, F1); a test polls "in 2031" and
+  stores the same `available_at`.
+- **It refuses** a series with no captured history or one captured under older rules (`NoBaseline`, before it even asks FRED):
+  polling an empty series would write its whole history with `available_at` set to today, which destroys point-in-time history.
+  The fix is `python -m app.backfill`, never to poll harder.
+- **Rule 3 is the poll's daily consistency check:** after the merge every chain must end at FRED's latest value. A revision published
+  between the poll's own reads makes it refuse; the next poll sees both. A known race, kept because the alternative is to store a chain
+  that stops short.
+
+**Decisions made while building, for Kyle to confirm or reverse:**
+1. **`since` is inclusive, so the 400 "No vintage dates exist" never arises in the poll, and `no_vintages_is_empty` goes unused by it.** The
+   windows are built from `series/vintagedates`, and the last captured vintage is itself in the window, so a quiet day is "no vintage
+   after `captured_through`", which merges to zero new rows. Inclusive on purpose: a vintage is a DATE, so if FRED changes a value again on
+   the date we already captured, the stored column and the fetched one disagree and rules 5 and 6 refuse (a test pins exactly that);
+   exclusive would have missed it. The context-dependent 400 stays built and tested (the capability Kyle asked for); the poll's design
+   simply never sends a window without vintages, so for it a 400 would mean the record moved and is fatal.
+2. **The poll leaves the exclusion counts in `series_history_state` alone** (`commit_history(exclusion_counts=False)`): its verdict sees
+   pre-vintage and gap periods only where its window touches them, so overwriting the A, B and duplicates counts would replace a full
+   capture's numbers with a partial view. The totals (`first_prints`, `revisions`) are over the merged history and are refreshed.
+3. **FRED feed thresholds: 72 h = three missed daily polls (`FRED_POLL_STALE_AFTER`).** Until now the FRED feeds had none and read as
+   unjudged. This is poll health, not data freshness (HEALTH.md says so); ADR-0003 decision 5's per-series cadence is about the data and
+   belongs to step 4's point-in-time read. A missing `FRED_API_KEY` makes the task raise `NotConfigured` rather than silently do nothing.
+
+**Verification.** 15 poll tests on a real Postgres (quiet day writes 0 and leaves the state alone; a revision is dated by FRED; a new period is a
+witnessed first print; a gap first print the `output_type=4` omits; a revised pre-vintage period is excluded, not an error; no baseline; older
+rules; a same-date change is refused as rules 5 and 6; a chain not ending at the latest value is refused as rule 3; catching up through 258 vintages
+with 504 splitting; exclusion counts untouched; one series never touches another's state row; `poll_all` continues past a failure; each run is linked
+to its task; the poll's own clock cannot move a date) plus Beat's schedule, the route, the feed thresholds, `revisions_since`, and the merge helper.
+**Mutation: 13 mutants, all red**; one (`UPDATE` without its `WHERE series_id`) was first green because every test had a single state row, which
+would have advanced all seventeen in production, so a two-series test was added. **Run for real against the real API on the dev database:** the
+poll succeeded for all 17 series in about 70 s (about 4 s each), wrote **13 rows** (observations FRED published since the captures that day), and a
+**second poll wrote 0**. What it wrote is worth reading: DGS10's 2026-11-11 (Veterans Day) is a stored NULL, published as `"."` on 2026-11-13; IORB's
+three periods dated 11-14 to 11-16 were published on 11-13 (`available_at < effective_at`, legitimate by the migration's own note); every
+`available_at` is the end of the publication day in New York, which for today's rows is hours AFTER we polled (the documented always-late bias).
+`/health/providers` now judges the FRED feeds `fresh`.
+
+**Not done.** Beat has not yet fired the schedule: the poll was started by hand (`celery call`), and the first scheduled run is 08:00 America/New_York
+tomorrow if the stack is up (the entry and its route are pinned by tests, not observed firing). No smoke script with a stub FRED (the plan's part E);
+the real-API run above stands in for it today. Step 4 (the point-in-time read) is next.
+
+#### The poll: follow-ups approved (2026-11-13), the invariant, the column semantics, and a general lesson
+
+Kyle approved all three decisions and asked for four things, done before the poll's commit:
+- **The invariant that makes the 400 unreachable is recorded where someone tempted to optimise will read it:** `FredClient.revisions_since`
+  and `poll_body` (docstrings), HEALTH.md (beside the 400 row), and the ADR (a "Decision 4 as built" note). It is also **executable**: the
+  shared fake FRED now answers a vintage-less window with the real 400 (measured 2026-11-12), so a poll that skipped the vintage-date read gets
+  it in a test, and a second test shows the 400 directly. Mutation: replacing the read with a direct request turns the test red.
+- **`series_history_state` now says, on its own columns, that it carries two vintages of truth** (migration **0009**, `COMMENT ON TABLE` and on
+  every column, visible in `\d+` and any SQL client; the model docstring says the same). `captured_through`, `completed_at`, `ingestion_run_id`,
+  `first_prints` and `revisions` are CURRENT (the poll advances them); the five exclusion and duplicate counts are AS OF THE LAST FULL CAPTURE and
+  the poll never updates them, so `captured_through` can be a week newer than the counts beside it. Three tests: every column has a comment (so a
+  column added later must say which vintage it belongs to), the frozen ones say "NOT CURRENT", and the two sets match the code that decides.
+- **The general lesson, written up as CLAUDE.md rule 9 ("test keyed code with at least two keys"):** the poll's `UPDATE series_history_state` had no
+  `WHERE series_id`, it survived a green suite because every fixture had a single series, and in production it would have advanced all seventeen
+  rows. That is not a FRED trap. **Applying it found the same hole elsewhere:** dropping the `WHERE provider, feed` from either `providers_health`
+  update in `run_feed` left every test green (a failure in one feed would have stamped `last_error` on every feed). `test_one_feeds_outcome_never_touches_
+  another_feeds_health_row` now covers both paths, and both mutants are red. The other keyed writes are by primary key, which is unique.
+- **A bonus from the models-match-migrations check:** it compares column comments, so it failed until the model carried the same words as
+  migration 0009. The model's comments are now generated from the migration's literals, and from here on `alembic check` fails if the
+  semantics on the database and in the model ever differ. The container gate (`lint` clean, `test` 614 passed) was green only after that.

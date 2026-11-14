@@ -6,7 +6,16 @@ from celery import Celery
 from app import settings
 from app.celery_app import create_celery
 from app.tasks import canary as canary_module
-from app.tasks.names import CANARY, FAKE_INGEST, INGEST_CANARY, INGEST_QUEUE, OPS_QUEUE
+from app.tasks import fred_ingest
+from app.tasks.names import (
+    CANARY,
+    FAKE_INGEST,
+    FRED_POLL,
+    INGEST_CANARY,
+    INGEST_QUEUE,
+    INGEST_WORKER_TASKS,
+    OPS_QUEUE,
+)
 
 
 def test_beat_schedules_the_canary_at_the_configured_interval(
@@ -137,3 +146,39 @@ def test_ingest_worker_threshold_is_three_canary_intervals_not_the_task_limit(
     # It does not move with the hard time limit any more.
     monkeypatch.setenv("INGEST_TASK_MAX_SECONDS", "36000")
     assert settings.ingest_worker_stale_after() == settings.worker_stale_after()
+
+
+def test_the_fred_poll_runs_at_0800_new_york_on_the_ingest_queue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from celery.schedules import crontab
+
+    monkeypatch.setenv("REDIS_URL", "redis://example:6379/0")
+    app = create_celery()
+    entry = app.conf.beat_schedule["fred_poll"]
+    assert entry["task"] == FRED_POLL == "ingest.fred_poll"
+    assert entry["schedule"] == crontab(hour=8, minute=0)  # 6.4: 08:00, in Beat's timezone
+    assert str(app.timezone) == "America/New_York"
+    # A poll that sat in the queue through an outage is not worth running at 3 pm.
+    assert entry["options"] == {"expires": 6 * 3600}
+    assert app.amqp.router.route({}, FRED_POLL)["queue"].name == INGEST_QUEUE
+    assert fred_ingest.fred_poll.name == FRED_POLL
+
+
+def test_the_poll_counts_toward_the_ingest_worker_being_busy() -> None:
+    # A Celery task of the ingest worker: a fresh beat of it proves that worker alive.
+    assert FRED_POLL in INGEST_WORKER_TASKS
+
+
+def test_every_fred_series_is_judged_by_three_missed_daily_polls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import timedelta
+
+    monkeypatch.delenv("FAKE_PROVIDER_ENABLED", raising=False)
+    stale = settings.feed_stale_after()
+    fred = {feed: after for (provider, feed), after in stale.items() if provider == "fred"}
+    assert set(fred) == {s.series_id for s in settings.FRED_SERIES} and len(fred) == 17
+    assert set(fred.values()) == {timedelta(hours=72)}
+    # This is poll health: last_success_at moves whenever a poll of the series succeeds, changed
+    # data or not, so a quarterly series polled daily is fresh. It is not data freshness.

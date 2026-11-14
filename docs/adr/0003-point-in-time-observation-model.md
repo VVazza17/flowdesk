@@ -435,3 +435,14 @@ the record is stored (229 of 229, 229 of 229, 138 of 138). So the new rule chang
 (VIXCLS), and changes nothing already stored. **`FRED_RULE_VERSION` is therefore not bumped**, and the principle is
 recorded with the evidence: *bump the version when a change makes the rules stricter or changes what is stored;
 for a relaxation, count whether any captured series would store differently, and bump if any would.* Here none would.
+
+### Decision 4 as built: the poll avoids the 400 instead of absorbing it (2026-11-13)
+
+The amended decision 4 above says the "No vintage dates exist" 400 is a quiet day for a poll. As built, the poll never receives it, and the
+reason is an **invariant**: it reads `series/vintagedates` first and only requests real-time windows that contain a vintage date, and its
+window starts at the last captured vintage (inclusive), which is itself one. A quiet day is therefore "no vintage after
+`captured_through`", which merges to zero new rows. The context-dependent handling stays built and tested for any caller that does ask for a
+bare date range (`no_vintages_is_empty=True`); for the poll's own windows, a 400 would mean FRED's record moved and is fatal. **Whoever removes
+the vintage-date read as an optimisation brings the 400 back on every quiet day, as a permanent failure.** Pinned by
+`tests/test_fred_poll.py::test_the_poll_reads_the_vintage_dates_first_and_only_asks_for_windows_that_hold_one`, against a fake that answers a
+vintage-less window with FRED's real 400.

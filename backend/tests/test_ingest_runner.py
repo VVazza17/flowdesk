@@ -365,3 +365,54 @@ def test_no_credential_reaches_the_stored_error_columns(
     assert KEY not in run_row  # the whole stored ingestion_runs row
     assert KEY not in served  # and what the private profile would serve of it
     assert json.loads(health_row)["last_error"] == "transient:Transient"
+
+
+def test_one_feeds_outcome_never_touches_another_feeds_health_row(scratch_url: str) -> None:
+    """Every fixture above has ONE feed, so a `providers_health` UPDATE that lost its
+    `WHERE provider, feed` would have stamped every feed with one feed's failure and no test would
+    have noticed (found by mutation, 2026-11-13). Two feeds, each outcome in turn."""
+
+    async def ok(ctx: FeedContext) -> FeedResult:
+        return FeedResult(rows_read=1, rows_written=1)
+
+    async def broken(ctx: FeedContext) -> FeedResult:
+        raise Transient("boom")
+
+    async def go() -> dict[str, dict[str, Any]]:
+        engine = create_async_engine(scratch_url)
+        try:
+            async with recorded(engine):
+                await register_feeds(engine, [("fake", "ticks"), ("fred", "GDPC1")])
+                # A succeeds: B must still read "never succeeded".
+                await run_feed(
+                    engine, "fake", "ticks", ok, limiter=CountingLimiter(), sleep=Sleeps()
+                )
+                after_a_ok = {
+                    r["feed"]: r for r in await _all(engine, "SELECT * FROM providers_health")
+                }
+                # B fails: A must keep its success and show no error.
+                with pytest.raises(Transient):
+                    await run_feed(
+                        engine,
+                        "fred",
+                        "GDPC1",
+                        broken,
+                        limiter=CountingLimiter(),
+                        retry=RetryPolicy(attempts=1),
+                        sleep=Sleeps(),
+                    )
+                after_b_failed = {
+                    r["feed"]: r for r in await _all(engine, "SELECT * FROM providers_health")
+                }
+            return {"a_ok": after_a_ok, "b_failed": after_b_failed}
+        finally:
+            await engine.dispose()
+
+    out = asyncio.run(go())
+    b_after_a = out["a_ok"]["GDPC1"]
+    assert b_after_a["last_success_at"] is None and b_after_a["last_error_at"] is None
+    a_after_b = out["b_failed"]["ticks"]
+    assert a_after_b["last_success_at"] == out["a_ok"]["ticks"]["last_success_at"] is not None
+    assert a_after_b["last_error_at"] is None and a_after_b["last_error"] is None
+    b = out["b_failed"]["GDPC1"]
+    assert b["last_error_at"] is not None and b["last_success_at"] is None

@@ -371,3 +371,19 @@ def test_vixcls_holidays_published_as_gaps_in_2014_are_stored_not_refused() -> N
         v.revised_pre_vintage_excluded == 61
     )  # the 93 minus the 32 inside the record: exclusion B
     assert all(v.chains[p] == (Revision(date(2014, 2, 5), None),) for p in inside)
+
+
+def test_stored_chains_round_trip_through_rows_from_chains_into_the_same_chains() -> None:
+    from app.ingest.macro import rows_from_chains
+
+    stored = {
+        P1: (Revision(V1, D(1)), Revision(V3, D(2))),
+        P2: (Revision(V2, None),),
+    }
+    v = check(
+        rows_from_chains(stored),
+        {P1: (V1, D(1)), P2: (V2, None)},
+        {P1: D(2), P2: None},
+    )
+    assert v.ok and dict(v.chains) == stored
+    assert v.duplicates_skipped == 0

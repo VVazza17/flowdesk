@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
 import structlog
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
@@ -103,6 +103,7 @@ async def commit_history(
     captured_through: date,
     rule_version: int,
     ingestion_run_id: int | None,
+    exclusion_counts: bool = True,
     clock: Callable[[], datetime] = _utcnow,
 ) -> Committed:
     """Judge the fetched history against what is stored and, only if every rule holds, write it.
@@ -112,6 +113,12 @@ async def commit_history(
     written, including the state row. Otherwise each period's chain is extended from where the
     stored one ends (revision number = position), and the state row is upserted, in one
     transaction under an advisory lock on the metric.
+
+    `exclusion_counts=False` is the poll: its verdict is over the merged history, so the totals
+    (`first_prints`, `revisions`) are complete, but it sees pre-vintage and gap periods only when
+    the
+    window happens to touch them, so the A and B counts and the duplicates count stay as the last
+    full capture left them. They are not summed or guessed. The state row must already exist.
     """
     now = clock()
     async with engine.begin() as conn:
@@ -144,24 +151,35 @@ async def commit_history(
                 pg_insert(MacroMetric).values(fresh[i : i + _BATCH]).on_conflict_do_nothing()
             )
             created += result.rowcount or 0
-        state = {
+        state: dict[str, object] = {
             "rule_version": rule_version,
             "captured_through": captured_through,
             "completed_at": now,
             "ingestion_run_id": ingestion_run_id,
             "first_prints": verdict.first_prints,
             "revisions": verdict.revisions,
-            "no_vintage_excluded": verdict.no_vintage_excluded,
-            "gaps_without_o4_first_print_skipped": verdict.gaps_without_o4_first_print_skipped,
-            "gap_first_prints_without_o4_witness": verdict.gap_first_prints_without_o4_witness,
-            "revised_pre_vintage_excluded": verdict.revised_pre_vintage_excluded,
-            "duplicates_skipped": verdict.duplicates_skipped,
         }
-        await conn.execute(
-            pg_insert(SeriesHistoryState)
-            .values(series_id=metric, **state)
-            .on_conflict_do_update(index_elements=[SeriesHistoryState.series_id], set_=state)
-        )
+        if exclusion_counts:
+            state |= {
+                "no_vintage_excluded": verdict.no_vintage_excluded,
+                "gaps_without_o4_first_print_skipped": verdict.gaps_without_o4_first_print_skipped,
+                "gap_first_prints_without_o4_witness": verdict.gap_first_prints_without_o4_witness,
+                "revised_pre_vintage_excluded": verdict.revised_pre_vintage_excluded,
+                "duplicates_skipped": verdict.duplicates_skipped,
+            }
+            await conn.execute(
+                pg_insert(SeriesHistoryState)
+                .values(series_id=metric, **state)
+                .on_conflict_do_update(index_elements=[SeriesHistoryState.series_id], set_=state)
+            )
+        else:
+            updated = await conn.execute(
+                update(SeriesHistoryState)
+                .where(SeriesHistoryState.series_id == metric)
+                .values(**state)
+            )
+            if not updated.rowcount:
+                raise SchemaMismatch(f"no captured history of {metric} to advance")
     return Committed(created, verdict)
 
 

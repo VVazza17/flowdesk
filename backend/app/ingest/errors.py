@@ -59,6 +59,13 @@ class NotRecorded(Permanent):
     `app.tasks.runs.run_recorded`."""
 
 
+class NoBaseline(Permanent):
+    """The poll was asked for a series that has no captured history (or one captured under older
+    rules). Without this guard a poll of an empty series would write the whole history with
+    `available_at` set to today, which silently destroys point-in-time history. The fix is
+    `python -m app.backfill`, never to poll harder."""
+
+
 class GatewayTimeout(Transient):
     """FRED's gateway answered HTTP 504 (measured 2026-11-13: at exactly 60 s, for an
     `output_type=3` window of about 600 or more vintage dates).

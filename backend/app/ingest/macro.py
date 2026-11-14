@@ -339,3 +339,17 @@ def check_history(
         revised_pre_vintage_excluded=len(revised_pre_vintage),
         duplicates_skipped=duplicates,
     )
+
+
+def rows_from_chains(chains: Mapping[date, Sequence[Revision]]) -> list[FredVintageRow]:
+    """What is already stored, as the wide rows FRED would have sent for it.
+
+    The poll merges these with the rows of a short window and runs the SAME six rules over the
+    result, so the stored history and the new columns are judged together (a stored column that the
+    window contradicts is rule 5 or rule 6, a chain that no longer ends at the latest value is rule
+    3) and the poll cannot drift from the backfill's rules.
+    """
+    return [
+        FredVintageRow(period, {rev.vintage: rev.value for rev in chain})
+        for period, chain in chains.items()
+    ]

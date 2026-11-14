@@ -106,6 +106,9 @@ class RevisionHistory:
     rows: tuple[FredVintageRow, ...]
     splits: int
     final_window: int
+    # The vintage dates whose windows were actually requested: all of `vintage_dates` for a full
+    # history, only those on or after `since` for `revisions_since`.
+    window_dates: tuple[date, ...] = ()
 
 
 class FredClient:
@@ -251,13 +254,44 @@ class FredClient:
         failure per window). A single date that still times out is raised: nothing smaller exists.
         Every attempt, including a timed-out one, takes a slot of the rate budget.
         """
-        if not 1 <= window <= VINTAGE_DATE_CAP:
-            raise ValueError(f"window must be between 1 and {VINTAGE_DATE_CAP}")
+        _check_window(window)
         dates = await self.vintage_dates(series_id)
+        return await self._history_over(series_id, dates, dates, window)
+
+    async def revisions_since(
+        self, series_id: str, since: date, *, window: int = HISTORY_WINDOW
+    ) -> RevisionHistory:
+        """What changed on or after `since`: the same windowing, over the vintage dates from it.
+
+        `since` is the poll's last captured vintage, INCLUSIVE, on purpose: re-reading it is cheap,
+        and if FRED changed a value again on that same date (a vintage is a date, not an instant)
+        the stored column and the fetched one disagree and the rules refuse, instead of the
+        difference being missed. The windows are built from `series/vintagedates`, so "No vintage
+        dates exist" cannot be a quiet day here: it would mean the record moved, and it is raised.
+        `vintage_dates` on the result is the series' FULL list (rule 5 needs every known date);
+        `window_dates` is what was asked for.
+
+        INVARIANT, and why this reads `series/vintagedates` first instead of asking for
+        `[since, 9999-12-31]` directly: FRED answers HTTP 400 "No vintage dates exist" to a window
+        holding no vintage date, and on a quiet day (nothing published since the last capture) a
+        window that starts after the last captured vintage holds none. The poll never sends such a
+        window: it only requests windows built from dates it has just been told exist, and the last
+        captured vintage is itself one of them. Removing the vintage-date read "as an optimisation"
+        brings that 400 back on every quiet day, as a permanent failure. (A caller that really does
+        want a bare date range passes `no_vintages_is_empty=True` to `observations`.) Pinned by
+        tests/test_fred_poll.py::test_the_poll_reads_the_vintage_dates_first_...
+        """
+        _check_window(window)
+        dates = await self.vintage_dates(series_id)
+        return await self._history_over(series_id, dates, [d for d in dates if d >= since], window)
+
+    async def _history_over(
+        self, series_id: str, all_dates: Sequence[date], fetch_dates: Sequence[date], window: int
+    ) -> RevisionHistory:
         rows: list[FredVintageRow] = []
         size, splits, i = window, 0, 0
-        while i < len(dates):
-            chunk = dates[i : i + size]
+        while i < len(fetch_dates):
+            chunk = fetch_dates[i : i + size]
             try:
                 rows.extend(await self._revision_window(series_id, chunk[0], chunk[-1]))
             except GatewayTimeout:
@@ -270,7 +304,7 @@ class FredClient:
                 )
                 continue
             i += len(chunk)
-        return RevisionHistory(tuple(dates), tuple(rows), splits, size)
+        return RevisionHistory(tuple(all_dates), tuple(rows), splits, size, tuple(fetch_dates))
 
     async def _revision_window(
         self, series_id: str, start: date, end: date
@@ -395,6 +429,11 @@ class FredClient:
             raise Transient(f"FRED request failed ({type(exc).__name__})") from None
         _raise_for_status(response)
         return response
+
+
+def _check_window(window: int) -> None:
+    if not 1 <= window <= VINTAGE_DATE_CAP:
+        raise ValueError(f"window must be between 1 and {VINTAGE_DATE_CAP}")
 
 
 def _loggable_headers(response: httpx2.Response) -> dict[str, str]:
