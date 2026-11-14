@@ -2516,22 +2516,22 @@ that answers that status and **echoes the whole request URL, canary key included
 - **Mutation, run against rebuilt worker images, both red:** (1) the 500/423 branch appends `response.url` to its message: FAIL at "the exception text carries the key" (the stored columns would still
   have been clean, because `ingestion_runs.error` is scrubbed by exact value and `last_error` takes the class only, so the text check is the one that catches layer 1 failing);
   (2) `health_error` returns `kind:Class:text`: FAIL at "providers_health.last_error is 'transient:Transient:FRED answered 500', expected 'transient:Transient'". Sources restored, worker rebuilt clean, smoke green.
+- **The two leak sinks guard different things; neither covers the other** (noted beside both assertions in the smoke, and at `_raise_for_status` in `app/ingest/fred.py`). The exception MESSAGE (logs, anywhere exception text
+  surfaces) is caught only by the exception-text check. The STORED columns (served over HTTP) are caught only by the exact `last_error` check. Mutant 1 above stayed clean in the columns; mutant 2 never touched the message.
+  Deleting either check as redundant removes a sink's only guard. **`response.raise_for_status()` is the reflex call and it leaks** (its message carries `api_key=`); a comment says so where error handling gets added.
 - **Not covered:** 401/403, 404, 504, 400 and the schema-mismatch kinds through the real worker (unit-tested only); the poll's merge under failure; recovery from failure on the real stack (slice 4's smoke shows
   recovery for the fake). 429's `Retry-After` is not known: the stub sends none, and no real 429 has been seen.
 
 **Beat: accepted** (Kyle). The schedule is pinned deterministically across DST (`tests/test_beat_schedule.py`), the queue is pinned, and the task ran through the real worker (task_runs 2725, ingest queue, succeeded).
-- **The near-miss, recorded:** due 13:00Z (08:00 New York), ran 18:34Z: **5 h 34 min late** after an ~18 h sleep.
-- **Whether the 6 h expiry was nearly hit: it was not, and this is checked, not assumed.** Celery computes a seconds-valued `expires` from the moment the message is SENT (`celery/app/amqp.py`, `add_seconds_to_datetime(now, expires)`),
-  and Beat sent it at 18:34Z. Lateness before sending does not consume it. The expiry bites only if the message waits more than 6 h in the queue AFTER Beat sends it (worker down or saturated through the morning).
-  For a laptop that sleeps, Beat and the worker wake together, so 6 h is not too short for that case.
-- **What can drop a day's poll silently** (stated so nobody rediscovers it mid-outage): (a) the expiry case above; (b) **Beat's schedule file is `/tmp/celerybeat-schedule` inside the container**, so recreating the `beat`
-  container (a rebuild, `up --force-recreate`) loses its last-run memory. **ASSUMED, not tested:** a fresh Beat then waits for the next 08:00 and does not run the missed one.
-- **Benign, by design:** a dropped poll loses nothing. The poll asks FRED for every vintage since `captured_through` (inclusive) and merges onto the stored chains, revisions dated by FRED's vintage, never by the poll,
-  so the next day's poll catches up and a double run merges zero new rows. This is the intended behaviour.
-- **Visibility, corrected:** one dropped poll is invisible by design. FRED feeds go stale in `/health/providers` after **72 h** (three missed polls; a threshold of poll health), and `/health/data` `data_age` after
-  the series' own threshold (9 days for the dailies). So an outage is seen at 3 days, not "over a week".
-- **On the expiry number:** I would not change 6 h for the sleeping-laptop case. If you want the poll to survive a worker outage through the morning, **20 h** (**ASSUMED**, chosen to stay under the next firing's 24 h, not
-  measured) costs nothing because a late or doubled poll is idempotent. Not changed; your call.
+- **Lateness, with no near-miss.** Due 13:00Z (08:00 New York), ran 18:34Z: 5 h 34 min late after an ~18 h sleep. That lateness did not use up the 6 h expiry: Celery computes a seconds-valued `expires` from the
+  moment the message is SENT (`celery/app/amqp.py`, `add_seconds_to_datetime(now, expires)`), and Beat sent it at 18:34Z. Checked in the Celery source, not assumed. The expiry bites only if the message waits more than 6 h
+  in the queue after Beat sends it (worker down or saturated). On a laptop that sleeps, Beat and the worker wake together.
+- **Expiry stays 6 h** (Kyle's decision). A morning-long worker outage costs one day of a poll that reads the full revision history on its next run; a longer expiry buys nothing real.
+- **A dropped poll is benign, by design, and visible at 72 h.** The poll asks FRED for every vintage since `captured_through` (inclusive) and merges onto the stored chains, revisions dated by FRED's vintage, never by the poll,
+  so the next poll catches up and a double run merges zero new rows. One dropped poll is not alerted; the FRED feeds go stale in `/health/providers` after **72 h** (three missed polls: poll health). `/health/data` `data_age`
+  is a different quantity (the age of the newest first print, 9 days for the daily series) and is not the signal for a dropped poll.
+- **Beat's schedule file is `/tmp/celerybeat-schedule` inside the container**, so last-run memory is probably lost on a container recreate. **ASSUMED, untested.** Parked as **IDEA-043**, not fixed: compose is not
+  touched at a gate boundary, and a skipped idempotent poll costs nothing. Its unfreeze trigger is slice 6, whose price polls are not catch-up-safe in the same way.
 
 **No FRED 429, 423 or 500 observed: accepted as an observation gap, permanently.** Two different sentences, now separate:
 1. *We have never seen FRED do it.* Fine forever; it is the provider's behaviour. HEALTH.md says so for each status.

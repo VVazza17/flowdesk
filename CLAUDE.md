@@ -144,7 +144,7 @@ below).
   has a `busy` state (alive, not degraded) and its threshold is three canary intervals again, not the task limit. Tests that call
   `run_feed` directly use `tests/recorded.py`. A manual backfill is a task execution and has a `task_runs` row.
 - **Slice 5 gate review is written (2026-11-14, `docs/BUILD-LOG.md`); it closes with two named gaps:** Beat's 08:00 firing on an awake machine is unobserved
-  (schedule, queue and DST pinned by test; a Beat container recreate dropping a missed firing is ASSUMED, untested), and no real FRED 429/423/500 has ever been seen
+  (schedule, queue and DST pinned by test; a Beat container recreate dropping a missed firing is ASSUMED, untested, IDEA-043), and no real FRED 429/423/500 has ever been seen
   (handling is tested: `infra/smoke-m2-slice5-fred-failures.sh` runs each through the real worker and proves the api_key is in no stored or served text). Step 6 is done.
 - **The base image is pinned by digest** (M2 slice 0, 2026-11-08). The `FROM` line in `backend/Dockerfile` is
   the one definition. The CI tooling container, `lock-deps.sh` and the smokes read it through
@@ -250,8 +250,8 @@ Do not resolve these unilaterally. Flag and wait.
 
 No new modules, signals, or integrations until M0–M2 are built and six months of outcome data
 exist. An idea goes in `docs/IDEAS.md` with an unfreeze trigger — not in the code, not in the
-spec. Thirteen are parked there (IDEA-001 … IDEA-012, and IDEA-039: Tailscale for the backup copy, triggered by
-the first deployed instance).
+spec. Fourteen are parked there (IDEA-001 … IDEA-012, IDEA-039: Tailscale for the backup copy, triggered by
+the first deployed instance, and IDEA-043: Beat's schedule file lives in /tmp, triggered by slice 6's price polls).
 
 The doc's own rationale: *every remaining risk in this project is an execution risk, and design
 elaboration is the most comfortable way to avoid execution.*

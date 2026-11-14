@@ -598,6 +598,30 @@ there too.) Also check how "Run unattended" behaves on the desktop's Windows rel
 
 ---
 
+## IDEA-043: Beat's schedule file lives in the container's /tmp, so last-run memory is probably lost on every recreate
+
+**Status:** Parked
+**Raised:** 2026-11-14
+
+### The proposal
+Give `beat` a named volume for `/tmp/celerybeat-schedule` (the `--schedule` path in `docker-compose.yml`), so Beat remembers
+when each entry last ran across a container recreate (a rebuild, `up --force-recreate`).
+
+### What is known and what is not
+- **Known (checked 2026-11-14):** the file is `/tmp/celerybeat-schedule` inside the container, and the compose file has no volume for it.
+- **ASSUMED, not tested:** a freshly created Beat, with no file, waits for the next 08:00 and does not run a firing it missed while it was
+  down. Nobody has recreated `beat` between 08:00 and the next firing to see.
+
+### Why it is parked
+A skipped daily FRED poll costs nothing: the poll asks for every vintage since `captured_through` and merges, so the next run
+catches up and a double run writes zero rows. And compose is not touched at a gate boundary (Kyle, 2026-11-14).
+
+### Unfreeze triggers
+Any Beat entry that is NOT idempotent and catch-up-safe, or one whose missed firing costs data. Slice 6's price polls are the first
+candidate: a missed intraday bar is not recovered by a later run the way a FRED vintage is. Decide at slice 6 planning, with the test above run first.
+
+---
+
 ## How to add an idea here
 
 ```

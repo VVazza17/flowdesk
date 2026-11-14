@@ -446,6 +446,11 @@ def _raise_for_status(response: httpx2.Response) -> None:
     code = response.status_code
     if 200 <= code < 300:
         return
+    # DO NOT call `response.raise_for_status()` here or anywhere in this client, however natural it
+    # looks. Its message is `Server error '500 ...' for url '<the full URL>'`, and the URL carries
+    # `api_key=<our key>` (checked on httpx2, 2026-11-14). That text would reach logs and whatever
+    # surfaces exception text. Map the status to our own fixed-text exception, as below.
+    # Pinned by infra/smoke-m2-slice5-fred-failures.sh (the exception-text check).
     if code == 429:
         # FRED's errors page documents 429 past 120 requests a minute and says nothing about
         # Retry-After. The first natural 429 is how the real behaviour gets measured, so keep

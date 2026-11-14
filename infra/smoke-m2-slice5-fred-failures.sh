@@ -51,11 +51,17 @@ check_status() { # status kind
   local s=$1 kind=$2
   [ "$(py "print([r['kind'] for r in rows if r.get('status')==$s][0])")" = "$kind" ] || fail "$s did not map to $kind"
   [ "$(py "print([r['hits'] for r in rows if r.get('status')==$s][0])")" = "2" ] || fail "$s: expected 2 requests (1 try + 1 retry)"
+  # SINK 1 of 2, the exception MESSAGE (logs, and anywhere exception text surfaces). Only THIS check
+  # sees it: the stored columns below stay clean even when the message leaks, because last_error takes
+  # the class only and ingestion_runs.error is scrubbed by exact value. Do not delete it as redundant.
   py "t=[r['text'] for r in rows if r.get('status')==$s][0]; sys.exit(1 if '$KEY' in t or 'api_key' in t or 'http' in t else 0)" \
     || fail "$s: the exception text carries the key, an api_key parameter or a URL"
   local cls le re
   cls=$(py "print([r['cls'] for r in rows if r.get('status')==$s][0])")
   le=$(one "SELECT last_error FROM providers_health WHERE provider='fred' AND feed='SMOKE_$s'")
+  # SINK 2 of 2, the STORED columns (served over HTTP by /health/providers). Only THIS check sees a
+  # health_error that starts storing text: the exception-text check above reads a different object.
+  # The two guard different things and neither covers the other. Do not delete either as redundant.
   [ "$le" = "$kind:$cls" ] || fail "$s: providers_health.last_error is '$le', expected '$kind:$cls'"
   re=$(one "SELECT status || ' ' || coalesce(error,'') FROM ingestion_runs WHERE provider='fred' AND feed='SMOKE_$s'")
   case "$re" in "failed $kind:$cls"*) ;; *) fail "$s: ingestion_runs row is '$re'";; esac
