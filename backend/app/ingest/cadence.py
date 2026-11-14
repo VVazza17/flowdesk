@@ -28,6 +28,18 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 
 MULTIPLE = 3
+# FLOOR: the shortest threshold this module will ever suggest.
+#
+# FORWARD-LOOKING, NOT DEAD CODE. DO NOT DELETE. Today every gap is a whole number of days (the
+# publication DAYS of 17 daily-to-quarterly FRED series), so p95 >= 1, 3 x p95 >= 3 days, and the
+# floor never binds; a test reaches it directly with a synthetic p95. It is here for slice 6
+# (prices), whose cadences are sub-daily: measured in a finer unit, 3 x p95 can be minutes, and a
+# threshold that tight reads ordinary jitter as stale. The floor is what stops that.
+#
+# CAUTION: 2 DAYS IS A DAILY-CADENCE VALUE. For an intraday feed it would be absurdly lax. When the
+# unit becomes finer, the floor must become a function of the unit or the series class; do not
+# reuse this number as it stands. (And `gaps_between` counts DAYS between dates: a sub-daily
+# cadence needs timestamps there too.)
 FLOOR = timedelta(days=2)
 WINDOW_YEARS = 5
 

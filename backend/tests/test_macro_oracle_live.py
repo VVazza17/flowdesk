@@ -115,7 +115,7 @@ def test_cpi_2025_01_was_revised_on_fred_s_vintage_not_on_a_polls(live_url: str)
 
     async def fn(engine: AsyncEngine) -> dict[str, Any]:
         return {
-            "chain": await revisions_of(engine, "CPIAUCSL", period),
+            "chain": await revisions_of(engine, "CPIAUCSL", period, as_of=None),
             "day_before": await value_as_of(
                 engine, "CPIAUCSL", period, datetime(2026, 2, 13, 23, 59, 59, tzinfo=NY)
             ),

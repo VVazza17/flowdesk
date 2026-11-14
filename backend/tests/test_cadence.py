@@ -64,8 +64,9 @@ def test_one_outlier_does_not_set_the_threshold_a_shutdown_gap_is_visible_not_ba
 def test_the_threshold_rounds_up_to_whole_days_and_never_goes_below_the_floor() -> None:
     assert suggest_stale_after(Cadence(10, 1.0, 3.0, 4)) == timedelta(days=9)  # a daily series
     assert suggest_stale_after(Cadence(10, 1.0, 3.2, 4)) == timedelta(days=10)  # 9.6 -> up
-    # 3 x 0.2 = 0.6 days would round up to 1 day, below the floor. (Real gaps are whole days, so
-    # p95 >= 1 and the floor is a guard that real data never reaches; the test reaches it directly.)
+    # 3 x 0.2 = 0.6 days would round up to 1 day, below the floor. Whole-day gaps (every FRED
+    # series today) have p95 >= 1, so only a FINER unit, slice 6's sub-daily cadences, binds the
+    # floor: forward-looking, not dead. A synthetic p95 reaches it, so deleting it is red.
     assert suggest_stale_after(Cadence(10, 0.5, 0.2, 1)) == FLOOR
 
 

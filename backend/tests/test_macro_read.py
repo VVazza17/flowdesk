@@ -292,9 +292,9 @@ def test_revisions_of_returns_the_chain_in_order_optionally_as_it_stood(scratch_
         await put(engine, "M", P1, 1, D("1.1"), date(2020, 3, 10))
         await put(engine, "M", P1, 2, D("1.2"), date(2020, 5, 10))
         return (
-            await revisions_of(engine, "M", P1),
+            await revisions_of(engine, "M", P1, as_of=None),
             await revisions_of(engine, "M", P1, as_of=at(date(2020, 4, 1))),
-            await revisions_of(engine, "M", P2),
+            await revisions_of(engine, "M", P2, as_of=None),
         )
 
     full, as_it_stood, none = go(scratch_url, fn)
@@ -311,7 +311,7 @@ def test_a_naive_as_of_is_refused_by_every_read(scratch_url: str) -> None:
             lambda: series_as_of(engine, "M", naive),
             lambda: value_as_of(engine, "M", P1, naive),
             lambda: latest_as_of(engine, "M", naive),
-            lambda: revisions_of(engine, "M", P1, naive),
+            lambda: revisions_of(engine, "M", P1, as_of=naive),
         ):
             with pytest.raises(ValueError, match="timezone-aware"):
                 await call()
@@ -362,7 +362,7 @@ def test_one_metrics_reads_never_return_another_metrics_rows(scratch_url: str) -
             "series": vals(await series_as_of(engine, "A", t, bounds=a)),
             "value": observed(await value_as_of(engine, "A", P1, t, bounds=a)),
             "latest": observed(await latest_as_of(engine, "A", t, bounds=a)),
-            "revisions": [o.value for o in await revisions_of(engine, "A", P1)],
+            "revisions": [o.value for o in await revisions_of(engine, "A", P1, as_of=None)],
             "b_series": vals(await series_as_of(engine, "B", t, bounds=a)),
             "b_value": observed(await value_as_of(engine, "B", P1, t, bounds=a)),
             "b_latest": observed(await latest_as_of(engine, "B", t, bounds=a)),
@@ -389,7 +389,10 @@ def test_revisions_of_without_as_of_is_the_whole_chain_and_says_so_where_it_is_r
         await put(engine, "M", P1, 0, D("1.0"), date(2020, 1, 20))
         await put(engine, "M", P1, 1, D("9.9"), date(2021, 1, 20))  # published long after T
         t = at(date(2020, 6, 1))
-        return await revisions_of(engine, "M", P1), await revisions_of(engine, "M", P1, as_of=t)
+        return (
+            await revisions_of(engine, "M", P1, as_of=None),
+            await revisions_of(engine, "M", P1, as_of=t),
+        )
 
     whole, as_it_stood = go(scratch_url, fn)
     assert [o.value for o in whole] == [D("1.0"), D("9.9")]  # the post-T revision IS returned
@@ -397,3 +400,18 @@ def test_revisions_of_without_as_of_is_the_whole_chain_and_says_so_where_it_is_r
     assert "CAN LEAK POST-T KNOWLEDGE" in (macro_read.__doc__ or "")
     doc = macro_read.revisions_of.__doc__ or ""
     assert "NOT a point-in-time read" in doc and "look-ahead" in doc
+
+
+def test_the_whole_chain_read_must_be_spelled_out_it_cannot_be_reached_by_omission(
+    scratch_url: str,
+) -> None:
+    """`as_of` is a required keyword. `revisions_of(engine, m, p)` is a TypeError, not a quiet
+    hindsight read that looks like the other three functions."""
+
+    async def fn(engine: AsyncEngine) -> None:
+        with pytest.raises(TypeError, match="as_of"):
+            await revisions_of(engine, "M", P1)  # type: ignore[call-arg]
+        with pytest.raises(TypeError):
+            await revisions_of(engine, "M", P1, at(date(2020, 4, 1)))  # type: ignore[call-arg]
+
+    go(scratch_url, fn)

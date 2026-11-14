@@ -127,7 +127,7 @@ below).
   row **existence**; a stored NULL is a published gap (an `Observation` with `value=None`), never `Missing`. **No answer comes in five distinct kinds**
   (`Missing.reason`, decided in this order): `UNKNOWN_METRIC`, `BEFORE_VINTAGE_RECORD` (T precedes the series' first vintage), `PREDATES_VINTAGE_RECORD`
   (the period is earlier than `first_covered_period`: a value exists upstream but cannot be dated), `NOT_PUBLISHED_AS_OF` (we know the period, T is too
-  early), `UNKNOWN_PERIOD` (no revision of that date exists at any time). It reads no clock and has no route. **`revisions_of` without `as_of` returns the whole chain and can leak post-T knowledge (it is not a point-in-time read; never in a signal path).** **Timed only on ~5,600 rows of daily macro; slice 6 must re-measure, not inherit.** **Tests include a live-data oracle that checks the stored CPIAUCSL
+  early), `UNKNOWN_PERIOD` (no revision of that date exists at any time). It reads no clock and has no route. **`revisions_of(..., as_of=None)` returns the whole chain and can leak post-T knowledge (it is not a point-in-time read; never in a signal path); `as_of` is a REQUIRED keyword, so that read is spelled out at every call site.** **Timed only on ~5,600 rows of daily macro; slice 6 must re-measure, not inherit.** **Tests include a live-data oracle that checks the stored CPIAUCSL
   against M0 spike 3b.** It runs wherever the series are captured (`ci-checks.sh test` reads the dev stack's database) and skips on a fresh one (GitHub), where
   a banner prints and `tools/junit_skips.py` allows exactly that marked skip and prints it; any other skip still fails the gate.
 - **The daily FRED poll is built (2026-11-13), committed `2947902`.** `ingest.fred_poll`, Beat 08:00 America/New_York: per series, ask FRED only for the
@@ -292,6 +292,12 @@ elaboration is the most comfortable way to avoid execution.*
    had a single series, and in production it would have advanced all seventeen rows); the same hole was then found in
    `providers_health`, and again in step 4, where `value_as_of` and `latest_as_of` could drop `WHERE metric` and pass a
    two-metric test whose chains had the same shape. A green suite over one-key or same-shape fixtures says nothing about this.
+10. **Mark every number in a plan as MEASURED or ASSUMED.** MEASURED means the date and how (`measured 2026-11-12, six requests`);
+    ASSUMED means it says so (`assumed, not verified`). The risk is not the wrong number, it is a later reader treating an
+    assumption as settled and building on it. Three plan numbers have been falsified by measurement so far, each written as fact:
+    ADR-0003 **F1** (a revision's date can only be known to a poll interval), ADR-0003 **F2** (a `"."` published in no vintage) and
+    step 5's thresholds (sized from **lag**; the gap between publications is the quantity). When a measurement falsifies one,
+    say so in the plan entry (an addendum, for an ADR) and keep this count.
 
 ## Commands
 
@@ -322,6 +328,13 @@ bash infra/backup.sh              # dump + manifest into dumps/. Restoring and t
 bash infra/restore.sh dumps/<name>.dump --db <new-or-empty-db>   # refuses a non-empty target
 bash infra/restore-backup.sh <name>.tar.age --identity <age key> --db <new-or-empty-db>   # a scheduled backup, on the desktop
 bash infra/ci-checks.sh lint      # also: test | audit | license | arm64. Same code ci.yml runs
+                                  # LINT COVERAGE (pinned by backend/tests/test_lint_coverage.py): the gate runs INSIDE backend/ as
+                                  #   `ruff check .`, `ruff format --check .`, `mypy` (config: backend/pyproject.toml; mypy `files` =
+                                  #   app, tests, alembic, tools = every directory of Python we own; 113 files). NEVER check a list of
+                                  #   paths (`ruff check app tests` let alembic/ through). The repo-root ruff.toml is only a guard for a
+                                  #   run from the repo root (it keeps the FROZEN spec and spikes/ out of `ruff format .`, which rewrites
+                                  #   Markdown code blocks); it does not change what backend/ lints (the nearest config wins). Not
+                                  #   linted by anything: infra/*.sh (use `bash -n`), docs/ and spikes/ (frozen), repo-root tests/ (fixtures).
 bash infra/lock-deps.sh           # after editing backend/requirements*.txt; regenerates the locks
 docker compose down               # add -v to wipe the pgdata volume; inactive profiles are skipped,
                                   # so a public stack needs `docker compose --profile public down`

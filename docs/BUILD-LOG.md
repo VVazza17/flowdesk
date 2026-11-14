@@ -2474,7 +2474,7 @@ The home the readiness rule points to: a stale series is visible without degradi
   exact publication dates.
 - **Mutation: 17 mutants on the probe, the measuring query, the assembly, the route, the cadence maths and the config; all red.** One was green at first: removing the floor, because my
   floor test landed on exactly 2 days through the ceiling (1.2 rounds up to 2). The floor only bites when 3 x p95 is under 2 days, which real data (whole-day gaps, p95 >= 1) never reaches;
-  the test now reaches it directly with a synthetic p95 of 0.2, and the floor is documented as a guard.
+  the test now reaches it directly with a synthetic p95 of 0.2. *(Corrected 2026-11-14: this entry first called the floor "a guard real data never reaches", which invites deleting it. It is forward-looking, for slice 6's sub-daily cadences, and its VALUE, 2 days, is a daily-cadence value that must become unit-aware then; the note is beside `FLOOR` in `app/ingest/cadence.py`.)*
 - **Real endpoint, dev stack, 2026-11-14:** all 17 series `fresh`; e.g. DGS10 0.61 days against 9, CPIAUCSL 3.61 against 105 (newest period 2026-10-01, lag 40), DRCCLACBS 80.65 against 286
   (lag 146), IORB's newest period 2026-11-16 (lag -3). **Cost, with its row count:** `macro_age` is one grouped scan, **11.3 ms median (11.6 max) over 56,852 `macro_metrics` rows
   (38,355 first prints, 17 series)**. That is the macro load only; it is not a conclusion about any larger table.
@@ -2482,3 +2482,17 @@ The home the readiness rule points to: a stale series is visible without degradi
   and five spike files; git undid it, and a root `ruff.toml` now excludes `docs`, `spikes`, `tests` and `infra` (committed in `7966d94`).
 
 **Next:** step 6, smoke, `HEALTH.md`, `.env.example` (`FRED_API_KEY`), and the slice 5 gate review.
+
+### M2 slice 5, step 5 follow-ups (2026-11-14)
+
+- **`revisions_of(..., *, as_of)` is a required keyword.** The whole-chain read, the module's one hindsight-leak path, must now be written
+  `as_of=None` at every call site, visible in every diff; omitting it (or passing it positionally) is a `TypeError`, pinned by a test.
+- **Lint coverage, written down** (CLAUDE.md "Commands" has the table; `tests/test_lint_coverage.py` pins it). The gate runs inside `backend/`, config
+  `backend/pyproject.toml`, 112 files; `mypy` `files` must equal the directories of Python (`app`, `tests`, `alembic`, `tools`). The repo-root `ruff.toml` excludes
+  `docs spikes tests infra` but only governs a run from the root; the nearest config wins, so it never reaches `backend/tests`. Checked empirically: identical file
+  list from `backend/` and from the root. Mutation: breaking the root guard or mypy's `files` goes red.
+- **The 2-day floor is forward-looking, not dead** (note beside `FLOOR`; wording corrected above). Its VALUE is a daily-cadence value and must become unit-aware in slice 6.
+- **Plan numbers: rule 10 added to CLAUDE.md.** Three plan numbers falsified by measurement so far: ADR-0003 F1, F2, and step 5's lag-sized thresholds (gap is the quantity).
+- **Beat and `ingest.fred_poll`.** Observed (not exact-time): `task_runs` id 2725, a Beat-fired run on the `ingest` queue, succeeded, fired 2026-11-14 13:34 NY on wake after an
+  ~18 h sleep (Beat catches up). The 08:00 firing with an awake machine is **still unobserved** (next expected 2026-11-15 13:00Z). Pinned deterministically instead:
+  `tests/test_beat_schedule.py` (entry, ingest queue with no per-entry override, 6 h expiry, 08:00 New York in winter and summer); mutants on the hour and the queue are red.
