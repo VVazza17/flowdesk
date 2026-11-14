@@ -375,3 +375,25 @@ def test_one_metrics_reads_never_return_another_metrics_rows(scratch_url: str) -
     assert out["revisions"] == [D("10"), D("11")]
     assert out["b_series"] == {P1: D("22"), P2: D("25"), P3: D("30")}
     assert out["b_value"] == D("22") and out["b_latest"] == D("30")
+
+
+def test_revisions_of_without_as_of_is_the_whole_chain_and_says_so_where_it_is_read(
+    scratch_url: str,
+) -> None:
+    """It is the one function that can hand a caller revisions published after the instant the
+    caller is reasoning about. That is deliberate, so it is stated in the module docstring and in
+    its own, and pinned here: both the leak and the warning must survive."""
+    from app.services import macro_read
+
+    async def fn(engine: AsyncEngine) -> tuple[Any, Any]:
+        await put(engine, "M", P1, 0, D("1.0"), date(2020, 1, 20))
+        await put(engine, "M", P1, 1, D("9.9"), date(2021, 1, 20))  # published long after T
+        t = at(date(2020, 6, 1))
+        return await revisions_of(engine, "M", P1), await revisions_of(engine, "M", P1, as_of=t)
+
+    whole, as_it_stood = go(scratch_url, fn)
+    assert [o.value for o in whole] == [D("1.0"), D("9.9")]  # the post-T revision IS returned
+    assert [o.value for o in as_it_stood] == [D("1.0")]  # and is not, once as_of is passed
+    assert "CAN LEAK POST-T KNOWLEDGE" in (macro_read.__doc__ or "")
+    doc = macro_read.revisions_of.__doc__ or ""
+    assert "NOT a point-in-time read" in doc and "look-ahead" in doc

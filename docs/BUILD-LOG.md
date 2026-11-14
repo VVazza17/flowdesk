@@ -2433,8 +2433,12 @@ verifies is the drift this project keeps finding); **(2) the live oracle as a sk
   `python -m tools.junit_skips`: **any skip fails the run, except a skip whose reason carries the live-data marker, which is allowed and PRINTED again**, so it is
   loud twice (pytest's banner, then the gate). Tested (a live skip passes and prints; a `DATABASE_URL not set` skip still fails; one bad skip among allowed ones
   fails), and **verified in the pinned image against an empty database (what GitHub has): 3 skipped, the banner printed, the gate printed each one, exit 0**.
-- **Performance, measured on the real DGS10 (5,583 rows), no index added:** the whole series 54 ms (mostly transfer), one year 5 ms, a point read 3 ms. Migration
-  0005's "add `(metric, available_at)` when a measured query needs it" is not triggered.
+- **Performance, measured 2026-11-14 on the real DGS10: 5,583 stored rows (5,577 periods), 7 timed runs after a warm-up, median / max:**
+  `series_as_of` over the **whole series, 5,577 rows returned: 54 ms / 71 ms** (mostly transfer); `series_as_of` over **one year, 224 rows: 4.7 ms / 5.2 ms**;
+  `value_as_of`, **1 row: 2.7 ms / 3.4 ms**; `latest_as_of`, **1 row: 2.7 ms / 3.0 ms**. Migration 0005's "add `(metric, available_at)` when a measured query needs it" is
+  not triggered **by this load**. **That is a conclusion about about 5,600 rows of daily macro per series, the smallest load `macro_read` will ever carry, and not
+  about bars.** Slice 6 (prices: thousands of symbols, intraday, years deep) **must re-measure with its own row counts; it must not inherit "no index needed"**. The
+  same warning is in `macro_read`'s module docstring, where its author will see it.
 - **Mutation, 13 mutants on the read, all red**, after a correction: two stayed green at first (dropping `WHERE metric` from `value_as_of` and `latest_as_of`),
   because my two-metric test gave both metrics chains of the same shape and the right answer arrived by luck of ordering. **The other key's data must be able
   to WIN the ordering** (a higher revision of the same period, a newer period); that refinement is in CLAUDE.md rule 9.

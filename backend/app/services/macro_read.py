@@ -37,6 +37,20 @@ number but we cannot date it" and "there is no such observation" would be the sa
 The boundaries come from `settings.FRED_SERIES` (measured, FRED states neither) unless a caller
 passes `bounds` for a series that is not ingested (a test, or a recorded fixture).
 
+ONE FUNCTION CAN LEAK POST-T KNOWLEDGE: `revisions_of`. With no `as_of` it returns the WHOLE chain
+of a period, including every revision published AFTER any instant the caller is reasoning about.
+That is deliberate and defensible (diagnosis; the vintage-repair procedure,
+docs/RUNBOOK-VINTAGE-REPAIR.md, wants exactly the whole chain; M5's hindsight questions), and it is
+the one path in this module that is NOT a point-in-time read. It has no `_as_of` in its name and its
+`as_of` is optional, so the signature does not say so: this paragraph does. A signal, a score, a
+brief, a replay, anything that computes a number from the past, must use `series_as_of`,
+`value_as_of` or `latest_as_of`, or pass `as_of` to `revisions_of`. Reaching for
+`revisions_of(...)` without `as_of` in such a path is look-ahead.
+
+PERFORMANCE WAS MEASURED ON THE SMALLEST LOAD THIS MODULE WILL EVER CARRY: about 5,600 rows of daily
+macro per series (BUILD-LOG, step 4). "No index needed" is a conclusion about that, not about bars.
+Slice 6 (prices) must re-measure; it must not inherit it.
+
 NOT HERE: snapshots and watermarks (ADR-0004, M3), signals, bars, and any HTTP route. A route needs
 the section 9 envelope and the public-profile route invariant (IDEA-019) and waits for a consumer.
 """
@@ -282,9 +296,16 @@ async def latest_as_of(
 async def revisions_of(
     engine: AsyncEngine, metric: str, period: date, as_of: datetime | None = None
 ) -> tuple[Observation, ...]:
-    """The revisions of one period in order (0 first), optionally only those published at or
-    before `as_of`: the chain as it stood. Empty if there are none. For diagnosis, and for M5's
-    question of what was believed when."""
+    """The revisions of one period in order (0 first). **NOT a point-in-time read unless `as_of`
+    is given.**
+
+    With `as_of=None` this returns the WHOLE chain, including revisions published after any T the
+    caller has in mind: it can leak post-T knowledge. That is deliberate (diagnosis; the
+    vintage-repair runbook; M5's hindsight questions) and it is why this function is not named
+    `_as_of`. With `as_of` it returns only revisions published at or before it (the chain as it
+    stood). Never call it without `as_of` from a signal, a score, a brief or a replay: that is
+    look-ahead (see the module docstring). Empty if there are none.
+    """
     if as_of is not None:
         _require_aware(as_of)
     query = (

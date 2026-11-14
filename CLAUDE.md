@@ -123,7 +123,7 @@ below).
   row **existence**; a stored NULL is a published gap (an `Observation` with `value=None`), never `Missing`. **No answer comes in five distinct kinds**
   (`Missing.reason`, decided in this order): `UNKNOWN_METRIC`, `BEFORE_VINTAGE_RECORD` (T precedes the series' first vintage), `PREDATES_VINTAGE_RECORD`
   (the period is earlier than `first_covered_period`: a value exists upstream but cannot be dated), `NOT_PUBLISHED_AS_OF` (we know the period, T is too
-  early), `UNKNOWN_PERIOD` (no revision of that date exists at any time). It reads no clock and has no route. **Tests include a live-data oracle that checks the stored CPIAUCSL
+  early), `UNKNOWN_PERIOD` (no revision of that date exists at any time). It reads no clock and has no route. **`revisions_of` without `as_of` returns the whole chain and can leak post-T knowledge (it is not a point-in-time read; never in a signal path).** **Timed only on ~5,600 rows of daily macro; slice 6 must re-measure, not inherit.** **Tests include a live-data oracle that checks the stored CPIAUCSL
   against M0 spike 3b.** It runs wherever the series are captured (`ci-checks.sh test` reads the dev stack's database) and skips on a fresh one (GitHub), where
   a banner prints and `tools/junit_skips.py` allows exactly that marked skip and prints it; any other skip still fails the gate.
 - **The daily FRED poll is built (2026-11-13), committed `2947902`.** `ingest.fred_poll`, Beat 08:00 America/New_York: per series, ask FRED only for the
@@ -278,16 +278,16 @@ elaboration is the most comfortable way to avoid execution.*
 7. **Never shorten to hit a length target.** If something doesn't fit, say so — don't cut
    content to fit a line budget.
 8. **Commit directly to main.** Solo build, no review workflow, no feature branches.
-9. **Test keyed code with at least two keys.** A fixture with one series, one feed or one metric cannot catch an
-   `UPDATE` or `DELETE` that lost its `WHERE`: the one row it touches is the one row there is. This shipped once
-   (M2 slice 5: the poll's `UPDATE series_history_state` had no `WHERE series_id`, every test had a single series,
-   and in production it would have advanced all seventeen rows), and the same hole was then found by mutation in
-   `providers_health`. Anything keyed per series, feed, metric or provider needs a test with **two keys** that
-   changes one and asserts the other is exactly as it was, and you check the test by deleting the `WHERE` and
-   watching it fail. A green suite over one-key fixtures says nothing about this. **And the other key's data must be able to WIN:**
-   give it a higher revision of the same period and a newer period, so that a read which lost its filter returns the wrong row
-   instead of the right one by luck. (Step 4's first two-metric test used chains of the same shape, and `value_as_of` and
-   `latest_as_of` could drop `WHERE metric` and still pass; mutation found it.)
+9. **Test keyed code against a second key whose data would WIN.** Anything keyed per series, feed, metric or provider
+   (a read, an `UPDATE`, a `DELETE`) needs a test in which a *second* key's rows could **beat the right ones in every ordering
+   or comparison the code applies**: a higher revision of the same period, a newer period, a larger value. One key cannot catch
+   a lost `WHERE` (the one row it touches is the one row there is), and two keys of the same shape cannot either (a query that
+   lost its filter returns the right answer by luck of ordering). The test changes or reads one key and asserts the other is
+   exactly as it was. You check it by **mutation**: delete the `WHERE` or filter and watch the test fail, for every keyed read
+   and write. This shipped once (M2 slice 5: the poll's `UPDATE series_history_state` had no `WHERE series_id`, every test
+   had a single series, and in production it would have advanced all seventeen rows); the same hole was then found in
+   `providers_health`, and again in step 4, where `value_as_of` and `latest_as_of` could drop `WHERE metric` and pass a
+   two-metric test whose chains had the same shape. A green suite over one-key or same-shape fixtures says nothing about this.
 
 ## Commands
 

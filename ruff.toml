@@ -1,0 +1,8 @@
+# A repo-root guard, not the project's ruff configuration. That lives in backend/pyproject.toml and applies to
+# everything under backend/ (ruff uses the NEAREST config file, so this does not change it).
+#
+# It exists because a ruff run from the repo root (easy to do by mistake) used to rewrite the FROZEN spec,
+# docs/architecture.md (ruff formats the Python code blocks inside Markdown), and the historical spikes/. It
+# did, once, on 2026-11-14; git undid it. These paths are read-only by decision (CLAUDE.md), and so are the
+# recorded fixtures. Lint and format are run from backend/ (infra/ci-checks.sh does).
+extend-exclude = ["docs", "spikes", "tests", "infra"]
