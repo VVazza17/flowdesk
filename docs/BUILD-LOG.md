@@ -2748,3 +2748,18 @@ Written the turn they were given.
 - **Monday's probe (step 1(b)): "exactly as listed in the plan", plus one item (7).** When it checks split adjustment, it **records which symbol and which split date it compared against**, so the result can be re-run on a future yfinance version.
   The list is now seven items: (1) open- vs close-labelling, (2) split-adjusted or raw with `auto_adjust=False`, (3) the in-progress bar, (4) the 60-day 15-minute limit, (5) batch size and spacing, (6) the pinned yfinance version, **(7) the symbol and split date used for (2).**
   **Monday's date: the next market open after 2026-11-15, which is 2026-11-16 (a Monday).** Step 2's schema still does not start until all seven are in.
+
+### Addendum 2026-11-15 (fourth) — Kyle's decisions on the three step 2 additions
+
+Written the turn they were given. These settle the three items marked "mine, not decided" in the previous addendum.
+
+- **`close_reason` check: DECIDED, two-way.** `CHECK ((valid_to IS NULL) = (close_reason IS NULL))` **plus** the three-value check (`close_reason IN ('delisted', 'merged', 'removed_by_operator')`, which a NULL passes).
+  A reason on an open membership is as wrong as a closed one with no reason. Added by migration in step 2, alongside the `bars` schema.
+- **Unrecoverable-gap record: DECIDED, in scope for step 2.** A table carrying **symbol, interval, the missing range, and when it was recorded.** **If a gap is later filled, the record is marked resolved with a timestamp. It is never deleted:**
+  the history of what was missing is itself point-in-time data. (Column names, the key, and whether "range" is two columns or a range type are step 2 choices, not decided here.)
+- **First poll: REVERSED from my proposal. The poll never fetches deep history, mirroring FRED's precedent.** A symbol with no stored bars **fails with a distinct `not_backfilled` reason, visible in the run**, just as the FRED poll refuses a series with no captured history (`NoBaseline`).
+  **Deep history comes from a separate, recorded bars backfill command, the counterpart to `python -m app.backfill`, built in slice 6 so prices can actually flow.** The poll only extends what is already there.
+  That keeps poll runs small and bounded and keeps every deep fetch on the record. This replaces my "a symbol with no stored bar fetches from the backfill window" proposal, which is withdrawn.
+  (Consequence for the step list: step 4, "daily backfill, 2 years x 24, as an entry point", is that command; step 6's Beat entries come after it has run. The poll's per-symbol start is "the last stored bar", from the gap-driven requirement above.)
+
+**State: nothing further until Monday's probe (2026-11-16).** Step 2's schema does not start until all seven probe answers are in.
