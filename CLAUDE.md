@@ -285,6 +285,7 @@ elaboration is the most comfortable way to avoid execution.*
 7. **Never shorten to hit a length target.** If something doesn't fit, say so — don't cut
    content to fit a line budget.
 8. **Commit directly to main.** Solo build, no review workflow, no feature branches.
+   **Push right after every commit**, unless Kyle has said otherwise for that commit (standing rule, 2026-11-15). Then check that CI starts.
 9. **Test keyed code against a second key whose data would WIN.** Anything keyed per series, feed, metric or provider
    (a read, an `UPDATE`, a `DELETE`) needs a test in which a *second* key's rows could **beat the right ones in every ordering
    or comparison the code applies**: a higher revision of the same period, a newer period, a larger value. One key cannot catch
