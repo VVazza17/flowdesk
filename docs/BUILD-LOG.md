@@ -2683,3 +2683,39 @@ draft columns = section 8 plus the D1 provenance columns):
 - **A trap found on the way: a fresh named volume is root-owned and Beat runs as uid 10001, so the first attempt died with `Errno 13` on the schedule file.** The fix therefore needs the mount path created and owned by `flowdesk` in the image (`backend/Dockerfile`, so a new volume inherits it), not just a `volumes:` line in compose.
 - **Not tested:** a plain `docker restart` (the container's filesystem survives it), catch-up of *several* missed firings (Celery's behaviour is to run a missed entry once, not once per miss: unverified here, and for 15-minute price bars that means a long outage still loses the bars in between), and the real Beat schedule. **Catch-up by Beat is therefore not a substitute for a gap check on the data**; that belongs to step 6.
 - Not built: compose and the Dockerfile are untouched. IDEA-043 is unfrozen, and the build is step 6's first task, pending your go-ahead on the shape above.
+
+### Addendum 2026-11-15 (second) — Kyle's decisions on IDEA-044, D5, D4, D3, IDEA-043, the index scope, and Monday's probe
+
+Written the turn they were given. **Status after this addendum: D1, D2, D4, D5, D6/IDEA-044, D7 DECIDED. D3 DECIDED BY MEASUREMENT (both branches recorded below). IDEA-043 fix APPROVED.**
+
+- **IDEA-044: CLOSED. No retention policy and no compression.** Reasoning (Kyle): C: has 1,396 GB free (MEASURED 2026-11-15); at 500 symbols the data grows about 1 GB a year uncompressed; compression takes the cross-section read from 0.15 ms to 19 ms to save space not needed.
+  The unreproduced 315 bytes/row is replaced by the measured 246 to 287 range, with 315 marked unreproduced (`docs/IDEAS.md`). **Reopen only if the universe grows about 10x or free space on C: drops below about 100 GB.**
+- **D5: APPROVED**, as proposed, with one addition and four answers.
+  - **Rules (unchanged):** `ts` = the bar's open instant, `timestamptz` UTC; session boundaries exchange-local via `trading_sessions`.
+  - **Addition: `available_at`.** For intraday bars it is **no earlier than `ts` + interval**; for daily bars it is **the session close** (`trading_sessions.closes_at`). **The point-in-time read filters on `available_at`, never on `ts`.**
+    Filtering `ts <= T` returns a bar still forming at T, leaking up to one interval of the future into a replay. It is the same unifying rule as FRED. (This replaces the earlier text that made `available_at` the fetch instant;
+    the fetch instant is `ingested_at`.) **Never store yfinance's in-progress bar**: its values are not final.
+  - **The four gaps, answered:** (i) open- vs close-labelling is **MEASURED Monday, not assumed** (the earlier "assumed open" is withdrawn as a basis for any code); (ii) a daily bar's label is **the exchange-local session date, with `available_at` at that session's close**;
+    (iii) **early-close days: only bars inside that day's `trading_sessions` window; no synthetic bars after an early close**; (iv) **a duplicate `(symbol, interval, ts)` in one batch: identical rows are deduplicated; differing rows fail that symbol for the run under D4. Never last-write-wins.**
+- **D4: APPROVED, with an operator command.** The command **closes the symbol's universe membership by setting an end date (`valid_to`) and never deletes**, so a backtest as of an earlier date still includes the symbol (deleting would be survivorship bias).
+  **Confirmed 2026-11-15** against migration 0003 and the dev database: `universe_membership` has `valid_to DATE NULL`, half-open `[valid_from, valid_to)`, `valid_to` the first day NOT a member; **the seed already never reopens a closed interval** (it reports drift, `reference_seed.py`).
+  "Empty for N runs" raises a **distinct `likely_gone` failure that prompts the operator; it never retires a symbol on its own. N = 5 trading sessions, ASSUMED.**
+  *Two things the table cannot yet say (flagged for the command's design, not decided):* it has no column for who closed it or why (`source` describes the opening row; the command needs a place for a reason, a migration or a convention); and **seeded membership starts on the seed date, so an as-of query before that date finds no members at all,
+  retired or not**, which limits the survivorship protection to dates after the seed (already noted in CLAUDE.md for slice 6).
+- **D3: DECIDED BY A MEASUREMENT MONDAY; both branches recorded now.** The measurement: *does yfinance return split-adjusted history with `auto_adjust=False`, checked against a known split on the pinned version?*
+  - **Branch 1, split-adjusted: re-fetches rewrite old bars, so D3 is decided IN SLICE 6**, using the principle already recorded (pick the option that makes it impossible for a replay to read a post-split rewritten value without explicitly asking for it; if all three satisfy it, the fewest moving parts, naming the number that made the choice moot).
+  - **Branch 2, truly raw: slice 6 never rewrites a bar, and D3 moves to slice 8.**
+  - Existing evidence points at branch 1 (M0 spike 2, MEASURED 2026-07-31: `Close` is split-adjusted under `auto_adjust=False`, NVDA 10:1), but the yfinance version was not recorded then, so **it is not a measurement on the pinned version and does not decide the branch.**
+- **IDEA-043 fix: APPROVED.** A named volume for Beat's schedule file; **the Dockerfile creates the mount path owned by uid 10001** (a compose-only fix hits the Errno 13 trap). It lands with a smoke that reruns case B, so it is not one trial forever (built this turn; see below).
+  **Slice 7 (validation) requirement, logged: "Beat catch-up is not a gap check."** Beat running a missed entry once (or not at all) says nothing about which bars are missing; validation must detect gaps in the stored data itself, per symbol and interval.
+- **Index result, scope recorded.** The falsification of "the cross-section needs an `(interval, ts)` index" **holds for single-interval tables only.** If the schema puts 15-minute and daily bars in one table, **re-measure before relying on it.** That, and the daily table's chunk interval, are **step 2 schema choices**.
+
+### Step 1(b), Monday: the live yfinance probe (market hours). Not run. Step 2's schema does not start until every answer below is in.
+
+Every answer is recorded as MEASURED with its date, and this plan's table is updated, including any number it falsifies (rule 10 tally is four now).
+1. Whether intraday bars are labelled by **open or close**.
+2. Whether history comes back **split-adjusted with `auto_adjust=False`**, compared against a known split (decides D3's branch).
+3. How the **in-progress bar** shows up, so it can be excluded.
+4. The **60-day 15-minute history limit** (ASSUMED until then).
+5. The **batch size and spacing that does not get throttled** (feeds `RATE_BUDGETS["yfinance"]`).
+6. The **pinned yfinance version** (not recorded in the M0 spike files).

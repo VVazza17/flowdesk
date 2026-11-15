@@ -625,7 +625,8 @@ candidate: a missed intraday bar is not recovered by a later run the way a FRED 
 
 ## IDEA-044: Retention for 15-minute bars is unspecified (a disk-budget question)
 
-**Status:** Open, waiting on Kyle. **No recommendation is made here; this is the input to the decision.**
+**Status:** CLOSED 2026-11-15 (Kyle): **no retention policy and no compression.** C: has 1,396 GB free (MEASURED 2026-11-15); at 500 symbols the data grows about 1 GB a year uncompressed; compression takes the cross-section read from 0.15 ms to 19 ms to save space we do not need.
+**Reopen only if the universe grows about 10x, or free space on C: drops below about 100 GB.**
 **Raised:** 2026-11-15 (slice 6 plan, D6)
 
 ### The gap
@@ -636,10 +637,9 @@ Rows a year: 24 symbols x 26 bars x 251 sessions = **156,624**; 500 symbols x 26
 
 | | 24 symbols | 500 symbols |
 |---|---|---|
-| **315 bytes/row** (Kyle's figure from the earlier session; the run that produced it was not kept, so it is not reproduced here) | 156,624 x 315 = **49.3 MB/yr** (0.05 GB) | 3,263,000 x 315 = **1,027.8 MB/yr** (1.03 GB) |
-| Measured, uncompressed, same arithmetic | 286.7 B/row = 44.9 MB/yr | 246.0 B/row = 802.7 MB/yr |
+| **Measured range, 246 to 287 B/row, uncompressed** | 156,624 x 287 = **45 MB/yr** | 3,263,000 x 246 = **803 MB/yr** (about 1 GB a year at 500 symbols) |
+| 315 B/row (Kyle's earlier figure; **UNREPRODUCED**: the run that produced it was not kept, and it sits above the measured range) | 49.3 MB/yr | 1,027.8 MB/yr |
 | Measured, **compressed** | 108.6 B/row = **17.0 MB/yr** | 65.2 B/row = **212.7 MB/yr** |
-| 315 scaled by the measured compression ratio (0.379 and 0.265) | about 18.7 MB/yr | about 272 MB/yr |
 
 Multiply by the years kept: two years is twice these figures. These sizes are the table plus its indexes only, not WAL, not backups (each nightly dump is a full copy, 14 daily + 8 weekly kept).
 
@@ -649,8 +649,8 @@ Multiply by the years kept: two years is twice these figures. These sizes are th
 - **It made the 12,000-row daily table larger** (8.7 MB to 11.1 MB, 756 to 965 B/row): 101 weekly chunks hold about 120 rows each. A daily table needs a longer chunk interval, which is a step 2 choice.
 - **Caveats on all of it:** the data is synthetic (smooth prices, random volume, prices rounded to 4 decimals), so real compression will differ, and bytes/row here is a floor for the same reason. And `bars.c_total_return` is rewritten in place on every dividend (D2); updating rows in a compressed chunk is restricted and slow, so compression suits 15-minute bars only if they do not carry a rewritten column. Not tested.
 
-### Decision wanted from Kyle
-How long to keep 15-minute bars, given the above, and whether compression is on. Nothing else depends on it until step 2's migration sets a retention policy.
+### Decision (Kyle, 2026-11-15)
+Closed: keep everything, no compression. The compressed rows above stay as the measurement that justified it.
 
 ---
 
