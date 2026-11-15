@@ -600,7 +600,7 @@ there too.) Also check how "Run unattended" behaves on the desktop's Windows rel
 
 ## IDEA-043: Beat's schedule file lives in the container's /tmp, so last-run memory is probably lost on every recreate
 
-**Status:** Parked
+**Status:** UNFROZEN 2026-11-15 (Kyle), before prices go on Beat: a missed price bar cannot be caught up the way a FRED poll can. The recreate test runs first (`infra/idea043-beat-recreate.sh`); its result decides the named volume. See the slice 6 plan addendum in `docs/BUILD-LOG.md`.
 **Raised:** 2026-11-14
 
 ### The proposal

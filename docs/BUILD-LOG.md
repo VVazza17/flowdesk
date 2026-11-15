@@ -2545,3 +2545,106 @@ that answers that status and **echoes the whole request URL, canary key included
 - **Slice 5 closes with two named gaps, not three:**
   1. *Beat's 08:00 firing on an awake machine is unobserved* (accepted). Check `task_runs` after 2026-11-15 13:00Z with the machine awake; a Beat container recreate dropping a missed firing is ASSUMED, untested.
   2. *No real FRED 429, 423 or 500 has ever been seen* (accepted permanently; the handling is now tested).
+
+
+## 2026-11-14 — M2 slice 6 plan: prices (ADR-0002, IDEA-034, IDEA-035). PLAN, NOT BUILT; waiting on Kyle
+
+Plan only; no code, no migration. Rule 10 applies: **every number below is tagged MEASURED (date, how) or ASSUMED.** Nothing about `bars` has been
+measured in this project yet, and the only price measurements that exist are M0 spike 2's (2026-07-31). Slice 6 is where slice 5's "no index needed" stops
+being inheritable, so step 1 is measurement, before any schema is committed to.
+
+### Numbers this plan stands on
+
+| Number | Value | Status |
+|---|---|---|
+| Symbols seeded | 24, all `asset_class = etf` | **MEASURED 2026-11-14**, `SELECT count(*) FROM symbols` on the dev stack (14 rotation + SPY + QQQ + RSP + 7 commodity proxies) |
+| NYSE sessions | 3,235 rows, 2015-01-02 to 2027-11-12, about 251 a year | **MEASURED 2026-11-14**, `trading_sessions` (XNYS); the per-year figure is derived from it. XKRX: 3,160 rows |
+| `provider_mappings` rows | 0 | **MEASURED 2026-11-14.** No yfinance mapping is seeded; slice 6 must seed 24 |
+| `BREADTH_UNIVERSE` | empty (§6.2 gives no constituent list) | **MEASURED** (slice 3); S&P 500 daily bars are therefore out of this slice |
+| 15-minute bars per regular session | 26 | arithmetic (6.5 h x 4); early closes have fewer |
+| Daily rows, 24 symbols x 2 years | about 12,000 | derived from the two MEASURED rows above |
+| 15-minute rows, 24 symbols | about 157,000 a year (24 x 26 x 251) | derived; the 26 is arithmetic, the 24 and 251 are MEASURED |
+| Scanner universe, 15-minute | about 3.3 million a year (500 x 26 x 251) | **ASSUMED**: "~500" is §6.12's wording, there is no list, and the scanner is Phase 2, not M2. Quoted only to show where the index question starts to bite |
+| Revision rows for `c_total_return` | at most about 48,000 a year (24 x 4 dividends x about 502 daily rows) | **ASSUMED**: 4 dividends a year is a guess, several of the 24 pay none; every earlier bar is rewritten by each dividend (ADR-0002, **MEASURED 2026-07-31**, KO) |
+| yfinance intraday look-back | 15-minute data limited to about 60 days | **ASSUMED, not verified**: my recollection of yfinance's documented limits. M0 spike 2 tested daily bars only. Step 1 measures it. If true, **intraday history is not backfillable and a missed 15-minute bar is gone for good** |
+| yfinance batch and spacing | about 100 tickers per request, 1 s or more apart | **ASSUMED**: §6.12's text ("roughly"); no spike measured it. It becomes `RATE_BUDGETS["yfinance"]` only after step 1 |
+| What `auto_adjust=False` returns | `Close` is split-adjusted; `Adj Close` is total return; unknown ticker gives an empty frame without raising; SPY has an extra `Capital Gains` column; holidays are absent | **MEASURED 2026-07-31**, M0 spike 2 (NVDA 10:1 split, KO, SPY), `spikes/spike2_evidence.json`. **The yfinance version is not recorded in the spike files**, so step 1 re-runs the key checks on the version we pin |
+| Whether Yahoo's US volume is consolidated | unknown | **ASSUMED nothing**; `venue_scope` must not claim it until measured (D1) |
+| Timing and plan shape of any `bars` read | none | **NOT MEASURED.** The only reads timed are macro: 2.7 to 54 ms on 5,583 rows of one series, and the data-age scan at 11 ms over 56,852 rows (**MEASURED 2026-11-14**). Neither says anything about `bars` |
+
+### Prerequisites, neither of them code
+
+1. **IDEA-029 must close first, for anything scheduled.** Slice 2's restore drill from the real desktop is still open. What a lost machine would erase for good is what only a live run captures: bars as
+   traded at the time, and `c_total_return` as it stood on a day. So steps 1 to 5 below (nothing scheduled, daily backfill only, all re-fetchable) can proceed; **step 6 (Beat) cannot be enabled until the drill passes.** That is yours to do on the desktop.
+2. **IDEA-043 is decided before step 6**, because a missed intraday bar, unlike a missed FRED poll, is not caught up by the next run. Recreating `beat` between firings is untested (ASSUMED to lose its last-run memory); run that test first.
+
+### Decisions I need from you (each blocks something, none is taken)
+
+- **D1. Provenance columns on `bars` (IDEA-034).** Recommend adding `source`, `feed`, `venue_scope`, `available_at`, `ingested_at`, `ingestion_run_id` and one more §8 lacks, **`raw_basis`**
+  (`live` | `reconstructed` | `unreconstructed`), because ADR-0002 makes `c_raw` three different things (a live capture; `c_split_adj` times the cumulative split factor; or, for backfill spanning a split before
+  slice 8, not yet reconstructable), and a reader must be able to tell. No `revision` column on `bars` (D2). `venue_scope` is stored as `provider_default` until consolidation is measured; claiming `consolidated` would be inventing it.
+  Names and meanings follow the settled vocabulary; types differ as already decided (an intraday `available_at` is a real instant, no end-of-day rule).
+- **D2. Where `c_total_return` revisions live (IDEA-034).** Recommend a separate table keyed like `macro_metrics`: `bar_total_return(symbol_id, interval, ts, revision, value, available_at, ingested_at, ingestion_run_id, source)`,
+  written in the same transaction as the bar; `bars.c_total_return` keeps the latest value and is **never read by a replay** (a comment and a test say so). Cost: two homes for one number, which is the drift this project has been bitten by, hence the rule.
+  Alternative: derive total return on read from raw prices and confirmed dividends (no revisions, no table), which needs dividends as a first-class feed and departs from ADR-0002 decision 4 as written.
+- **D3. The version home for a confirmed split (IDEA-035), decided now, built in slice 8.** Spec options: (a) `data_version` in the key of the largest table, every hot read filters it; (b) derive adjusted columns on read. Recommend a third: **(c) `bars` stays the current canonical
+  version with its key unchanged; a confirmed action moves the superseded rows' adjusted columns into `bars_superseded(…, superseded_at, corporate_action_id)` and rewrites in place.** Raw columns never change, so "raw history is immutable" holds, "a new data version without deleting raw" holds, and no read pays for versioning.
+  I have not measured anything to prefer it; it is the option that does not touch the hot path.
+- **D4. A batch with one dead ticker.** An unknown or delisted ticker returns an empty frame without raising (**MEASURED 2026-07-31**). One feed per universe-and-interval (24 symbols in one request) means one bad symbol would either fail every symbol's rows or hide. Recommend: **write the good symbols' rows, then fail the run
+  with `empty_result` naming the symbols**, so the failure is a failure and the data is not held hostage. Per-symbol quarantine states are slice 7 (IDEA-023).
+- **D5. Timestamps.** Daily bar `ts` = the session's `opens_at` instant from `trading_sessions`; intraday `ts` = the bar's start instant. Nothing may `CAST(ts AS date)` (settled in the slice 5 vocabulary); the session date is a join to `trading_sessions`. **Only completed bars are stored** (bar end at or before the fetch), so no row is ever the in-progress bar; `available_at` is the fetch instant (ASSUMED reasonable: the first moment we could have known it).
+- **D6. A spec gap I would log as IDEA-044 on your word:** §8 gives retention for 1-minute (90 days) and 30-minute (2 years) bars and says nothing about the 15-minute bars that §6.1 and §11 poll. Recommend 2 years, same as 30-minute (ASSUMED, a choice not a measurement).
+- **D7. Out of this slice, by name:** S&P 500 constituent bars (no list exists), the Stooq fallback (M2 builds yfinance, FRED and a fake only, IDEA-037), 1-minute bars (paid path), the intraday-to-daily continuous aggregate (it would be a second source for daily bars; the provider's own daily bar is the one), validation and quarantine (slice 7), corporate-action confirmation (slice 8).
+
+### Steps (each ends with something you can verify)
+
+1. **Measure before designing.** (a) A throwaway hypertable at three synthetic sizes, 12,000 / 157,000 / 3,300,000 rows (the three rows above), timing and `EXPLAIN` for: latest bar per symbol; one symbol's window; **a cross-section of all symbols at one timestamp** (rotation and breadth read this way, and it is the shape the primary key `(symbol_id, interval, ts)` does not serve; **the hypothesis, ASSUMED, is that it needs an `(interval, ts)` index and that the macro conclusion does not carry**); chunk interval. (b) A live yfinance probe on the pinned version: one daily batch of 24 and one 15-minute batch, column sets by name, an empty-frame ticker, the real intraday look-back, the batch timing, and whether a 15-minute call returns the in-progress bar. Everything recorded as MEASURED with date and how, and this plan's table updated, including any number it falsifies (rule 10 keeps the tally).
+2. **Migration for `bars` (+ `bar_total_return`, `bars_superseded` if D2 and D3 are taken) and the 24 `provider_mappings`.** Hypertable, indexes chosen by step 1, comments on columns as in 0009. Migration smoke and `alembic check`.
+3. **yfinance client and error mapping.** `auto_adjust=False` always and explicit; columns mapped by name, unexpected schema rejected (`schema_mismatch`); an empty frame is `empty_result`; `RATE_BUDGETS["yfinance"]` from step 1. New dependency: needs the hash-pinned lock, the license audit (its dependency tree, not just yfinance), the vulnerability scan, and an **arm64 wheel check** (an HTTP dependency with compiled wheels is exactly where arm64 breaks; ASSUMED available, unchecked). No key exists, so the FRED credential concern does not apply, but the same "fixed-text messages, never the library's" rule and the same two-sink smoke are built **at the same time as the client, not after** (that is what slice 5 taught).
+4. **Daily backfill, 2 years x 24, as an entry point** (like `app.backfill`, the same `run_feed` and `run_recorded` path). Raw reconstruction from the `Stock Splits` column inside the window, `raw_basis` recorded, idempotent on `c_raw` / `c_split_adj` (**a re-run writes 0 rows**, the M2 gate clause), `c_total_return` going through the revision path. Nothing scheduled.
+5. **Point-in-time read `bars_as_of`** in `services/`, with `as_of` a required keyword and a stated hindsight path, if any. Tests follow rule 9 with a second symbol AND a second interval whose data would win the ordering (a newer `ts`, a higher revision), and a mutation run for every keyed read. Re-timed at its own row counts.
+6. **Beat: 16:30 daily and every 15 minutes in session**, on the ingest queue. **Blocked on both prerequisites.** Data age for bars on `/health/data` with thresholds from measured gaps (the 2-day floor's value becomes unit-aware here; see the note beside `FLOOR`).
+7. **Smoke, HEALTH.md, `.env.example` (nothing new expected), gate review**, with the failure smoke against a URL-echoing stub for yfinance's failure kinds, named gaps stated, not implied.
+
+### Where I expect this plan's numbers to be wrong
+
+The three most likely to be falsified, in order: the 60-day intraday limit (it decides whether a missed bar is unrecoverable), the batch and spacing figure (it decides the budget), and the assumption that the primary key serves the reads that matter. If step 1 falsifies any, this entry gets an addendum saying so and the tally in CLAUDE.md rule 10 goes to four.
+
+### Addendum 2026-11-15 — Kyle's decisions on D1–D7 (recorded this day; they were given in an earlier session and never written down)
+
+Source: Kyle, 2026-11-15, restating the earlier session's answers. **Standing rule from this date: any decision Kyle gives is written to disk in the turn it is given.**
+Status of each: **D1, D2, D4, D6, D7 decided. D3 and D5 PENDING.** IDEA-043 is unfrozen.
+
+- **D1: DECIDED, yes.** Add the provenance columns (`source`, `feed`, `venue_scope`, `available_at`, `ingested_at`, `ingestion_run_id`) and `raw_basis`
+  (`live` | `reconstructed` | `unreconstructed`). **`venue_scope` is stored as `provider_default` until consolidation is measured**; never `consolidated` before then.
+- **D2: DECIDED, yes, with one constraint.** `c_total_return` revisions live in a separate table keyed like `macro_metrics`
+  (`bar_total_return(symbol_id, interval, ts, revision, value, available_at, ingested_at, ingestion_run_id, source)`), written in the same transaction as the bar.
+  `bars.c_total_return` holds **the latest vintage only**. **The point-in-time read must never select it: explicit column lists, never `SELECT *`** (a test pins the read's
+  column list). **The column comment on `bars.c_total_return` must say it carries the latest vintage and must not be read by a replay.**
+- **D3: PENDING (held until step 1 measures).** The deciding principle, from Kyle: **pick the option that makes it impossible for a replay to read a post-split rewritten
+  value without explicitly asking for it.** If all three options (a: `data_version` in the key; b: derive adjusted columns on read; c: `bars_superseded`) satisfy that, pick
+  the one with the fewest moving parts and **say which measured number made the choice moot.** Not decided here, and the step 1 benchmark does not touch it: it
+  measured no versioned-read shape. Built in slice 8 either way.
+- **D4: DECIDED, yes, plus an escape hatch.** Write the good symbols' rows, fail the run with `empty_result`, and **name the dead symbols**. Then distinguish
+  **"failed today" from "gone"**: a delisted symbol needs a way out of the universe that is **not a code edit**, or the run stays red forever.
+  *Proposal for the mechanism (mine, NOT yet approved):* an operator command that closes the symbol's `universe_membership` interval (data, with a recorded reason and date; never a
+  delete of bars), after which the feed no longer requests it and the run can go green. The failure text says "empty today" for a first empty result and "empty for N
+  consecutive runs: suspected gone, retire with <command>" after that; **N is not set and is ASSUMED to need a measured choice**. Retirement is always an explicit act, never automatic.
+  Per-symbol quarantine states stay slice 7 (IDEA-023).
+- **D5: PENDING, I propose and Kyle approves.** The rules, written out. They pin the three things Kyle named:
+  1. **Open or close: a bar's `ts` is its OPEN (start) instant**, for daily and intraday alike. Daily `ts` = that session's `opens_at` from `trading_sessions`. The bar's end is `ts` + the
+     interval for intraday, and `closes_at` from `trading_sessions` for daily (not `ts` + 24 h). Only completed bars are stored (end at or before the fetch); `available_at` = the fetch instant.
+  2. **Timezone: `TIMESTAMPTZ`, i.e. an absolute UTC instant, stored and compared as instants.** The client converts to UTC at the boundary; a timezone-naive provider index is rejected
+     (`schema_mismatch`). No SQL converts `ts` to a local zone or `CAST(ts AS date)`.
+  3. **Session boundary is exchange-local, via the calendar:** a bar belongs to the session whose `[opens_at, closes_at)` contains its `ts`, found by a join to `trading_sessions`
+     (built from `exchange_calendars` in the exchange's own zone, so DST, early closes and XKRX follow the exchange, not New York or UTC). The session date is `trading_sessions`' exchange-local date.
+     Regular-session bars only (`prepost` explicit and false).
+  **Not pinned by these rules (named, not hidden):** (i) **whether yfinance labels an intraday bar by its open or its close is ASSUMED open and not verified**; step 1(b)'s live probe decides it, and
+  if it is the close the client shifts by the interval; (ii) what instant yfinance's *daily* label means (assumed: the exchange-local date, mapped to the session by date; unverified); (iii) the 15-minute grid on early-close
+  days (the last bar may be short; unmeasured); (iv) ties and duplicate timestamps within a batch (the primary key rejects them, the client's behaviour on one is undecided).
+- **D6: DECIDED as a handoff, not a recommendation.** Retention for 15-minute bars is logged as **IDEA-044**, a disk-budget question that comes to Kyle with a
+  GB-per-year figure (315 bytes/row at 24 and at 500 symbols, plus what compression does to it) and no recommendation from me. The figures follow in `docs/IDEAS.md` once the benchmark's guard is verified. (Note: this plan's
+  earlier "D6" text proposed 2 years; that proposal is withdrawn.)
+- **D7: DECIDED, yes.** Out of this slice, by name: S&P 500 bars, Stooq, 1-minute bars, the intraday-to-daily aggregate, quarantine (slice 7), corporate actions (slice 8).
+- **IDEA-043: UNFROZEN 2026-11-15**, before prices go on Beat: a missed price bar cannot be caught up the way a FRED poll can. The recreate test (`infra/idea043-beat-recreate.sh`) is run
+  as its first step; its result decides the volume.
