@@ -2719,3 +2719,13 @@ Every answer is recorded as MEASURED with its date, and this plan's table is upd
 4. The **60-day 15-minute history limit** (ASSUMED until then).
 5. The **batch size and spacing that does not get throttled** (feeds `RATE_BUDGETS["yfinance"]`).
 6. The **pinned yfinance version** (not recorded in the M0 spike files).
+
+### 2026-11-15 — IDEA-043 built (approved the same day)
+
+- `backend/Dockerfile`: `/var/lib/beat` created and owned by `flowdesk` (uid 10001) in the image, so a new named volume inherits it. `docker-compose.yml`: `beat` mounts `beat_schedule:/var/lib/beat` and runs `--schedule=/var/lib/beat/celerybeat-schedule`; the `/tmp` path is gone.
+- **`infra/smoke-m2-beat-schedule.sh` PASSED (2026-11-15, about 9 minutes):** the built image's `/var/lib/beat` is uid 10001 (also run against the pre-fix image: it fails there, so the check can fail); compose carries the path and the volume and no `/tmp` schedule;
+  **the real dev `beat`, force-recreated twice, still has its schedule file, owned by `flowdesk`**; and the throwaway test, **now with NO `chown` (the image alone provides the ownership)**: case A (control, `/tmp`) did not catch up (0 firings), case B (fresh named volume) did (1 firing). One trial per case per run; the smoke is how it is repeated.
+- Two mistakes of mine on the way, both caught by the harness and fixed: the first Beat trial restarted 10 s after a firing, so no boundary fell in the downtime (invalid, caught by reading the timestamps), and the first smoke run used an image id `docker compose images -q` returned that Docker could not find (the smoke failed rather than passing on nothing).
+- Gates: `ci-checks.sh lint` passes (ruff, format, mypy over 113 files); `/health/ready` 200 after the recreate.
+- **Slice 7 (validation) requirement, in force: "Beat catch-up is not a gap check".** Catch-up runs a missed entry once; it says nothing about which bars are missing. Validation must find gaps in the stored data, per symbol and interval.
+- Not run here: `ci-checks.sh test` (no Python changed) and the arm64 build of the Dockerfile change (a `RUN mkdir && chown`, nothing architecture-specific; CI's arm64 job is the gate).

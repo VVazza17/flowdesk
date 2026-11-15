@@ -151,9 +151,14 @@ services:
 
   beat:
     build: ./backend
-    # The schedule file goes in /tmp: the app directory is root-owned and the container runs as an
-    # unprivileged user. Losing it on restart is harmless, Beat rebuilds it from the code.
-    command: ["celery", "-A", "app.worker", "beat", "--loglevel=INFO", "--schedule=/tmp/celerybeat-schedule"]
+    # The schedule file is on a named volume (IDEA-043, 2026-11-15). In /tmp, a recreated container forgot when
+    # each entry last ran and SKIPPED a firing it missed while down; on a volume it runs the missed entry. A price
+    # bar missed that way is not recovered by the next run, unlike a FRED poll. /var/lib/beat is created and
+    # owned by uid 10001 in backend/Dockerfile (a compose-only fix dies with Errno 13).
+    # Beat catching up is NOT a gap check: it runs a missed entry once. Slice 7 must detect gaps in the data.
+    command: ["celery", "-A", "app.worker", "beat", "--loglevel=INFO", "--schedule=/var/lib/beat/celerybeat-schedule"]
+    volumes:
+      - beat_schedule:/var/lib/beat
     environment:
       <<: *api-env
     healthcheck:
@@ -244,3 +249,4 @@ services:
 volumes:
   pgdata:
   backups:
+  beat_schedule:

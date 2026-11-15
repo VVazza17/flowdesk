@@ -36,6 +36,13 @@ COPY alembic.ini ./
 COPY alembic ./alembic
 
 RUN useradd --system --uid 10001 --no-create-home flowdesk
+
+# Beat's schedule file lives here, on a named volume (IDEA-043). The directory must exist and be owned by the
+# app user IN THE IMAGE: Docker copies a path's ownership into a new, empty named volume on first mount,
+# whereas a volume over a path the image does not have is root-owned and Beat (uid 10001) dies with
+# Errno 13 (seen 2026-11-15). A compose-only fix does not work. infra/smoke-m2-beat-schedule.sh proves it.
+RUN mkdir /var/lib/beat && chown flowdesk /var/lib/beat
+
 USER flowdesk
 
 EXPOSE 8000

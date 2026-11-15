@@ -144,7 +144,7 @@ below).
   has a `busy` state (alive, not degraded) and its threshold is three canary intervals again, not the task limit. Tests that call
   `run_feed` directly use `tests/recorded.py`. A manual backfill is a task execution and has a `task_runs` row.
 - **Slice 5 gate review is written (2026-11-14, `docs/BUILD-LOG.md`); it closes with two named gaps:** Beat's 08:00 firing on an awake machine is unobserved
-  (schedule, queue and DST pinned by test; a Beat container recreate dropping a missed firing is ASSUMED, untested, IDEA-043), and no real FRED 429/423/500 has ever been seen
+  (schedule, queue and DST pinned by test; a Beat container recreate dropping a missed firing was ASSUMED, then MEASURED 2026-11-15 (it does, with the schedule file in /tmp) and fixed: IDEA-043, schedule file on the `beat_schedule` named volume at `/var/lib/beat`, owned by uid 10001 in the Dockerfile; `infra/smoke-m2-beat-schedule.sh` reruns the test. Beat catching up is NOT a gap check: slice 7 must detect gaps in the data), and no real FRED 429/423/500 has ever been seen
   (handling is tested: `infra/smoke-m2-slice5-fred-failures.sh` runs each through the real worker and proves the api_key is in no stored or served text). Step 6 is done.
 - **The base image is pinned by digest** (M2 slice 0, 2026-11-08). The `FROM` line in `backend/Dockerfile` is
   the one definition. The CI tooling container, `lock-deps.sh` and the smokes read it through
@@ -250,8 +250,8 @@ Do not resolve these unilaterally. Flag and wait.
 
 No new modules, signals, or integrations until M0–M2 are built and six months of outcome data
 exist. An idea goes in `docs/IDEAS.md` with an unfreeze trigger — not in the code, not in the
-spec. Fourteen are parked there (IDEA-001 … IDEA-012, IDEA-039: Tailscale for the backup copy, triggered by
-the first deployed instance, and IDEA-043: Beat's schedule file lives in /tmp, triggered by slice 6's price polls).
+spec. Thirteen are parked there (IDEA-001 … IDEA-012 and IDEA-039: Tailscale for the backup copy, triggered by
+the first deployed instance). IDEA-043 was unfrozen and built 2026-11-15; IDEA-044 (15-minute bar retention) was closed the same day: no retention policy, no compression; reopen if the universe grows about 10x or C: free space falls below about 100 GB.
 
 The doc's own rationale: *every remaining risk in this project is an execution risk, and design
 elaboration is the most comfortable way to avoid execution.*
@@ -326,6 +326,7 @@ bash infra/smoke-m2-slice3.sh     # M2 slice 3: migrate + seed (24 symbols, 5 un
 bash infra/smoke-m2-slice5-step0.sh # M2 slice 5 step 0: two workers on two queues; ingest saturation never delays the ops canary; each worker wedged degrades ready
 bash infra/smoke-m2-slice5-step3-sweep.sh # M2 slice 5 step 3 part C: SIGKILL the ingest worker mid-task -> busy, then stale, then the sweep fails both rows (~5 min)
 bash infra/smoke-m2-slice5-fred-failures.sh # M2 slice 5: FRED 500/423/429 via a URL-echoing stub through the real worker; the api_key is in no stored or served text
+bash infra/smoke-m2-beat-schedule.sh # IDEA-043: image owns /var/lib/beat, compose volume, a recreated Beat catches up a missed firing with the volume and not without it (~9 min)
 bash infra/smoke-m2-slice2.sh     # M2 slice 2: encrypt, SFTP copy to stand-in sshd (3 permission policies), restore with the private key only
 docker compose run --rm worker python -m app.backfill   # FRED revision history, every series not yet captured; --series A,B [--force]
 bash infra/backup.sh              # dump + manifest into dumps/. Restoring and the version trap: docs/BACKUP.md
