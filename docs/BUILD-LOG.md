@@ -2729,3 +2729,22 @@ Every answer is recorded as MEASURED with its date, and this plan's table is upd
 - Gates: `ci-checks.sh lint` passes (ruff, format, mypy over 113 files); `/health/ready` 200 after the recreate.
 - **Slice 7 (validation) requirement, in force: "Beat catch-up is not a gap check".** Catch-up runs a missed entry once; it says nothing about which bars are missing. Validation must find gaps in the stored data, per symbol and interval.
 - Not run here: `ci-checks.sh test` (no Python changed) and the arm64 build of the Dockerfile change (a `RUN mkdir && chown`, nothing architecture-specific; CI's arm64 job is the gate).
+
+### Addendum 2026-11-15 (third) — Kyle's decisions: D4 close reason, the pre-seed gap and hindsight as named limitations, gap-driven polling, one more probe item
+
+Written the turn they were given.
+
+- **D4 close reason: DECIDED.** A `close_reason` column on `universe_membership`, **added by migration in step 2, alongside the `bars` schema.** **Required whenever the operator command sets `valid_to`.**
+  Allowed values: **`delisted`, `merged`, `removed_by_operator`.** **No "who" column: there is one operator.**
+  *(Mine, for step 2 to settle, not decided: how "required whenever `valid_to` is set" is enforced. The natural form is a CHECK that `valid_to IS NULL OR close_reason IS NOT NULL`, with a second CHECK on the three values. Rows closed before the column exists: none, the seed never closes an interval, so the CHECK can go on without a backfill. To be confirmed against the live table in step 2.)*
+- **D4 pre-seed gap: a NAMED LIMITATION, not a fix. Do not backdate `valid_from`.** Two different facts: *"FlowDesk tracked this from date X"* (what `valid_from` records) and *"this was tradable from date Y"* (what a backtest needs). Backdating would record the second as if it were the first.
+  An as-of query before the seed date finding no members is the honest answer; **do not "fix" the empty pre-seed result by backdating.** Decided when backtesting is built.
+- **Known limitation 2, recorded with the first: the universe was chosen in 2026, so its composition is hindsight-selected whatever the dates say.** Small for broad ETFs, but real. Together these are **known limitations of any backtest over this universe**, to be decided when backtesting is built.
+  (Both are also the survivorship caveat already in CLAUDE.md for slice 6: the membership dates only protect against survivorship after the seed.)
+- **Step 2 DESIGN REQUIREMENT: the price poll is gap-driven, not interval-driven.** Each run fetches **from the last stored bar per symbol** (subject to the provider's lookback limit), not "the last interval".
+  So the number of missed Beat firings does not matter: **one run after any outage fills the gap.** That also makes the untested multi-firing catch-up (IDEA-043's "not tested" item) **a non-issue for correctness.**
+  **If the gap exceeds yfinance's intraday lookback limit (MEASURED Monday), the run records an unrecoverable gap explicitly, rather than silently storing a partial window.**
+  *(Mine, to settle in step 2/3, not decided: where an unrecoverable gap is recorded (a row naming symbol, interval, and the missing range; `ingestion_runs` alone cannot hold per-symbol ranges), and what a symbol with no stored bar yet fetches from (the backfill's window, not the lookback). Slice 7's gap detection reads that record.)*
+- **Monday's probe (step 1(b)): "exactly as listed in the plan", plus one item (7).** When it checks split adjustment, it **records which symbol and which split date it compared against**, so the result can be re-run on a future yfinance version.
+  The list is now seven items: (1) open- vs close-labelling, (2) split-adjusted or raw with `auto_adjust=False`, (3) the in-progress bar, (4) the 60-day 15-minute limit, (5) batch size and spacing, (6) the pinned yfinance version, **(7) the symbol and split date used for (2).**
+  **Monday's date: the next market open after 2026-11-15, which is 2026-11-16 (a Monday).** Step 2's schema still does not start until all seven are in.
