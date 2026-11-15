@@ -1,0 +1,16 @@
+# Case A (original run, 03:53) then case B (final run, 04:15). infra/idea043-beat-recreate.sh
+=== A: /tmp file, container recreated (03:53:21)
+  first container fired at 03:56:01; stopping and removing it
+  recreating at 03:58:10; next boundary is ~110 s away; watching 45 s
+  RESULT A: /tmp file, container recreated: firings in the first 45 s after recreate = 0 (DID NOT run the missed firing)
+        . scheduler -> celery.beat.PersistentScheduler
+    [2026-11-15 08:58:11,199: INFO/MainProcess] beat: Starting...
+
+=== B: named volume (04:15:13)
+  first container fired at 04:16:01; stopping and removing it
+  recreating at 04:18:10; next boundary is ~110 s away; watching 45 s
+  new container StartedAt: 2026-11-15T09:18:10.801084085Z
+  RESULT B: named volume: firings in the first 45 s after recreate = 1 (CAUGHT UP the missed firing)
+        . scheduler -> celery.beat.PersistentScheduler
+    [2026-11-15 09:18:11,638: INFO/MainProcess] beat: Starting...
+    [2026-11-15 09:18:11,656: INFO/MainProcess] Scheduler: Sending due task ping (tapp.ping)

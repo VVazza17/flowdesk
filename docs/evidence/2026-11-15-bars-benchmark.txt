@@ -1,0 +1,42 @@
+host C: free at start: 1395 GB; abort floor: 1380 GB (budget 15 GB)
+VM disk free at start: 937 GB; abort floor: 922 GB
+timescaledb 2.31.0  postgres 16.15  2026-11-15T03:37:11-05:00
+
+=== 12k : 24 symbols, 1d bars, 700 calendar days ===
+uncompressed: rows=12024 size_MB=8.7 bytes/row=755.6 chunks=101
+  [PK only]               latest-per-symbol ms=1.573  one-symbol 30d ms=0.579  cross-section ms=0.042
+      cross-section plan: Index Scan using _hyper_1_51_chunk_b_12k_ts_idx;
+      size before extra index: 8.7 MB
+  [+ (interval,ts) index] cross-section ms=0.038  latest-per-symbol ms=1.881
+      cross-section plan: Index Scan using _hyper_1_51_chunk_b_12k_ts_idx;
+      size with extra index: 10.3 MB
+compressed:   rows=12024 size_MB=11.1 bytes/row=965.4 chunks=101
+  [compressed]            latest-per-symbol ms=5.046  one-symbol 30d ms=0.825  cross-section ms=0.224
+  free now: host C: 1395 GB, VM disk 937 GB
+
+=== 157k : 24 symbols, 15m bars, 365 calendar days ===
+uncompressed: rows=162888 size_MB=44.5 bytes/row=286.7 chunks=53
+  [PK only]               latest-per-symbol ms=0.909  one-symbol 30d ms=0.848  cross-section ms=0.040
+      cross-section plan: Index Scan using _hyper_2_128_chunk_b_157k_ts_idx;
+      size before extra index: 44.9 MB
+  [+ (interval,ts) index] cross-section ms=0.041  latest-per-symbol ms=0.852
+      cross-section plan: Index Scan using _hyper_2_128_chunk_b_157k_ts_idx;
+      size with extra index: 47.0 MB
+compressed:   rows=162888 size_MB=16.9 bytes/row=108.6 chunks=53
+  [compressed]            latest-per-symbol ms=2.989  one-symbol 30d ms=1.776  cross-section ms=1.188
+  free now: host C: 1395 GB, VM disk 937 GB
+
+=== 3300k : 500 symbols, 15m bars, 365 calendar days ===
+uncompressed: rows=3393500 size_MB=796.2 bytes/row=246.0 chunks=53
+  [PK only]               latest-per-symbol ms=4.230  one-symbol 30d ms=3.033  cross-section ms=0.154
+      cross-section plan: Index Scan using _hyper_3_181_chunk_b_3300k_ts_idx;
+      size before extra index: 796.2 MB
+  [+ (interval,ts) index] cross-section ms=0.167  latest-per-symbol ms=4.251
+      cross-section plan: Index Scan using _hyper_3_181_chunk_b_3300k_ts_idx;
+      size with extra index: 820.7 MB
+compressed:   rows=3393500 size_MB=211.1 bytes/row=65.2 chunks=53
+  [compressed]            latest-per-symbol ms=20.701  one-symbol 30d ms=1.872  cross-section ms=19.409
+  free now: host C: 1395 GB, VM disk 936 GB
+DONE
+lowest seen: host C: 1395 GB free (start 1395); VM disk 935 GB free (start 937, used by this run: 2052 MB)
+end: host C: 1395 GB free (started 1395 GB)

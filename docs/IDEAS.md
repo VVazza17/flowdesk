@@ -609,6 +609,7 @@ when each entry last ran across a container recreate (a rebuild, `up --force-rec
 
 ### What is known and what is not
 - **Known (checked 2026-11-14):** the file is `/tmp/celerybeat-schedule` inside the container, and the compose file has no volume for it.
+- **TESTED 2026-11-15 (one trial each, throwaway Beat, `*/2` crontab; `docs/evidence/2026-11-15-idea043-beat-recreate.txt`): a recreated Beat with its file in `/tmp` did NOT run the missed firing; with the file on a named volume it did.** A fresh named volume is root-owned and Beat runs as uid 10001 (`Errno 13`), so the image must own the mount path. The paragraph below is the original assumption, kept as written:
 - **ASSUMED, not tested:** a freshly created Beat, with no file, waits for the next 08:00 and does not run a firing it missed while it was
   down. Nobody has recreated `beat` between 08:00 and the next firing to see.
 
@@ -619,6 +620,37 @@ catches up and a double run writes zero rows. And compose is not touched at a ga
 ### Unfreeze triggers
 Any Beat entry that is NOT idempotent and catch-up-safe, or one whose missed firing costs data. Slice 6's price polls are the first
 candidate: a missed intraday bar is not recovered by a later run the way a FRED vintage is. Decide at slice 6 planning, with the test above run first.
+
+---
+
+## IDEA-044: Retention for 15-minute bars is unspecified (a disk-budget question)
+
+**Status:** Open, waiting on Kyle. **No recommendation is made here; this is the input to the decision.**
+**Raised:** 2026-11-15 (slice 6 plan, D6)
+
+### The gap
+Section 8 gives retention for 1-minute bars (90 days) and 30-minute bars (2 years) and says nothing about the 15-minute bars that sections 6.1 and 11 poll.
+
+### The figures
+Rows a year: 24 symbols x 26 bars x 251 sessions = **156,624**; 500 symbols x 26 x 251 = **3,263,000**. (24 and 251 MEASURED 2026-11-14; 26 is arithmetic from 6.5 h x 4 and early closes have fewer; "~500" is ASSUMED, section 6.12's wording, there is no list.)
+
+| | 24 symbols | 500 symbols |
+|---|---|---|
+| **315 bytes/row** (Kyle's figure from the earlier session; the run that produced it was not kept, so it is not reproduced here) | 156,624 x 315 = **49.3 MB/yr** (0.05 GB) | 3,263,000 x 315 = **1,027.8 MB/yr** (1.03 GB) |
+| Measured, uncompressed, same arithmetic | 286.7 B/row = 44.9 MB/yr | 246.0 B/row = 802.7 MB/yr |
+| Measured, **compressed** | 108.6 B/row = **17.0 MB/yr** | 65.2 B/row = **212.7 MB/yr** |
+| 315 scaled by the measured compression ratio (0.379 and 0.265) | about 18.7 MB/yr | about 272 MB/yr |
+
+Multiply by the years kept: two years is twice these figures. These sizes are the table plus its indexes only, not WAL, not backups (each nightly dump is a full copy, 14 daily + 8 weekly kept).
+
+### What compression does (MEASURED 2026-11-15, `infra/bench-bars.sh`, TimescaleDB 2.31.0, weekly chunks, segment by `symbol_id,interval`, order by `ts`)
+- 15-minute bars: size falls to **0.38x** (24 symbols) and **0.27x** (500 symbols) of uncompressed.
+- It costs reads: the cross-section at one timestamp goes from 0.15 ms to **19.4 ms** at 500 symbols, latest-per-symbol from 4.2 to 20.7 ms (24 symbols: 0.04 to 1.2 ms and 0.9 to 3.0 ms).
+- **It made the 12,000-row daily table larger** (8.7 MB to 11.1 MB, 756 to 965 B/row): 101 weekly chunks hold about 120 rows each. A daily table needs a longer chunk interval, which is a step 2 choice.
+- **Caveats on all of it:** the data is synthetic (smooth prices, random volume, prices rounded to 4 decimals), so real compression will differ, and bytes/row here is a floor for the same reason. And `bars.c_total_return` is rewritten in place on every dividend (D2); updating rows in a compressed chunk is restricted and slow, so compression suits 15-minute bars only if they do not carry a rewritten column. Not tested.
+
+### Decision wanted from Kyle
+How long to keep 15-minute bars, given the above, and whether compression is on. Nothing else depends on it until step 2's migration sets a retention policy.
 
 ---
 

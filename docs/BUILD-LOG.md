@@ -2648,3 +2648,38 @@ Status of each: **D1, D2, D4, D6, D7 decided. D3 and D5 PENDING.** IDEA-043 is u
 - **D7: DECIDED, yes.** Out of this slice, by name: S&P 500 bars, Stooq, 1-minute bars, the intraday-to-daily aggregate, quarantine (slice 7), corporate actions (slice 8).
 - **IDEA-043: UNFROZEN 2026-11-15**, before prices go on Beat: a missed price bar cannot be caught up the way a FRED poll can. The recreate test (`infra/idea043-beat-recreate.sh`) is run
   as its first step; its result decides the volume.
+
+### Addendum 2026-11-15 — step 1(a) measured, IDEA-043 tested, and the disk guard's first version measured the wrong thing
+
+**C: free space, MEASURED 2026-11-15 03:27, PowerShell `Get-PSDrive C`: 1,396.45 GB free of 1,862 GB** (`df -k /c` agrees: 1,952,874,564 KB total). Docker's VM disk is a different filesystem:
+**`/dev/sdc`, 1,007 GB total, 937 GB free, MEASURED 2026-11-15 by `df` inside a container.** `docker_data.vhdx` (25.4 GB) lives on C: and grows into it.
+Dev stack at the start of the session: `/health/ready` 200; `macro_metrics` **56,852 rows**, the figure slice 5 closed with. `benchpg` and its volume were removed by name; no prune was run.
+
+**The guard.** The first version checked C: only. C: is the right limit for the VHDX growing, but it is **blind to the VM disk filling**, and it showed it: the first benchmark moved C: by 1 GB while the VM
+disk took about 2 GB. `infra/bench-bars.sh` now watches **both**, each with its own floor (its own start value minus a 15 GB budget), kills the container if either trips, and reports the lowest value seen on each.
+Tested by running it with a zero budget (it trips and cleans up). The benchmark was then re-run under the corrected guard: **lowest seen, host C: 1,395 GB (start 1,395), VM disk 935 GB (start 937): this run used 2,052 MB of the VM disk
+and no measurable C:.** The first run's numbers were reproduced, so they stand.
+
+**Step 1(a) results** (`docs/evidence/2026-11-15-bars-benchmark.txt`; MEASURED 2026-11-15, TimescaleDB 2.31.0 / PG 16.15, median of 5 `EXPLAIN ANALYZE`, **synthetic data** (smooth prices to 4 dp, random volume), weekly chunks,
+draft columns = section 8 plus the D1 provenance columns):
+
+| Rows | Uncompressed | Compressed | Latest per symbol | One symbol, 30 d | Cross-section at one ts |
+|---|---|---|---|---|---|
+| 12,024 (24 sym, daily) | 755.6 B/row (101 chunks) | **965.4 B/row, larger** | 1.6 / 5.0 ms | 0.6 / 0.8 ms | 0.04 / 0.22 ms |
+| 162,888 (24 sym, 15 min) | 286.7 B/row | 108.6 B/row | 0.9 / 3.0 ms | 0.85 / 1.8 ms | 0.04 / 1.2 ms |
+| 3,393,500 (500 sym, 15 min) | 246.0 B/row | 65.2 B/row | 4.2 / 20.7 ms | 3.0 / 1.9 ms | 0.15 / 19.4 ms |
+
+(Timings are uncompressed / compressed.) **What this says:**
+- **Rule 10 tally goes to four. This plan's hypothesis that the cross-section "needs an `(interval, ts)` index and that the macro conclusion does not carry" is FALSIFIED.** With only the primary key and the hypertable's default `ts` index, chunk exclusion plus that index
+  answered the cross-section in 0.04 to 0.15 ms even at 3.4 million rows, and the extra index changed nothing (it cost 1.6 to 24 MB). **Limit of the claim:** each table held one interval, so a table mixing daily and 15-minute rows at the same `ts` was not measured.
+  So, for what was measured, **no index beyond the primary key is needed**, as in slice 5.
+- Compression is a real saving for 15-minute bars (0.38x and 0.27x) and a real read cost at 500 symbols (cross-section 0.15 to 19.4 ms). It **hurts the daily table because 12,000 rows over 101 weekly chunks is about 120 rows a chunk**: the daily table needs a much longer chunk interval, a step 2 choice not yet measured.
+- **Not measured by this benchmark:** the 60-day intraday limit and the batch/spacing figures (both step 1(b), a live probe, not run), any versioned-read shape (D3), and real-price compression.
+- 315 bytes/row (Kyle's figure) was **not reproduced**: the earlier run was not kept. Measured here: 246 to 287 uncompressed, a floor given the synthetic data. IDEA-044 carries both.
+
+**IDEA-043 TESTED** (`infra/idea043-beat-recreate.sh`, `docs/evidence/2026-11-15-idea043-beat-recreate.txt`; MEASURED 2026-11-15, throwaway Redis and Beat on their own network, a `*/2` crontab entry, **one trial per case**, not the real schedule):
+- **A, today's setup (schedule file in the container's `/tmp`), container removed and recreated across a missed firing: the recreated Beat did NOT run the missed firing.** The ASSUMED "loses its last-run memory" is now MEASURED for a recreate.
+- **B, schedule file on a named volume: the recreated Beat ran the missed firing at once (caught up).**
+- **A trap found on the way: a fresh named volume is root-owned and Beat runs as uid 10001, so the first attempt died with `Errno 13` on the schedule file.** The fix therefore needs the mount path created and owned by `flowdesk` in the image (`backend/Dockerfile`, so a new volume inherits it), not just a `volumes:` line in compose.
+- **Not tested:** a plain `docker restart` (the container's filesystem survives it), catch-up of *several* missed firings (Celery's behaviour is to run a missed entry once, not once per miss: unverified here, and for 15-minute price bars that means a long outage still loses the bars in between), and the real Beat schedule. **Catch-up by Beat is therefore not a substitute for a gap check on the data**; that belongs to step 6.
+- Not built: compose and the Dockerfile are untouched. IDEA-043 is unfrozen, and the build is step 6's first task, pending your go-ahead on the shape above.
