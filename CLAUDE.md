@@ -301,7 +301,9 @@ elaboration is the most comfortable way to avoid execution.*
     assumption as settled and building on it. Three plan numbers have been falsified by measurement so far, each written as fact:
     ADR-0003 **F1** (a revision's date can only be known to a poll interval), ADR-0003 **F2** (a `"."` published in no vintage) and
     step 5's thresholds (sized from **lag**; the gap between publications is the quantity). When a measurement falsifies one,
-    say so in the plan entry (an addendum, for an ADR) and keep this count.
+    say so in the plan entry (an addendum, for an ADR) and keep this count. **Count: five (2026-11-16).** Fourth: slice 6 step 1(a), "the cross-section needs an
+    `(interval, ts)` index" (the primary key served it). Fifth: slice 6 step 1(b) F-a, the implicit premise that a completed yfinance bar is final (its volume was still
+    changing 28 minutes after it ended; counted though it was never written as a number, Kyle may rule otherwise).
 
 ## Commands
 

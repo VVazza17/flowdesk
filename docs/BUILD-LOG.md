@@ -2710,7 +2710,7 @@ Written the turn they were given. **Status after this addendum: D1, D2, D4, D5, 
   **Slice 7 (validation) requirement, logged: "Beat catch-up is not a gap check."** Beat running a missed entry once (or not at all) says nothing about which bars are missing; validation must detect gaps in the stored data itself, per symbol and interval.
 - **Index result, scope recorded.** The falsification of "the cross-section needs an `(interval, ts)` index" **holds for single-interval tables only.** If the schema puts 15-minute and daily bars in one table, **re-measure before relying on it.** That, and the daily table's chunk interval, are **step 2 schema choices**.
 
-### Step 1(b), Monday: the live yfinance probe (market hours). Not run. Step 2's schema does not start until every answer below is in.
+### Step 1(b), Monday: the live yfinance probe (market hours). **RUN 2026-11-16; answers in "Addendum 2026-11-16 — step 1(b) measured" below.** Step 2's schema does not start until every answer below is in.
 
 Every answer is recorded as MEASURED with its date, and this plan's table is updated, including any number it falsifies (rule 10 tally is four now).
 1. Whether intraday bars are labelled by **open or close**.
@@ -2763,3 +2763,64 @@ Written the turn they were given. These settle the three items marked "mine, not
   (Consequence for the step list: step 4, "daily backfill, 2 years x 24, as an entry point", is that command; step 6's Beat entries come after it has run. The poll's per-symbol start is "the last stored bar", from the gap-driven requirement above.)
 
 **State: nothing further until Monday's probe (2026-11-16).** Step 2's schema does not start until all seven probe answers are in.
+
+### Addendum 2026-11-16 — step 1(b) measured: the live yfinance probe
+
+**How (all MEASURED 2026-11-16):** two scratch scripts run in the pinned base image (`python:3.12-slim@sha256:5e2bdb1b…`, Python 3.12.16, linux/amd64), with yfinance installed
+fresh from PyPI. Run 1 went from 17:10 to 17:12 UTC (**12:10 to 12:12 ET, regular session open**). Run 2 went from 17:13 to 17:28 UTC and repeated one fetch across a 15-minute boundary. The scripts and their output are kept for re-running:
+`docs/evidence/2026-11-16-yfinance-probe-script{1,2}.py.txt` (renamed `.txt` so no linter picks them up; they are measurements, not repo code, as `probe_fred.py` was) and
+`docs/evidence/2026-11-16-yfinance-probe-run{1,2}.txt`, plus `-run2.json`. Run 1 crashed at its batch section (`yf.shared` no longer exists in 1.8.0); everything before that point is in its output, and run 2 redid the batches.
+Every call used `auto_adjust=False` and `prepost=False` unless noted. **Note on the clock:** in this session's first message I said the market was closed. That was wrong: Git Bash's `date` ignored `TZ`. The container's UTC clock is the record.
+
+**The seven answers.**
+
+1. **Open or close labelling: intraday bars are labelled by their OPEN.** MEASURED on SPY 15m: the session's first bar is `09:30` (a close label would start at `09:45`). 60m bars are `09:30`, `10:30`, `11:30`. At 12:10 ET the forming bar was labelled `12:00`, and at 12:28 ET a `12:15` bar had appeared.
+   The index is tz-aware `America/New_York`. **D5 rule 1 holds as written; the client does not shift.** D5's "(i) ASSUMED open" is now MEASURED. The end-of-session `15:45` label was not observed, because the probe ran mid-session.
+2. **Split adjustment with `auto_adjust=False`: `Close` IS split-adjusted (branch 1).** MEASURED twice, on two code paths (`Ticker.history` and `yf.download`):
+   - **NVDA, 10-for-1, effective 2024-06-10** (yfinance `.splits`: `2024-06-10 09:30 -04:00: 10.0`). The 2024-06-07 `Close` is **120.888**. The as-traded close that day was 1,208.88 (public record, not fetched by this probe).
+     The series runs straight through the split date (120.888 to 121.79). Raw prices would drop about 90%. This matches M0 spike 2's `Close` to the last digit.
+   - **XLK, 2-for-1, effective 2025-12-05** (yfinance `.splits`), a universe member. The 2025-12-04 `Close` is 145.535 and the 2025-12-05 `Close` is 146.60, with no halving.
+   - The `Stock Splits` column carries the ratio on the effective date (10.0, 2.0), so raw can be reconstructed from it inside a window.
+3. **The in-progress bar is returned as an ordinary last row, with no flag, and its values change between fetches.** MEASURED: at 12:10:22 and 12:11:29 ET the `12:00` bar's Low, Close and Volume differed (744.32/744.37/481,054, then 744.23/744.61/523,803).
+   **Today's daily bar is also returned during the session**, labelled `2026-11-16 00:00 -05:00`, with partial values (Volume 18.02 M at 12:10, 18.23 M at 12:13).
+   **Exclusion rule, from the measurement:** drop an intraday row unless `ts + interval <= fetch instant`. Drop a daily row unless that session's `closes_at <= fetch instant`. **Nothing in the frame marks the row; only the clock can.**
+4. **15m look-back: a `start=` request is refused when it reaches back more than 60 days.** MEASURED on SPY:
+   - `start` = today − 59 days (2026-09-18) returned 1,077 bars from `2026-09-18 09:30`.
+   - `start` = today − 60 days (2026-09-17, which yfinance sent as 04:00 UTC, 60.55 days before the end) raised `YFPricesMissingError: … The requested range must be within the last 60 days.` So did −61, −62 and −70 days.
+   - **But `period="60d"` returned 1,545 bars back to 2026-08-24 (84 calendar days, about 60 trading sessions), and `period="61d"` was refused.** So the limit is 60 calendar days on the `start=` path and 60 sessions on the `period=` path.
+   - Not measured: whether the refusal comes from yfinance or from Yahoo, and whether `period=` reaching older bars holds on other days. **The gap-driven poll fetches from a `start`, so its operative limit is 60 calendar days.** Data older than that may still be reachable through `period=`. Whether the unrecoverable-gap record uses the conservative 60 calendar days is a step 2/3 choice and not decided here.
+5. **Batch and spacing: NO throttling was seen; the threshold was NOT found** (deliberately not provoked). MEASURED:
+   - One `yf.download` of all 24 tickers (`threads=True`, `group_by="ticker"`): daily 2y took **0.96 s** (500 rows, 0 empty), 15m 60d took **1.12 s** (1,545 rows), and 15m 5d took **0.73 s**.
+   - Five more 15m 5d batches at 2 s spacing took 0.61 to 0.68 s each, with 0 empty. `threads=False` took 2.54 s.
+   - In total, about 10 batches of 24 in run 2 (a few hundred per-ticker requests) plus about 45 single calls in run 1, all within about 20 minutes. No 429, no empty frame and no error except the deliberate dead ticker.
+   - **What this supports, and no more:** one 24-ticker batch per 15 minutes is far inside anything observed. `RATE_BUDGETS["yfinance"]` is step 3's to set, and any figure above about one batch per 2 s is unmeasured.
+6. **Pinned version: yfinance 1.8.0**, the newest on PyPI on 2026-11-16 (`pip index versions`). It brought pandas 3.1.1, numpy 2.5.5, requests 2.34.2, curl_cffi 0.17.0, peewee 4.5.3, platformdirs 4.14.5, beautifulsoup4 4.15.0, protobuf 7.36.2, websockets 17.4 and pytz 2026.6.
+   It is not in any lock yet. Step 3 adds it hash-pinned with the licence and arm64 checks. **curl_cffi has compiled wheels: that is the arm64 check's target.** Also seen in 1.8.0: `raise_errors=` is deprecated (use `yf.config.debug.hide_exceptions`), and `yf.shared._ERRORS` is gone.
+7. **Re-run reference for (2): NVDA, 10:1, effective 2024-06-10, compare the 2024-06-07 `Close` (120.888 adjusted; 1,208.88 as traded). Also XLK, 2:1, effective 2025-12-05, compare 2025-12-04 with 2025-12-05.**
+   To re-run on a future version: script 1's section 2 and script 2's section D. A version that returns about 1,208.88 for NVDA on 2024-06-07 is truly raw and flips the branch.
+
+**D3: BRANCH 1, split-adjusted. D3 is decided IN SLICE 6**, by the recorded rule ("split-adjusted means D3 is decided in slice 6"). A re-fetch rewrites old bars' prices whenever a split lands after them. **Only the branch is decided here.** Choosing among (a), (b) and (c) is Kyle's, under the recorded principle, and comes before step 2's schema.
+Measured facts that bear on it, without choosing:
+- **Five universe members split inside the 2-year backfill window**: XLK, XLE, XLY, XLU and XLB, all 2:1 on 2025-12-05, as yfinance reports. So the first backfill already spans a split, and `raw_basis = reconstructed` is needed in slice 6, not only in slice 8.
+- **`Adj Close` is rewritten after the fact even when `Close` is not**: NVDA 2024-06-07 `Adj Close` was 120.679 in M0 spike 2 (2026-07-31) and is 120.544 today, while `Close` is identical. That is D2's premise, now measured.
+
+**Findings outside the seven, which bear on step 2/3 and are flagged, not resolved:**
+- **F-a. A completed bar is not final.** MEASURED on SPY 15m: the `11:45` bar (ended 12:00) had Volume 772,495 at 12:10, 787,021 at 12:11, 794,162 at 12:13 and **845,187 at 12:28**, still changing 28 minutes after it closed.
+  The `12:00` bar's **Open** changed after it ended (745.420 to 745.410, between 12:13 and 12:28).
+  - This falsifies the premise under D5's "only completed bars are stored", namely that a completed bar's values are final. It also bears on the M2 gate's "a re-run writes 0 rows" for recent intraday bars, and on D5 (iv)'s "differing rows fail that symbol".
+  - How long revisions continue was not measured. **Rule 10 tally: five.** The premise was implicit, not a written number; I count it because code would have been built on it. Kyle may rule otherwise.
+- **F-b. Some 15m volumes don't add up.** MEASURED on SPY: today's 15m bars from `10:30` to `11:30` carry Volume 12.04 M, 14.06 M, 15.28 M, 16.12 M and 16.85 M, rising every bar and identical in both fetches. The other bars carry 0.7 to 4.7 M.
+  The 15m bars sum to about 86 M; the daily bar said 18.2 M. Seen on SPY only, on one day; other symbols were not checked. This is a slice 7 validation case (an intraday-vs-daily volume reconciliation); nothing is decided here.
+- **F-c. `yf.download` returns a timezone-NAIVE index for daily bars** (`2024-11-18 00:00:00`, tz `None`). Its 15m index is tz-aware, and `Ticker.history` daily is tz-aware midnight `America/New_York`.
+  D5 says a naive provider index is rejected (`schema_mismatch`), so a batched daily fetch would always be rejected as written. The naive value is the exchange-local session date (D5 (ii)). Whether the client accepts a naive *daily* date and maps it to `trading_sessions`, or fetches daily another way, is a D5 amendment for Kyle.
+- **F-d. Columns, by name.** A batch with `actions=True` returns `Open, High, Low, Close, Adj Close, Volume, Dividends, Stock Splits` **and `Capital Gains`** (fund distributions). `Ticker.history` 15m with `actions=False` returns the first six. Step 3's by-name mapping must expect `Capital Gains`, or `schema_mismatch` fires on every batch.
+- **F-e. A dead ticker in a batch** (`ZZZQXFAKE` with three live ones): the batch succeeds. The dead ticker appears as an all-NaN column group, yfinance logs a 404 and "1 Failed download", and the live tickers are complete. This is the shape D4's "name the dead symbols" detects. It matches M0 (MEASURED 2026-07-31).
+- A 1m prepost fetch's last row was a live quote (Volume 0, O=H=L=C). 1m is out of scope (D7), so this is recorded only.
+
+**Plan numbers updated.** "Where I expect this plan's numbers to be wrong":
+- The 60-day limit is **confirmed for `start=`** and **exceeded on `period=`** (not counted as a falsification).
+- The batch figure is **bounded below and not found**.
+- The primary key result was already falsified at step 1(a).
+- New: F-a, counted (tally five).
+
+**State: probe complete, D3 branch 1. Step 2's schema has NOT started.** Before it can start: Kyle's D3 option, and Kyle's calls on F-a (revised completed bars), F-c (naive daily index) and the gap-limit choice in item 4.

@@ -1,0 +1,523 @@
+yfinance (1.8.0)
+== 6_versions
+{
+ "python": "3.12.16 (main, Nov  5 2026, 07:58:20) [GCC 14.2.0]",
+ "yfinance": "1.8.0",
+ "pandas": "3.1.1",
+ "numpy": "2.5.5",
+ "requests": "2.34.2",
+ "curl_cffi": "0.17.0",
+ "peewee": "4.5.3",
+ "multitasking": null,
+ "platformdirs": "4.14.5",
+ "frozendict": null,
+ "beautifulsoup4": "4.15.0",
+ "protobuf": "7.36.2",
+ "websockets": "17.4",
+ "pytz": "2026.6"
+}
+== 1_spy15_meta
+{
+ "elapsed_s": 0.75,
+ "tz": "America/New_York",
+ "n": 115,
+ "columns": [
+  "Open",
+  "High",
+  "Low",
+  "Close",
+  "Adj Close",
+  "Volume"
+ ]
+}
+== 1_spy15_lastsession
+{
+ "date": "2026-11-16",
+ "n_bars": 11,
+ "first": "2026-11-16 09:30:00-05:00",
+ "last": "2026-11-16 12:00:00-05:00",
+ "first_rows": [
+  {
+   "ts": "2026-11-16 09:30:00-05:00",
+   "Open": 749.6599731445312,
+   "High": 749.8200073242188,
+   "Low": 746.6506958007812,
+   "Close": 749.3400268554688,
+   "Adj Close": 749.3400268554688,
+   "Volume": 4667316.0
+  },
+  {
+   "ts": "2026-11-16 09:45:00-05:00",
+   "Open": 749.3099975585938,
+   "High": 749.6599731445312,
+   "Low": 746.4500122070312,
+   "Close": 746.5050048828125,
+   "Adj Close": 746.5050048828125,
+   "Volume": 1682683.0
+  }
+ ],
+ "last_rows": [
+  {
+   "ts": "2026-11-16 11:45:00-05:00",
+   "Open": 745.7000122070312,
+   "High": 745.7899780273438,
+   "Low": 744.4299926757812,
+   "Close": 745.4099731445312,
+   "Adj Close": 745.4099731445312,
+   "Volume": 772495.0
+  },
+  {
+   "ts": "2026-11-16 12:00:00-05:00",
+   "Open": 745.4199829101562,
+   "High": 745.530029296875,
+   "Low": 744.3200073242188,
+   "Close": 744.3599853515625,
+   "Adj Close": 744.3599853515625,
+   "Volume": 481054.0
+  }
+ ]
+}
+== 1_spy60_lastsession
+{
+ "labels": [
+  "2026-11-16 09:30:00-05:00",
+  "2026-11-16 10:30:00-05:00",
+  "2026-11-16 11:30:00-05:00"
+ ]
+}
+== 1_spy_daily_vs_15m
+{
+ "daily_index_tail": [
+  "2026-11-12 00:00:00-05:00",
+  "2026-11-13 00:00:00-05:00",
+  "2026-11-16 00:00:00-05:00"
+ ],
+ "daily_last": [
+  {
+   "ts": "2026-11-16 00:00:00-05:00",
+   "Open": 749.6599731445312,
+   "High": 749.8200073242188,
+   "Low": 743.3099975585938,
+   "Close": 744.3699951171875,
+   "Adj Close": 744.3699951171875,
+   "Volume": 18020977.0
+  }
+ ],
+ "sum15_volume": 85984117.0,
+ "first15_open": 749.6599731445312,
+ "last15_close": 744.3599853515625,
+ "max15_high": 749.8200073242188,
+ "min15_low": 743.3099975585938
+}
+== 3_now_utc
+"2026-11-16 17:10:22.251265+00:00"
+== 3_regular_tail
+{
+ "last": "2026-11-16 12:00:00-05:00",
+ "rows": [
+  {
+   "ts": "2026-11-16 11:45:00-05:00",
+   "Open": 745.7000122070312,
+   "High": 745.7899780273438,
+   "Low": 744.4299926757812,
+   "Close": 745.4099731445312,
+   "Adj Close": 745.4099731445312,
+   "Volume": 772495.0
+  },
+  {
+   "ts": "2026-11-16 12:00:00-05:00",
+   "Open": 745.4199829101562,
+   "High": 745.530029296875,
+   "Low": 744.3200073242188,
+   "Close": 744.3699951171875,
+   "Adj Close": 744.3699951171875,
+   "Volume": 481054.0
+  }
+ ]
+}
+== 3_prepost_fetch1
+{
+ "fetched_at": "2026-11-16 17:10:22.437948+00:00",
+ "rows": [
+  {
+   "ts": "2026-11-16 11:30:00-05:00",
+   "Open": 746.6699829101562,
+   "High": 746.8599853515625,
+   "Low": 745.4199829101562,
+   "Close": 745.7100219726562,
+   "Adj Close": 745.7100219726562,
+   "Volume": 16854013.0
+  },
+  {
+   "ts": "2026-11-16 11:45:00-05:00",
+   "Open": 745.7000122070312,
+   "High": 745.7899780273438,
+   "Low": 744.4299926757812,
+   "Close": 745.4099731445312,
+   "Adj Close": 745.4099731445312,
+   "Volume": 772495.0
+  },
+  {
+   "ts": "2026-11-16 12:00:00-05:00",
+   "Open": 745.4199829101562,
+   "High": 745.530029296875,
+   "Low": 744.3200073242188,
+   "Close": 744.3699951171875,
+   "Adj Close": 744.3699951171875,
+   "Volume": 481054.0
+  }
+ ]
+}
+== 3_prepost_fetch2
+{
+ "fetched_at": "2026-11-16 17:11:29.526792+00:00",
+ "rows": [
+  {
+   "ts": "2026-11-16 11:30:00-05:00",
+   "Open": 746.6699829101562,
+   "High": 746.8599853515625,
+   "Low": 745.4199829101562,
+   "Close": 745.7100219726562,
+   "Adj Close": 745.7100219726562,
+   "Volume": 16854013.0
+  },
+  {
+   "ts": "2026-11-16 11:45:00-05:00",
+   "Open": 745.7000122070312,
+   "High": 745.7899780273438,
+   "Low": 744.4299926757812,
+   "Close": 745.4099731445312,
+   "Adj Close": 745.4099731445312,
+   "Volume": 787021.0
+  },
+  {
+   "ts": "2026-11-16 12:00:00-05:00",
+   "Open": 745.4199829101562,
+   "High": 745.530029296875,
+   "Low": 744.22998046875,
+   "Close": 744.6099853515625,
+   "Adj Close": 744.6099853515625,
+   "Volume": 523803.0
+  }
+ ]
+}
+== 3_prepost_1m_tail
+{
+ "fetched_at": "2026-11-16 17:11:29.625651+00:00",
+ "rows": [
+  {
+   "ts": "2026-11-16 12:09:00-05:00",
+   "Open": 744.4000244140625,
+   "High": 744.47998046875,
+   "Low": 744.3355102539062,
+   "Close": 744.3355102539062,
+   "Adj Close": 744.3355102539062,
+   "Volume": 67316.0
+  },
+  {
+   "ts": "2026-11-16 12:10:00-05:00",
+   "Open": 744.3049926757812,
+   "High": 744.52001953125,
+   "Low": 744.22998046875,
+   "Close": 744.4000244140625,
+   "Adj Close": 744.4000244140625,
+   "Volume": 42749.0
+  },
+  {
+   "ts": "2026-11-16 12:11:00-05:00",
+   "Open": 744.5800170898438,
+   "High": 744.5800170898438,
+   "Low": 744.5800170898438,
+   "Close": 744.5800170898438,
+   "Adj Close": 744.5800170898438,
+   "Volume": 0.0
+  }
+ ]
+}
+== 3_daily_today
+{
+ "rows": [
+  {
+   "ts": "2026-11-13 00:00:00-05:00",
+   "Open": 760.0700073242188,
+   "High": 760.1199951171875,
+   "Low": 747.8800048828125,
+   "Close": 754.3699951171875,
+   "Adj Close": 754.3699951171875,
+   "Volume": 38391200.0
+  },
+  {
+   "ts": "2026-11-16 00:00:00-05:00",
+   "Open": 749.6599731445312,
+   "High": 749.8200073242188,
+   "Low": 743.3099975585938,
+   "Close": 744.3699951171875,
+   "Adj Close": 744.3699951171875,
+   "Volume": 18020977.0
+  }
+ ]
+}
+/out/probe_yf.py:84: DeprecationWarning: 'raise_errors' deprecated, do: yf.config.debug.hide_exceptions = False
+  df = yf.Ticker("SPY").history(start=str(start), interval="15m", auto_adjust=False, prepost=False,
+/out/probe_yf.py:84: DeprecationWarning: 'raise_errors' deprecated, do: yf.config.debug.hide_exceptions = False
+  df = yf.Ticker("SPY").history(start=str(start), interval="15m", auto_adjust=False, prepost=False,
+/out/probe_yf.py:84: DeprecationWarning: 'raise_errors' deprecated, do: yf.config.debug.hide_exceptions = False
+  df = yf.Ticker("SPY").history(start=str(start), interval="15m", auto_adjust=False, prepost=False,
+/out/probe_yf.py:93: DeprecationWarning: 'raise_errors' deprecated, do: yf.config.debug.hide_exceptions = False
+  df = yf.Ticker("SPY").history(period=per, interval="15m", auto_adjust=False, prepost=False, actions=False,
+/out/probe_yf.py:93: DeprecationWarning: 'raise_errors' deprecated, do: yf.config.debug.hide_exceptions = False
+  df = yf.Ticker("SPY").history(period=per, interval="15m", auto_adjust=False, prepost=False, actions=False,
+== 4_lookback
+{
+ "start_minus_58d": {
+  "start": "2026-09-19",
+  "n": 1051,
+  "first": "2026-09-21 09:30:00-04:00"
+ },
+ "start_minus_59d": {
+  "start": "2026-09-18",
+  "n": 1077,
+  "first": "2026-09-18 09:30:00-04:00"
+ },
+ "start_minus_60d": {
+  "start": "2026-09-17",
+  "error_class": "YFPricesMissingError",
+  "error": "$SPY: 15m data not available for startTime=1789617600 and endTime=1794849092. The requested range must be within the last 60 days."
+ },
+ "start_minus_61d": {
+  "start": "2026-09-16",
+  "error_class": "YFPricesMissingError",
+  "error": "$SPY: 15m data not available for startTime=1789531200 and endTime=1794849095. The requested range must be within the last 60 days."
+ },
+ "start_minus_62d": {
+  "start": "2026-09-15",
+  "error_class": "YFPricesMissingError",
+  "error": "$SPY: 15m data not available for startTime=1789444800 and endTime=1794849097. The requested range must be within the last 60 days."
+ },
+ "start_minus_70d": {
+  "start": "2026-09-07",
+  "error_class": "YFPricesMissingError",
+  "error": "$SPY: 15m data not available for startTime=1788753600 and endTime=1794849099. The requested range must be within the last 60 days."
+ },
+ "period_60d": {
+  "n": 1545,
+  "first": "2026-08-24 09:30:00-04:00"
+ },
+ "period_61d": {
+  "error_class": "YFPricesMissingError",
+  "error": "$SPY: 15m data not available for startTime=1789578703 and endTime=1794849103. The requested range must be within the last 60 days."
+ }
+}
+== 2_nvda_daily_auto_adjust_false
+{
+ "columns": [
+  "Open",
+  "High",
+  "Low",
+  "Close",
+  "Adj Close",
+  "Volume",
+  "Dividends",
+  "Stock Splits"
+ ],
+ "rows": [
+  {
+   "ts": "2024-06-05 00:00:00-04:00",
+   "Open": 118.37100219726562,
+   "High": 122.4489974975586,
+   "Low": 117.46800231933594,
+   "Close": 122.44000244140625,
+   "Adj Close": 122.09188079833984,
+   "Volume": 528402000.0,
+   "Dividends": 0.0,
+   "Stock Splits": 0.0
+  },
+  {
+   "ts": "2024-06-06 00:00:00-04:00",
+   "Open": 124.0479965209961,
+   "High": 125.58699798583984,
+   "Low": 118.31999969482422,
+   "Close": 120.99800109863281,
+   "Adj Close": 120.65396881103516,
+   "Volume": 664696000.0,
+   "Dividends": 0.0,
+   "Stock Splits": 0.0
+  },
+  {
+   "ts": "2024-06-07 00:00:00-04:00",
+   "Open": 119.7699966430664,
+   "High": 121.69200134277344,
+   "Low": 118.02200317382812,
+   "Close": 120.88800048828125,
+   "Adj Close": 120.54428100585938,
+   "Volume": 412386000.0,
+   "Dividends": 0.0,
+   "Stock Splits": 0.0
+  },
+  {
+   "ts": "2024-06-10 00:00:00-04:00",
+   "Open": 120.37000274658203,
+   "High": 123.0999984741211,
+   "Low": 117.01000213623047,
+   "Close": 121.79000091552734,
+   "Adj Close": 121.44371032714844,
+   "Volume": 313434100.0,
+   "Dividends": 0.0,
+   "Stock Splits": 10.0
+  },
+  {
+   "ts": "2024-06-11 00:00:00-04:00",
+   "Open": 121.7699966430664,
+   "High": 122.87000274658203,
+   "Low": 118.73999786376953,
+   "Close": 120.91000366210938,
+   "Adj Close": 120.57613372802734,
+   "Volume": 222551200.0,
+   "Dividends": 0.01,
+   "Stock Splits": 0.0
+  },
+  {
+   "ts": "2024-06-12 00:00:00-04:00",
+   "Open": 123.05999755859375,
+   "High": 126.87999725341797,
+   "Low": 122.56999969482422,
+   "Close": 125.19999694824219,
+   "Adj Close": 124.85426330566406,
+   "Volume": 299595000.0,
+   "Dividends": 0.0,
+   "Stock Splits": 0.0
+  }
+ ]
+}
+== 2_nvda_splits
+{
+ "2007-09-11 09:30:00-04:00": 1.5,
+ "2021-07-20 09:30:00-04:00": 4.0,
+ "2024-06-10 09:30:00-04:00": 10.0
+}
+== 2_universe_splits
+{
+ "XLK": {
+  "2025-12-05 09:30:00-05:00": 2.0
+ },
+ "SMH": {
+  "2023-05-05 09:30:00-04:00": 2.0
+ },
+ "IGV": {
+  "2024-03-07 09:30:00-05:00": 5.0
+ },
+ "XLF": {
+  "2016-09-19 09:30:00-04:00": 1.231
+ },
+ "XLE": {
+  "2025-12-05 09:30:00-05:00": 2.0
+ },
+ "XLY": {
+  "2025-12-05 09:30:00-05:00": 2.0
+ },
+ "XLU": {
+  "2025-12-05 09:30:00-05:00": 2.0
+ },
+ "XLB": {
+  "2025-12-05 09:30:00-05:00": 2.0
+ },
+ "IWM": {
+  "2005-06-09 09:30:00-04:00": 2.0
+ },
+ "QQQ": {
+  "2000-03-20 09:30:00-05:00": 2.0
+ },
+ "RSP": {
+  "2006-04-27 09:30:00-04:00": 4.0
+ },
+ "USO": {
+  "2020-04-29 09:30:00-04:00": 0.125
+ },
+ "UNG": {
+  "2018-01-05 09:30:00-05:00": 0.25,
+  "2024-01-24 09:30:00-05:00": 0.25
+ },
+ "SLV": {
+  "2008-07-24 09:30:00-04:00": 10.0
+ },
+ "URA": {
+  "2013-05-16 09:30:00-04:00": 0.3333333333333333,
+  "2015-11-18 09:30:00-05:00": 0.5
+ }
+}
+== 2_nvda_download_auto_adjust_false
+{
+ "rows": [
+  {
+   "ts": "2024-06-05 00:00:00",
+   "Adj Close": 122.09188079833984,
+   "Close": 122.44000244140625,
+   "Dividends": 0.0,
+   "High": 122.4489974975586,
+   "Low": 117.46800231933594,
+   "Open": 118.37100219726562,
+   "Stock Splits": 0.0,
+   "Volume": 528402000.0
+  },
+  {
+   "ts": "2024-06-06 00:00:00",
+   "Adj Close": 120.65396881103516,
+   "Close": 120.99800109863281,
+   "Dividends": 0.0,
+   "High": 125.58699798583984,
+   "Low": 118.31999969482422,
+   "Open": 124.0479965209961,
+   "Stock Splits": 0.0,
+   "Volume": 664696000.0
+  },
+  {
+   "ts": "2024-06-07 00:00:00",
+   "Adj Close": 120.54428100585938,
+   "Close": 120.88800048828125,
+   "Dividends": 0.0,
+   "High": 121.69200134277344,
+   "Low": 118.02200317382812,
+   "Open": 119.7699966430664,
+   "Stock Splits": 0.0,
+   "Volume": 412386000.0
+  },
+  {
+   "ts": "2024-06-10 00:00:00",
+   "Adj Close": 121.44371032714844,
+   "Close": 121.79000091552734,
+   "Dividends": 0.0,
+   "High": 123.0999984741211,
+   "Low": 117.01000213623047,
+   "Open": 120.37000274658203,
+   "Stock Splits": 10.0,
+   "Volume": 313434100.0
+  },
+  {
+   "ts": "2024-06-11 00:00:00",
+   "Adj Close": 120.57613372802734,
+   "Close": 120.91000366210938,
+   "Dividends": 0.01,
+   "High": 122.87000274658203,
+   "Low": 118.73999786376953,
+   "Open": 121.7699966430664,
+   "Stock Splits": 0.0,
+   "Volume": 222551200.0
+  },
+  {
+   "ts": "2024-06-12 00:00:00",
+   "Adj Close": 124.85426330566406,
+   "Close": 125.19999694824219,
+   "Dividends": 0.0,
+   "High": 126.87999725341797,
+   "Low": 122.56999969482422,
+   "Open": 123.05999755859375,
+   "Stock Splits": 0.0,
+   "Volume": 299595000.0
+  }
+ ]
+}
+Traceback (most recent call last):
+  File "/out/probe_yf.py", line 131, in <module>
+    "errors": {k: str(v)[:200] for k, v in getattr(yf.shared, "_ERRORS", {}).items()}}
+                                                   ^^^^^^^^^
+AttributeError: module 'yfinance' has no attribute 'shared'

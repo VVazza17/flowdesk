@@ -1,0 +1,152 @@
+"""Slice 6 step 1(b): live yfinance probe. Scratch measurement, not repo code."""
+
+import json
+import sys
+import time
+from datetime import UTC, datetime, timedelta
+
+import pandas as pd
+import yfinance as yf
+
+UNIVERSE = [
+    "XLK", "SMH", "IGV", "XLF", "XLE", "XLI", "XLV", "XLY", "XLP", "XLU", "XLB", "XLRE",
+    "IWM", "ARKK", "SPY", "QQQ", "RSP", "USO", "UNG", "GLD", "SLV", "CPER", "URA", "DBA",
+]
+out: dict = {"run_at_utc": datetime.now(UTC).isoformat()}
+
+
+def log(k, v):
+    out[k] = v
+    print(f"== {k}\n{json.dumps(v, indent=1, default=str)[:4000]}", flush=True)
+
+
+def rows(df, n=None, tail=False):
+    d = df.tail(n) if (n and tail) else (df.head(n) if n else df)
+    return [{"ts": str(i), **{str(c): (None if pd.isna(v) else float(v)) for c, v in r.items()}} for i, r in d.iterrows()]
+
+
+# 6. versions
+import importlib.metadata as md  # noqa: E402
+
+vers = {"python": sys.version}
+for p in ("yfinance", "pandas", "numpy", "requests", "curl_cffi", "peewee", "multitasking", "platformdirs",
+          "frozendict", "beautifulsoup4", "protobuf", "websockets", "pytz"):
+    try:
+        vers[p] = md.version(p)
+    except md.PackageNotFoundError:
+        vers[p] = None
+log("6_versions", vers)
+
+# 1. open vs close labelling: SPY 15m, today's session, prepost=False
+t0 = time.monotonic()
+spy15 = yf.Ticker("SPY").history(period="5d", interval="15m", auto_adjust=False, prepost=False, actions=False)
+log("1_spy15_meta", {"elapsed_s": round(time.monotonic() - t0, 2), "tz": str(spy15.index.tz), "n": len(spy15),
+                     "columns": list(map(str, spy15.columns))})
+last_day = spy15.index[-1].date()
+day = spy15[spy15.index.date == last_day]
+log("1_spy15_lastsession", {"date": str(last_day), "n_bars": len(day), "first": str(day.index[0]),
+                            "last": str(day.index[-1]), "first_rows": rows(day, 2), "last_rows": rows(day, 2, tail=True)})
+# cross-check: 1h bars for the same day (first label 09:30 => open label)
+spy1h = yf.Ticker("SPY").history(period="2d", interval="60m", auto_adjust=False, prepost=False, actions=False)
+d1h = spy1h[spy1h.index.date == last_day]
+log("1_spy60_lastsession", {"labels": [str(i) for i in d1h.index]})
+# cross-check: sum of 15m volumes vs daily volume, and first 15m open vs daily open
+spyd = yf.Ticker("SPY").history(period="5d", interval="1d", auto_adjust=False, actions=False)
+log("1_spy_daily_vs_15m", {"daily_index_tail": [str(i) for i in spyd.index[-3:]],
+                           "daily_last": rows(spyd, 1, tail=True),
+                           "sum15_volume": float(day["Volume"].sum()), "first15_open": float(day["Open"].iloc[0]),
+                           "last15_close": float(day["Close"].iloc[-1]),
+                           "max15_high": float(day["High"].max()), "min15_low": float(day["Low"].min())})
+
+# 3. in-progress bar. Session closed at probe time: regular fetch, then prepost=True twice, 70 s apart.
+now = datetime.now(UTC)
+log("3_now_utc", str(now))
+reg = yf.Ticker("SPY").history(period="1d", interval="15m", auto_adjust=False, prepost=False, actions=False)
+log("3_regular_tail", {"last": str(reg.index[-1]), "rows": rows(reg, 2, tail=True)})
+pp1 = yf.Ticker("SPY").history(period="1d", interval="15m", auto_adjust=False, prepost=True, actions=False)
+f1 = datetime.now(UTC)
+time.sleep(70)
+pp2 = yf.Ticker("SPY").history(period="1d", interval="15m", auto_adjust=False, prepost=True, actions=False)
+f2 = datetime.now(UTC)
+log("3_prepost_fetch1", {"fetched_at": str(f1), "rows": rows(pp1, 3, tail=True)})
+log("3_prepost_fetch2", {"fetched_at": str(f2), "rows": rows(pp2, 3, tail=True)})
+# 1m during post-market: is the last 1m row a forming minute?
+m1a = yf.Ticker("SPY").history(period="1d", interval="1m", auto_adjust=False, prepost=True, actions=False)
+log("3_prepost_1m_tail", {"fetched_at": str(datetime.now(UTC)), "rows": rows(m1a, 3, tail=True)})
+# daily: does today's daily bar appear, and with what label?
+log("3_daily_today", {"rows": rows(spyd, 2, tail=True)})
+
+# 4. the 15m look-back limit
+lim = {}
+for days in (58, 59, 60, 61, 62, 70):
+    start = (now - timedelta(days=days)).date()
+    try:
+        df = yf.Ticker("SPY").history(start=str(start), interval="15m", auto_adjust=False, prepost=False,
+                                      actions=False, raise_errors=True)
+        lim[f"start_minus_{days}d"] = {"start": str(start), "n": len(df),
+                                       "first": str(df.index[0]) if len(df) else None}
+    except Exception as e:  # noqa: BLE001
+        lim[f"start_minus_{days}d"] = {"start": str(start), "error_class": type(e).__name__, "error": str(e)[:300]}
+    time.sleep(2)
+for per in ("60d", "61d"):
+    try:
+        df = yf.Ticker("SPY").history(period=per, interval="15m", auto_adjust=False, prepost=False, actions=False,
+                                      raise_errors=True)
+        lim[f"period_{per}"] = {"n": len(df), "first": str(df.index[0]) if len(df) else None}
+    except Exception as e:  # noqa: BLE001
+        lim[f"period_{per}"] = {"error_class": type(e).__name__, "error": str(e)[:300]}
+    time.sleep(2)
+log("4_lookback", lim)
+
+# 2 + 7. split adjustment under auto_adjust=False: NVDA 10-for-1, effective 2024-06-10.
+# Pre-split NVDA close on 2024-06-07, as traded: $1,208.88 (exchange record). Adjusted: 120.888.
+nv = yf.Ticker("NVDA").history(start="2024-06-05", end="2024-06-13", interval="1d", auto_adjust=False, actions=True)
+log("2_nvda_daily_auto_adjust_false", {"columns": list(map(str, nv.columns)), "rows": rows(nv)})
+nvs = yf.Ticker("NVDA").splits
+log("2_nvda_splits", {str(k): float(v) for k, v in nvs.tail(3).items()})
+# a split inside the 15m look-back would be the strongest check; list recent splits for the universe
+recent = {}
+for t in UNIVERSE:
+    s = yf.Ticker(t).splits
+    if len(s):
+        recent[t] = {str(k): float(v) for k, v in s.tail(2).items()}
+    time.sleep(0.5)
+log("2_universe_splits", recent)
+# yf.download path (the one the client will batch through) for NVDA too
+nvd = yf.download("NVDA", start="2024-06-05", end="2024-06-13", interval="1d", auto_adjust=False, actions=True,
+                  progress=False, multi_level_index=False)
+log("2_nvda_download_auto_adjust_false", {"rows": rows(nvd)})
+
+# 5. batches. Daily 2y x 24, 15m 60d x 24; then 5 repeats of daily 5d x 24 at 2 s spacing.
+b = {}
+for label, kw in (("daily_2y", dict(period="2y", interval="1d")), ("m15_60d", dict(period="60d", interval="15m")),
+                  ("m15_5d", dict(period="5d", interval="15m"))):
+    t0 = time.monotonic()
+    df = yf.download(UNIVERSE, auto_adjust=False, actions=True, prepost=False, progress=False, threads=True,
+                     group_by="ticker", **kw)
+    el = time.monotonic() - t0
+    empty = [t for t in UNIVERSE if t not in df.columns.get_level_values(0) or df[t].dropna(how="all").empty]
+    b[label] = {"elapsed_s": round(el, 2), "shape": list(df.shape), "empty_tickers": empty,
+                "fields": sorted(set(map(str, df.columns.get_level_values(1)))),
+                "errors": {k: str(v)[:200] for k, v in getattr(yf.shared, "_ERRORS", {}).items()}}
+    time.sleep(2)
+reps = []
+for i in range(5):
+    t0 = time.monotonic()
+    df = yf.download(UNIVERSE, period="5d", interval="1d", auto_adjust=False, progress=False, threads=True,
+                     group_by="ticker")
+    reps.append({"i": i, "elapsed_s": round(time.monotonic() - t0, 2),
+                 "n_empty": sum(df[t].dropna(how="all").empty for t in UNIVERSE),
+                 "errors": {k: str(v)[:200] for k, v in getattr(yf.shared, "_ERRORS", {}).items()}})
+    time.sleep(2)
+b["repeat_daily_5d_x5_at_2s"] = reps
+# empty-frame ticker inside a batch (D4)
+df = yf.download(UNIVERSE[:3] + ["ZZZQXFAKE"], period="5d", interval="1d", auto_adjust=False, progress=False,
+                 group_by="ticker")
+b["batch_with_dead_ticker"] = {"shape": list(df.shape),
+                               "dead_all_nan": bool(df["ZZZQXFAKE"].dropna(how="all").empty) if "ZZZQXFAKE" in df.columns.get_level_values(0) else "absent",
+                               "errors": {k: str(v)[:200] for k, v in getattr(yf.shared, "_ERRORS", {}).items()}}
+log("5_batches", b)
+
+out["finished_at_utc"] = datetime.now(UTC).isoformat()
+json.dump(out, open("/out/probe_result.json", "w"), indent=1, default=str)

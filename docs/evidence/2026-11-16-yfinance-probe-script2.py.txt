@@ -1,0 +1,95 @@
+"""Slice 6 step 1(b), follow-up: batches (item 5), revision of completed bars, tz of download, XLK split."""
+
+import json
+import time
+from datetime import UTC, datetime
+
+import pandas as pd
+import yfinance as yf
+
+UNIVERSE = [
+    "XLK", "SMH", "IGV", "XLF", "XLE", "XLI", "XLV", "XLY", "XLP", "XLU", "XLB", "XLRE",
+    "IWM", "ARKK", "SPY", "QQQ", "RSP", "USO", "UNG", "GLD", "SLV", "CPER", "URA", "DBA",
+]
+out: dict = {"run_at_utc": datetime.now(UTC).isoformat(), "yfinance": yf.__version__}
+
+
+def log(k, v):
+    out[k] = v
+    print(f"== {k}\n{json.dumps(v, indent=1, default=str)[:5000]}", flush=True)
+
+
+def rows(df):
+    return [{"ts": str(i), **{str(c): (None if pd.isna(v) else float(v)) for c, v in r.items()}} for i, r in df.iterrows()]
+
+
+def h15():
+    return yf.Ticker("SPY").history(period="1d", interval="15m", auto_adjust=False, prepost=False, actions=False)
+
+
+# A. Revisions of completed bars: today's 15m SPY bars, fetched now and again after ~16 min (crosses a bar boundary).
+a = h15()
+fa = datetime.now(UTC)
+log("A_fetch1", {"fetched_at": str(fa), "rows": rows(a)})
+log("A_daily_today", {"rows": rows(yf.Ticker("SPY").history(period="1d", interval="1d", auto_adjust=False, actions=False))})
+
+# B. Batches (item 5)
+b = {}
+for label, kw in (("daily_2y", dict(period="2y", interval="1d")), ("m15_60d", dict(period="60d", interval="15m")),
+                  ("m15_5d", dict(period="5d", interval="15m"))):
+    t0 = time.monotonic()
+    df = yf.download(UNIVERSE, auto_adjust=False, actions=True, prepost=False, progress=False, threads=True,
+                     group_by="ticker", **kw)
+    el = time.monotonic() - t0
+    present = set(df.columns.get_level_values(0))
+    empty = [t for t in UNIVERSE if t not in present or df[t].dropna(how="all").empty]
+    b[label] = {"started": str(datetime.now(UTC)), "elapsed_s": round(el, 2), "shape": list(df.shape),
+                "empty_tickers": empty, "index_tz": str(df.index.tz), "index_first": str(df.index[0]),
+                "index_last": str(df.index[-1]), "fields": sorted(set(map(str, df.columns.get_level_values(1))))}
+    time.sleep(2)
+reps = []
+for i in range(5):
+    t0 = time.monotonic()
+    df = yf.download(UNIVERSE, period="5d", interval="15m", auto_adjust=False, progress=False, threads=True,
+                     group_by="ticker")
+    reps.append({"i": i, "elapsed_s": round(time.monotonic() - t0, 2),
+                 "n_empty": int(sum(df[t].dropna(how="all").empty for t in UNIVERSE)), "shape": list(df.shape)})
+    time.sleep(2)
+b["repeat_m15_5d_x5_at_2s"] = reps
+t0 = time.monotonic()
+df = yf.download(UNIVERSE, period="5d", interval="15m", auto_adjust=False, progress=False, threads=False,
+                 group_by="ticker")
+b["m15_5d_threads_false"] = {"elapsed_s": round(time.monotonic() - t0, 2),
+                             "n_empty": int(sum(df[t].dropna(how="all").empty for t in UNIVERSE))}
+df = yf.download(UNIVERSE[:3] + ["ZZZQXFAKE"], period="5d", interval="1d", auto_adjust=False, progress=False,
+                 group_by="ticker")
+present = set(df.columns.get_level_values(0))
+b["batch_with_dead_ticker"] = {"shape": list(df.shape), "dead_present_in_columns": "ZZZQXFAKE" in present,
+                               "dead_all_nan": bool(df["ZZZQXFAKE"].dropna(how="all").empty) if "ZZZQXFAKE" in present else None,
+                               "live_ok": [bool(not df[t].dropna(how="all").empty) for t in UNIVERSE[:3]]}
+log("B_batches", b)
+
+# C. tz of single-ticker download vs Ticker.history
+d1 = yf.download("SPY", period="5d", interval="1d", auto_adjust=False, progress=False, multi_level_index=False)
+d2 = yf.download("SPY", period="5d", interval="15m", auto_adjust=False, progress=False, multi_level_index=False)
+log("C_download_tz", {"daily_tz": str(d1.index.tz), "daily_first": str(d1.index[0]),
+                      "m15_tz": str(d2.index.tz), "m15_first": str(d2.index[0])})
+
+# D. XLK 2:1 split as yfinance reports it (2025-12-05), auto_adjust=False: continuity across the date
+x = yf.Ticker("XLK").history(start="2025-12-01", end="2025-12-10", interval="1d", auto_adjust=False, actions=True)
+log("D_xlk_split", {"rows": rows(x)})
+
+# A2. second fetch after crossing a 15-minute boundary
+time.sleep(max(0, 16 * 60 - (datetime.now(UTC) - fa).total_seconds()))
+a2 = h15()
+log("A_fetch2", {"fetched_at": str(datetime.now(UTC)), "rows": rows(a2)})
+diff = []
+for ts in a.index.intersection(a2.index):
+    r1, r2 = a.loc[ts], a2.loc[ts]
+    ch = {c: [float(r1[c]), float(r2[c])] for c in a.columns if float(r1[c]) != float(r2[c])}
+    if ch:
+        diff.append({"ts": str(ts), "bar_end_before_fetch1": bool(ts + pd.Timedelta(minutes=15) <= fa), "changed": ch})
+log("A_changed_between_fetches", diff)
+
+out["finished_at_utc"] = datetime.now(UTC).isoformat()
+json.dump(out, open("/out/probe_result2.json", "w"), indent=1, default=str)
