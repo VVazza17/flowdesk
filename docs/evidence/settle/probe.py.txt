@@ -1,0 +1,34 @@
+"""Slice 6 F-a settle measurement: snapshot 15m and 1d bars for three symbols, to find when settled values stop changing.
+
+Measurement script, not repo code (named .txt so no linter picks it up). Run in the pinned base image with yfinance 1.8.0:
+    python probe.py.txt <out_dir>
+Writes <out_dir>/snap-<UTC>.json. compare.py.txt diffs the snapshots.
+"""
+
+import json
+import sys
+from datetime import UTC, datetime
+
+import pandas as pd
+import yfinance as yf
+
+SYMBOLS = ["SPY", "QQQ", "XLK"]
+
+
+def rows(df):
+    return {str(i): {str(c): (None if pd.isna(v) else float(v)) for c, v in r.items()} for i, r in df.iterrows()}
+
+
+out = {"yfinance": yf.__version__, "started_utc": datetime.now(UTC).isoformat(), "data": {}}
+for s in SYMBOLS:
+    t = yf.Ticker(s)
+    out["data"][s] = {
+        "15m": rows(t.history(period="5d", interval="15m", auto_adjust=False, prepost=False, actions=False)),
+        "1d": rows(t.history(period="5d", interval="1d", auto_adjust=False, prepost=False, actions=False)),
+    }
+out["finished_utc"] = datetime.now(UTC).isoformat()
+stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+path = f"{sys.argv[1]}/snap-{stamp}.json"
+with open(path, "w") as f:
+    json.dump(out, f, indent=1)
+print(path, {s: (len(d["15m"]), len(d["1d"])) for s, d in out["data"].items()})

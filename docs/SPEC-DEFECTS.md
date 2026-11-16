@@ -1037,6 +1037,16 @@ Row 10 of the canonical list. The revision is v4.9.10's line 1111. The stale dep
 ## IDEA-035: The "new data version" in the M2 gate has nowhere to live in §8
 
 **Status:** Open. **Blocks M2 slice 8** (corporate actions workflow).
+**Version home decided 2026-11-16 (Kyle, slice 6 D3): option (b) below, raw storage with splits applied on read.**
+`bars` stores as-traded prices, rebuilt at ingest from yfinance's split-adjusted price × the ratios of splits effective
+after the bar (volume divided by the same ratios; `raw_basis = reconstructed`; the rebuilt values inherit the
+provider's rounding). A minimal `splits` table (symbol, effective date, ratio, first-seen timestamp) lands in slice 6.
+The adjusted read as of T applies only splits effective on or before T, and stored bars never change when a split
+happens. A re-fetch that rebuilds different raw prices is a validation failure, not an overwrite. (a) was rejected
+because every split rewrites full history. A third option, (c), current canonical `bars` plus versions kept
+elsewhere, was rejected because its default read returns rewritten values. The ADR-0002 interaction noted below is
+how `c_raw` is built at ingest, not how it is stored. Stays open until slice 8 builds the rest and a correction release
+updates §8. Record: `docs/BUILD-LOG.md`, "Addendum 2026-11-16 (second)".
 **Raised:** 2026-11-08 (M2 planning)
 
 ### The proposal

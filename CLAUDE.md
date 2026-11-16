@@ -218,8 +218,11 @@ IDEA-042 block nothing. Eight block a milestone or a slice:
   (where `c_total_return` revisions live) wait for slice 6 planning, with IDEA-035.
 - **IDEA-038 → blocks M2 slice 5.** §8 calls the observation timestamp `effective_ts`; the ADRs and §16 call
   it `effective_at`. Settled by the vocabulary decision at slice 5 planning.
-- **IDEA-035 → blocks M2 slice 8.** The gate's "new data version" has nowhere to live in §8. Decided at
-  slice 6 planning, with IDEA-034.
+- **IDEA-035 → blocks M2 slice 8.** The gate's "new data version" has nowhere to live in §8. **Version home
+  decided 2026-11-16 (slice 6 D3, option b):** `bars` stores as-traded prices (rebuilt from yfinance's adjusted
+  price × later split ratios, `raw_basis = reconstructed`), a minimal `splits` table lands in slice 6, and the
+  adjusted read as of T applies only splits effective on or before T. A re-fetch that rebuilds different raw
+  prices is a validation failure, never an overwrite. The rest of corporate actions stays slice 8.
 
 Do not resolve these unilaterally. Flag and wait.
 
@@ -303,7 +306,7 @@ elaboration is the most comfortable way to avoid execution.*
     step 5's thresholds (sized from **lag**; the gap between publications is the quantity). When a measurement falsifies one,
     say so in the plan entry (an addendum, for an ADR) and keep this count. **Count: five (2026-11-16).** Fourth: slice 6 step 1(a), "the cross-section needs an
     `(interval, ts)` index" (the primary key served it). Fifth: slice 6 step 1(b) F-a, the implicit premise that a completed yfinance bar is final (its volume was still
-    changing 28 minutes after it ended; counted though it was never written as a number, Kyle may rule otherwise).
+    changing 28 minutes after it ended; counted though it was never written as a number; Kyle ruled 2026-11-16 that it counts).
 
 ## Commands
 

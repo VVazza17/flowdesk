@@ -2824,3 +2824,56 @@ Measured facts that bear on it, without choosing:
 - New: F-a, counted (tally five).
 
 **State: probe complete, D3 branch 1. Step 2's schema has NOT started.** Before it can start: Kyle's D3 option, and Kyle's calls on F-a (revised completed bars), F-c (naive daily index) and the gap-limit choice in item 4.
+
+### Addendum 2026-11-16 (second) — Kyle's decisions on D3, F-a, F-c, the gap limit, F-b and F-d
+
+Written the turn they were given. **Status after this addendum: D3 DECIDED (option b). D5 AMENDED twice (F-a settle-then-store, F-c naive daily index). Gap limit DECIDED. Step 2's schema waits only on S being MEASURED, then on Kyle.**
+
+- **D3: option (b). Raw storage, splits applied on read.** This also decides IDEA-035's version home (`docs/SPEC-DEFECTS.md`).
+  - **Stored prices are as-traded**, rebuilt at ingest as yfinance's split-adjusted price × the ratios of every split whose effective date is after the bar's session date. **Volume is divided by the same ratios.** These rows get `raw_basis = reconstructed`.
+    **The rebuilt values inherit the provider's rounding** (yfinance returns the adjusted value to its own precision; multiplying back does not restore digits the provider never sent).
+  - **A minimal `splits` table lands in slice 6:** symbol, effective date, ratio, first-seen timestamp. Everything else about corporate actions (confirmation workflow, dividends, the split detector, `corporate_actions`) stays in slice 8.
+  - **The adjusted read as of T applies only splits with an effective date on or before T.** Stored bars never change when a split happens: a new split is a new `splits` row, not a rewrite.
+  - **After a split, a re-fetch must rebuild identical raw prices. A mismatch is a validation failure, not an overwrite.**
+  - **Reference check, recorded:** NVDA 2024-06-07 rebuilds to about **1,208.88** (adjusted `Close` 120.888 × 10, split effective 2024-06-10; MEASURED 2026-11-16, step 1(b) item 2). Alongside it, from the same measurement: XLK 2025-12-04 rebuilds to about 291.07 (145.535 × 2) and 2025-12-05 stays 146.60 (no ratio applies on or after the effective date).
+  - Rejected: **(c)**, because its default read returns rewritten values; **(a)**, because every split rewrites full history.
+- **F-a: settle-then-store. This amends D5.**
+  - **An intraday bar is stored only after its settle point: the session close plus a settle window S.** `available_at` is the settle point, not `ts` + interval: the settled values did not exist before then.
+    (This replaces D5's addition "for intraday bars `available_at` is no earlier than `ts` + interval".)
+  - **The same rule applies to daily bars and to the backfill.**
+  - **S is UNMEASURED.** Protocol (Kyle): re-fetch today's SPY and two other symbols' 15m bars at the close, at close + 1 h and tomorrow before the open; record when the values stop changing; set S with a margin; mark it MEASURED. Progress is below.
+  - **Spec check, done this turn: §6.1 and §11 DO need intraday bars during the session. Conflicts reported to Kyle, not resolved** (list below).
+  - **Rule 10 count stands at five. F-a counts** (Kyle's ruling; the "Kyle may rule otherwise" note is settled).
+- **F-c: accepted, daily only. This amends D5 rule 2.** For daily bars, a timezone-naive index is read as the **exchange-local session date** and **must match a `trading_sessions` row, otherwise `schema_mismatch`**. A timezone-naive intraday index is still rejected.
+- **Gap limit: 59 calendar days on `start=`.** The poll records an unrecoverable gap beyond that. **No `period=` fallback path** (step 1(b) item 4's `period="60d"` reach is not used).
+- **F-b** (15m volumes that don't sum to the daily bar) **goes to slice 7's validation list.**
+- **F-d** (`Capital Gains`) **goes into step 3's column mapping.**
+
+#### Settle measurement, first points (MEASURED 2026-11-16; S still UNMEASURED)
+
+**The protocol's first two points were missed:** this turn started at 18:25 ET (PowerShell `Get-TimeZone` and the UTC clock; Git Bash's `TZ=` output is wrong again and must not be used), after both the close and close + 1 h.
+What was done instead:
+- **Post-close snapshot, 23:26:46 UTC (18:26 ET, close + 2 h 26 min):** SPY, QQQ, XLK, 15m and 1d, `period="5d"`, yfinance 1.8.0 in the pinned base image (`docs/evidence/settle/`: `probe.py.txt`, `Dockerfile`, `run.sh`, `snap-*.json`, `run.log`).
+- **Compared with step 1(b)'s midday SPY fetches** (12:13 and 12:28 ET, `2026-11-16-yfinance-probe-run2.json`):
+  - The `09:30` to `11:30` bars are **identical** in all three fetches.
+  - `11:45` (ended 12:00) changed between 12:13 and 12:28 (Volume 794,162 to 845,187), then **held** to 18:26.
+  - **`12:00` (ended 12:15) changed after 12:28** (Volume 728,992 to 762,747): still revising at least 13 minutes after it ended, consistent with F-a.
+  - So mid-session, revision of a completed bar was seen up to 28 minutes after it ended and not beyond. **This is a lower bound on revision time, not S**: what happens across the close and overnight is what the scheduled snapshots measure.
+- **The end-of-session label is now MEASURED:** 26 bars today, `09:30` to `15:45` (step 1(b) item 1's open note).
+- **A hint, not a finding:** every earlier day's daily volume in the snapshot is a round hundred (SPY 40,698,600; 39,151,000; …) and today's is not (SPY 67,827,833; QQQ 41,810,606; XLK 12,985,041). That suggests the daily bar is replaced by a consolidated figure overnight. The pre-open snapshot tests it.
+- **F-b recurs, wider than SPY** (same snapshot): 15m-volume sum / daily volume is 2.54 for SPY today and **11.55 for QQQ today**, 0.81 to 1.36 on earlier days for SPY and QQQ, and 0.92 to 1.10 for XLK. For slice 7.
+- **Scheduled** (UTC; a background loop in the Claude session, because registering a Windows scheduled task was refused): 2026-11-17 14:00 (09:00 ET, pre-open), then Tuesday's close at 21:01, 21:10, 21:20, 21:35, 22:05, 23:05, 2026-11-18 01:00, and Wednesday pre-open at 14:00. Tuesday's run covers the at-close and close + 1 h points that today's missed.
+  The loop dies if the session ends; a sleeping laptop delays a snapshot, and each snapshot records its real UTC time.
+
+#### Spec conflicts with settle-then-store (reported, NOT resolved)
+
+Kyle's rule for anything that needs intraday bars during the session: **read a provisional live fetch, labelled provisional, never stored.** Consumers the spec names during the session:
+1. **§6.1**: "15-minute-cadence quote/bar polling during market hours for the ETF universe". Polling is compatible; *storing* from it is not, under settle-then-store.
+2. **§11 `ingest_bars_intraday`**: `*/15 min 9:30–16:00 Mon–Fri`. As written it is a storing ingest during the session. Under F-a it becomes one post-settle run per session (plus, possibly, a provisional live read that stores nothing). §11's schedule must change; that is a spec correction.
+3. **§11 Phase 1 compute tasks on intraday data:** `compute_breadth` "hourly intraday", `compute_rotation` "every 30 min intraday", `compute_regime` after each breadth run, `compute_alerts` chained after each, `compute_premiums` "after each foreign/US/fx ingest tick", and `ingest_foreign_bars` `*/15 min during each configured foreign exchange's hours` (XKRX; whether settle-then-store covers foreign bars is not stated). §6.12's rate-budget paragraph also says "intraday breadth is computed from the 11 sector ETFs + RSP/SPY".
+4. **Phase 2 (not M2, listed for completeness):** `compute_themes` and `compute_pairs` every 30 min intraday, `compute_sympathy` "each intraday bars tick", `compute_scanner` `*/5 min market hours`.
+5. **The direct conflict: hard rule §17.1, "every number shown in the UI or a brief exists in Postgres first. Never compute ad hoc in a handler."** An intraday rotation, breadth or premium figure computed from a never-stored provisional fetch either is not shown, or is shown without existing in Postgres. Storing the *computed* figure while its inputs are unstored breaks replay comparability (`signals/` purity exists so live and replay agree): a replay at T cannot reproduce it, because its inputs were never kept.
+   **Options I can see, none chosen:** (i) no intraday signals in Phase 1; signals run after the daily settle only. (ii) Store provisional bars in a separate, clearly provisional table that no replay reads, with intraday outputs marked provisional too. (iii) Show intraday figures as provisional and unstored, as an explicit exception to the "exists in Postgres" rule.
+   Each is Kyle's; (ii) contradicts "never stored" as given and is listed only so the trade-off is visible.
+
+**State: decisions recorded. S UNMEASURED; the pre-open snapshot comes first (2026-11-17 09:00 ET). Step 2's schema has NOT started, and will not until S is MEASURED and Kyle has seen it.**
