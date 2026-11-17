@@ -198,7 +198,8 @@ tier, and finding that mismatch in month four is a bad afternoon.
 
 Tracked in `docs/SPEC-DEFECTS.md` (IDEA-013 … IDEA-042, and IDEA-045; IDEA-039, IDEA-043 and IDEA-044 are in `docs/IDEAS.md`).
 IDEA-040, IDEA-041, IDEA-042 and IDEA-045 block nothing (IDEA-045, the §11 settled/provisional bar ingest split, is flagged for the next
-correction release). Eight block a milestone or a slice:
+correction release; the provisional bar table is built by the first milestone that implements a computation §11 schedules
+intraday, and **M4 planning must decide whether `compute_rotation`'s 30-minute intraday cadence binds M4**). Eight block a milestone or a slice:
 
 - **IDEA-013 → blocks M3.** `natural_key` has no time component, but §7.16's episode example
   requires five daily rows to exist. One of the two sections is wrong.

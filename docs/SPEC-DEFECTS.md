@@ -1359,3 +1359,10 @@ rule it is a plain contradiction between §11 and a measured provider behaviour.
 
 ### Unfreeze triggers
 The next spec correction release.
+
+### Which milestone builds the provisional table (Kyle, 2026-11-17)
+Not decided by milestone. **The rule: the provisional table is built by the first milestone that implements a
+computation §11 schedules intraday.** **M4 planning item:** decide whether `compute_rotation`'s "every 30 min intraday"
+cadence (§11) binds M4. If it does, M4 builds the provisional table; if not, the rule passes to the next candidate
+(M6 names "sector-level intraday" breadth; M7's per-input timestamps). The M2 gate does not require it, so slice 6
+does not build it.

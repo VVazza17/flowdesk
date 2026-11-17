@@ -2903,3 +2903,9 @@ Ambiguities for Kyle, not resolved:
 1. **Which milestone that is.** §16 does not say "intraday" for M4 (Rotation, the first vertical slice), but §11 schedules `compute_rotation` "every 30 min intraday" as Phase 1. **M6 is the first to say it explicitly:** "daily constituent breadth + sector-level intraday". M7 (Premium Monitor) asks for "per-input timestamps (US price, foreign price, FX) each displayed", which reads as in-session but does not say so. Candidates: M4 (if §11 binds rotation's intraday cadence), M6 (the first explicit mention), or M7.
 2. **"Half-day fixtures pass"** applies to the settled 15m bars too (D5 (iii): only bars inside an early close's window). Satisfiable without the provisional table; noted only because "half-day" is the one gate clause that touches intraday bars.
 3. **"Re-ingesting identical payloads yields identical canonical rows"** is about `bars`. The provisional table is append-only by design and is not "canonical"; if a later reader applies the clause to it, its change-only rule is what makes a re-run write 0 rows. Recorded so it is not mistaken for a gap.
+
+### Addendum 2026-11-17 (second) — Kyle's ruling on the provisional table's milestone
+
+- **Not decided by milestone. Rule: the provisional table is built by the first milestone that implements a computation §11 schedules intraday.**
+- **M4 planning item, logged:** decide whether `compute_rotation`'s 30-minute intraday cadence (§11) binds M4. Recorded in IDEA-045 (`docs/SPEC-DEFECTS.md`) and in `CLAUDE.md` so M4 planning finds it.
+- Gate ambiguities 2 (half-day fixtures) and 3 (re-ingest clause vs. the provisional table): **noted, no action.**
