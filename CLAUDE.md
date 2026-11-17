@@ -196,8 +196,9 @@ tier, and finding that mismatch in month four is a bad afternoon.
 
 ## Open decisions that block work
 
-Tracked in `docs/SPEC-DEFECTS.md` (IDEA-013 … IDEA-042; IDEA-039 is in `docs/IDEAS.md`). IDEA-040, IDEA-041 and
-IDEA-042 block nothing. Eight block a milestone or a slice:
+Tracked in `docs/SPEC-DEFECTS.md` (IDEA-013 … IDEA-042, and IDEA-045; IDEA-039, IDEA-043 and IDEA-044 are in `docs/IDEAS.md`).
+IDEA-040, IDEA-041, IDEA-042 and IDEA-045 block nothing (IDEA-045, the §11 settled/provisional bar ingest split, is flagged for the next
+correction release). Eight block a milestone or a slice:
 
 - **IDEA-013 → blocks M3.** `natural_key` has no time component, but §7.16's episode example
   requires five daily rows to exist. One of the two sections is wrong.

@@ -2877,3 +2877,29 @@ Kyle's rule for anything that needs intraday bars during the session: **read a p
    Each is Kyle's; (ii) contradicts "never stored" as given and is listed only so the trade-off is visible.
 
 **State: decisions recorded. S UNMEASURED; the pre-open snapshot comes first (2026-11-17 09:00 ET). Step 2's schema has NOT started, and will not until S is MEASURED and Kyle has seen it.**
+
+### Addendum 2026-11-17 — Kyle's decision on the settle-then-store spec conflicts; what the M2 gate says
+
+Written the turn it was given. **Settle-then-store is narrowed, not dropped. The rule: provisional values never pass for settled ones.** "Never stored" (previous addendum) is replaced.
+
+- **`bars` (settled): unchanged.** Stored only after its settle point; `available_at` is the settle point. **Every read and every backtest at daily or slower granularity reads only this table.**
+- **A provisional table (named in step 2)** holds intraday bars fetched during the session. **Append-only**; each row's `available_at` is its fetch time; **only rows that changed since the previous fetch are stored**.
+  Only intraday computations read it (rotation, breadth, premiums, alerts), and their replays read it as of T, which is exactly what was known at T.
+  **Nothing ever moves a row from provisional into `bars`**; the settled ingest fetches independently after the settle point.
+- **§17.1 is preserved:** every intraday figure is computed from stored provisional rows, so it exists in Postgres first and can be reproduced. **Option (iii) rejected; option (i) not needed.**
+- **Foreign bars (XKRX): the same two-table rule**, settle point from that market's `trading_sessions` close.
+- **§11 correction logged as IDEA-045** (`docs/SPEC-DEFECTS.md`): `ingest_bars_intraday` becomes a provisional ingest every 15 minutes during the session plus a settled ingest once per session after the settle point. Flagged for the next correction release.
+- **Build order (Kyle): steps 2–4 build the settled bars and the backfill first.** Whether the provisional table is a later step of slice 6 or waits for the milestone that builds the intraday computations depends on the M2 gate.
+- **Settle snapshots:** now run from a Windows scheduled task Kyle registered. The in-session loop was stopped by Claude Code on 2026-11-16 at about 19:00 ET (low memory while idle) before any scheduled point, and is not restarted.
+  When the Wednesday 09:00 ET snapshot is in: compare everything, set S with a margin, mark it MEASURED, report. Step 2's schema starts after that.
+
+#### What the M2 gate says (read 2026-11-17, `docs/architecture.md` §16 line 1109; reported, ambiguities NOT resolved)
+
+**The M2 gate does not require intraday ingest.** Its clauses: re-ingesting identical payloads yields identical canonical rows; synthetic split ≠ dilution; extreme move quarantines, never silently accepts;
+confirmed split creates a new data version without deleting raw; holiday/half-day fixtures pass; backfill progress survives worker restart. Plus the relocated IDEA-032 clause (killing the worker and a provider each give a documented health state).
+M2's scope text names "raw + split-adjusted + total-return price fields" and "rate-budget enforcement" and nothing intraday. **By Kyle's rule, the provisional table therefore waits for the milestone that builds the intraday computations.**
+
+Ambiguities for Kyle, not resolved:
+1. **Which milestone that is.** §16 does not say "intraday" for M4 (Rotation, the first vertical slice), but §11 schedules `compute_rotation` "every 30 min intraday" as Phase 1. **M6 is the first to say it explicitly:** "daily constituent breadth + sector-level intraday". M7 (Premium Monitor) asks for "per-input timestamps (US price, foreign price, FX) each displayed", which reads as in-session but does not say so. Candidates: M4 (if §11 binds rotation's intraday cadence), M6 (the first explicit mention), or M7.
+2. **"Half-day fixtures pass"** applies to the settled 15m bars too (D5 (iii): only bars inside an early close's window). Satisfiable without the provisional table; noted only because "half-day" is the one gate clause that touches intraday bars.
+3. **"Re-ingesting identical payloads yields identical canonical rows"** is about `bars`. The provisional table is append-only by design and is not "canonical"; if a later reader applies the clause to it, its change-only rule is what makes a re-run write 0 rows. Recorded so it is not mistaken for a gap.

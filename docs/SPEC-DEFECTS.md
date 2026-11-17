@@ -1318,3 +1318,44 @@ membership rule it is a plain contradiction (an unspecified composition), like I
 
 ### Unfreeze triggers
 The next spec correction release.
+
+## IDEA-045: §11 `ingest_bars_intraday` stores bars during the session, which settle-then-store forbids
+
+**Status:** Decided for the build (Kyle, 2026-11-17). Needs a spec correction release. **Flagged for the next one.** Blocks nothing.
+**Raised:** 2026-11-17 (M2 slice 6, from step 1(b)'s finding F-a)
+
+### The proposal
+§11 schedules `ingest_bars_intraday` at `*/15 min 9:30–16:00 Mon–Fri`, and §6.1 calls for "15-minute-cadence
+quote/bar polling during market hours". Read with §8's single `bars` table, every in-session fetch writes to the
+canonical bars. Step 1(b) measured (2026-11-16, F-a) that yfinance keeps revising a completed 15m bar after it ends
+(volume still changing 28 minutes later on SPY), so a bar written during the session is not the settled bar. Kyle's
+rule (2026-11-16, amending D5): **a bar is stored in `bars` only after its settle point, the session close plus S.**
+That contradicts §11 as written, and §11's intraday compute tasks (`compute_breadth` hourly, `compute_rotation` every
+30 min, `compute_premiums` per tick, `compute_alerts` chained) need in-session data.
+
+### How it is handled for the build
+**Two tables, one rule: provisional values never pass for settled ones** (Kyle, 2026-11-17).
+- **`bars` (settled):** written only after the settle point; `available_at` is the settle point. Every read and every
+  backtest at daily or slower granularity reads only this table.
+- **A provisional table** (named in step 2): intraday bars fetched during the session, **append-only**, each row's
+  `available_at` its fetch time, a row stored only when it changed since the previous fetch. Only intraday
+  computations (rotation, breadth, premiums, alerts) read it, and their replays read it as of T. **Nothing moves a row
+  from provisional into `bars`**; the settled ingest fetches independently after the settle point.
+- §17.1 ("every number exists in Postgres first") holds: every intraday figure is computed from stored provisional rows.
+- **Foreign bars (XKRX):** the same two-table rule, the settle point taken from that market's `trading_sessions` close.
+
+### Why it is parked
+The frozen spec cannot be edited in place.
+
+### The version that would be legitimate
+A correction release that splits §11's `ingest_bars_intraday` into **a provisional ingest every 15 minutes during the
+session** and **a settled ingest once per session after the settle point**, applies the same to `ingest_foreign_bars`,
+adds the provisional table to §8, and states in §6.1/§6.12 that intraday computations read provisional rows and
+daily-or-slower reads read settled bars only.
+
+### Drift class
+Not a row on the canonical list. The trigger is a measurement (F-a), not a spec revision, so by the list's membership
+rule it is a plain contradiction between §11 and a measured provider behaviour.
+
+### Unfreeze triggers
+The next spec correction release.
