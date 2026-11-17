@@ -2909,3 +2909,22 @@ Ambiguities for Kyle, not resolved:
 - **Not decided by milestone. Rule: the provisional table is built by the first milestone that implements a computation §11 schedules intraday.**
 - **M4 planning item, logged:** decide whether `compute_rotation`'s 30-minute intraday cadence (§11) binds M4. Recorded in IDEA-045 (`docs/SPEC-DEFECTS.md`) and in `CLAUDE.md` so M4 planning finds it.
 - Gate ambiguities 2 (half-day fixtures) and 3 (re-ingest clause vs. the provisional table): **noted, no action.**
+
+### Addendum 2026-11-17 (third) — settle measurement, interim comparison (S NOT set)
+
+Committed now on Kyle's instruction, so the evidence does not live on one machine only. **S is not set and no revision policy is chosen; both are Kyle's, from Wednesday's numbers.**
+Evidence: `docs/evidence/settle/snap-*.json` (three snapshots), `compare.py.txt` (diffs each consecutive pair, by symbol, interval, session date and field) and its output `compare-2026-11-17-interim.txt`.
+Snapshots (MEASURED): Mon 2026-11-16 18:26 ET (in-session loop), Tue 01:55 ET (Kyle's scheduled task, first run), Tue 09:00 ET (pre-open).
+
+**Mon 18:26 → Tue 01:55 ET (overnight):**
+- **15m, Monday's session: Volume only, no price changed.** SPY 17/26 rows, QQQ 21/26, XLK 13/26. Largest: SPY 14:45 32,445,065 → 1,482,190 (−95.4%), QQQ 11:15 62,254,615 → 1,084,932 (max rel −98.6%), XLK 09:45 3,157,665 → 938,154 (−70.3%). The large ones are the F-b inflated bars being corrected; others moved by tens of shares.
+- **15m, sessions Nov 10–13: no change.**
+- **1d, Monday: replaced.** Volume to a round hundred (SPY +1.79%, QQQ +2.37%, XLK +1.33%); QQQ Open and High by 0.01, XLK Low by 0.0001.
+- **1d, Friday Nov 13: Volume revised a session later** (SPY +0.86%, QQQ +0.72%; XLK unchanged). A round-hundred daily volume is therefore not final either.
+- **Not every F-b case was corrected:** SPY Nov 10 (15m sum / daily 1.35) and QQQ Nov 13 (1.35) still disagree. Still slice 7.
+
+**Tue 01:55 → 09:00 ET: no value changed in any common row.**
+
+**Limit for Wednesday's report:** each snapshot fetches `period="5d"`, so how far back daily revisions reach is visible only within five sessions (Wednesday's snapshot covers about Nov 11–17). A revision older than that cannot be seen by this probe.
+
+**Wednesday's report (Kyle, 2026-11-17), expected per interval, not one number:** S for 15m prices and 15m volume separately; S for daily bars, including whether Monday's daily bar changes again on Tuesday night and how far back daily revisions reach; and, after each proposed S, the count of changed rows and the size of the changes, by field. Kyle decides from that whether post-S revisions are stored as dated versions (like macro) or flagged by validation. **Step 2 still waits.**

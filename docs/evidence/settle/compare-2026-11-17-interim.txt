@@ -1,0 +1,30 @@
+Snapshots:
+  snap-20261116T232646Z.json  2026-11-16 23:26 UTC (Mon 18:26 ET)
+  snap-20261117T065548Z.json  2026-11-17 06:55 UTC (Tue 01:55 ET)
+  snap-20261117T140003Z.json  2026-11-17 14:00 UTC (Tue 09:00 ET)
+
+== snap-20261116T232646Z.json -> snap-20261117T065548Z.json
+   2026-11-16 23:26 UTC (Mon 18:26 ET) -> 2026-11-17 06:55 UTC (Tue 01:55 ET)
+   SPY 15m session 2026-11-16: 17/26 rows changed
+      Volume: 17 rows, max abs 30,962,875.0000 (14:45 32,445,065.0000->1,482,190.0000), max rel 95.43% (14:45)
+   SPY 1d session 2026-11-13: 1/1 rows changed
+      Volume: 1 rows, max abs 328,800.0000 (00:00 38,391,200.0000->38,720,000.0000), max rel 0.86% (00:00)
+   SPY 1d session 2026-11-16: 1/1 rows changed
+      Volume: 1 rows, max abs 1,216,267.0000 (00:00 67,827,833.0000->69,044,100.0000), max rel 1.79% (00:00)
+   QQQ 15m session 2026-11-16: 21/26 rows changed
+      Volume: 21 rows, max abs 61,169,683.0000 (11:15 62,254,615.0000->1,084,932.0000), max rel 98.61% (12:00)
+   QQQ 1d session 2026-11-13: 1/1 rows changed
+      Volume: 1 rows, max abs 300,100.0000 (00:00 41,798,500.0000->42,098,600.0000), max rel 0.72% (00:00)
+   QQQ 1d session 2026-11-16: 1/1 rows changed
+      Open: 1 rows, max abs 0.0100 (00:00 671.0500->671.0400), max rel 0.00% (00:00)
+      High: 1 rows, max abs 0.0100 (00:00 672.1400->672.1500), max rel 0.00% (00:00)
+      Volume: 1 rows, max abs 990,594.0000 (00:00 41,810,606.0000->42,801,200.0000), max rel 2.37% (00:00)
+   XLK 15m session 2026-11-16: 13/26 rows changed
+      Volume: 13 rows, max abs 2,219,511.0000 (09:45 3,157,665.0000->938,154.0000), max rel 70.29% (09:45)
+   XLK 1d session 2026-11-16: 1/1 rows changed
+      Low: 1 rows, max abs 0.0001 (00:00 164.1601->164.1600), max rel 0.00% (00:00)
+      Volume: 1 rows, max abs 173,259.0000 (00:00 12,985,041.0000->13,158,300.0000), max rel 1.33% (00:00)
+
+== snap-20261117T065548Z.json -> snap-20261117T140003Z.json
+   2026-11-17 06:55 UTC (Tue 01:55 ET) -> 2026-11-17 14:00 UTC (Tue 09:00 ET)
+   no value changed in any common row

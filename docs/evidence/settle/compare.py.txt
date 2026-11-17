@@ -1,0 +1,73 @@
+"""Slice 6 F-a settle measurement: diff every settle snapshot against the one before it.
+
+Measurement script, not repo code (named .txt so no linter picks it up). Run from this directory:
+    python compare.py.txt > compare-<date>.txt
+For each consecutive pair of snap-*.json and each symbol, interval and session date, prints how many rows changed,
+by field, with the largest absolute and relative change. Rows present in only one snapshot are listed separately.
+"""
+
+import glob
+import json
+from collections import defaultdict
+from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
+
+ET = ZoneInfo("America/New_York")
+FIELDS = ("Open", "High", "Low", "Close", "Adj Close", "Volume")
+
+
+def when(path):
+    s = json.load(open(path))["started_utc"]
+    t = datetime.fromisoformat(s).astimezone(UTC)
+    return f"{t:%Y-%m-%d %H:%M} UTC ({t.astimezone(ET):%a %H:%M} ET)"
+
+
+snaps = sorted(glob.glob("snap-*.json"))
+data = {p: json.load(open(p))["data"] for p in snaps}
+print("Snapshots:")
+for p in snaps:
+    print(f"  {p}  {when(p)}")
+
+for prev, cur in zip(snaps, snaps[1:]):
+    print(f"\n== {prev} -> {cur}")
+    print(f"   {when(prev)} -> {when(cur)}")
+    any_change = False
+    for sym in data[cur]:
+        for iv in ("15m", "1d"):
+            a, b = data[prev][sym][iv], data[cur][sym][iv]
+            common = sorted(set(a) & set(b))
+            only_prev = sorted(set(a) - set(b))
+            only_cur = sorted(set(b) - set(a))
+            by_date = defaultdict(lambda: {"rows": 0, "of": 0, "fields": defaultdict(list)})
+            for k in common:
+                d = by_date[k[:10]]
+                d["of"] += 1
+                if a[k] == b[k]:
+                    continue
+                d["rows"] += 1
+                for f in FIELDS:
+                    x, y = a[k].get(f), b[k].get(f)
+                    if x != y:
+                        rel = abs(y - x) / abs(x) if x else float("inf")
+                        d["fields"][f].append((abs(y - x), rel, k[11:16] or k[:10], x, y))
+            for date in sorted(by_date):
+                d = by_date[date]
+                if not d["rows"]:
+                    continue
+                any_change = True
+                parts = []
+                for f, ch in d["fields"].items():
+                    mx_abs = max(ch, key=lambda c: c[0])
+                    mx_rel = max(ch, key=lambda c: c[1])
+                    parts.append(
+                        f"{f}: {len(ch)} rows, max abs {mx_abs[0]:,.4f} ({mx_abs[2]} {mx_abs[3]:,.4f}->{mx_abs[4]:,.4f}), "
+                        f"max rel {mx_rel[1]:.2%} ({mx_rel[2]})"
+                    )
+                print(f"   {sym} {iv} session {date}: {d['rows']}/{d['of']} rows changed")
+                for p_ in parts:
+                    print(f"      {p_}")
+            if only_prev or only_cur:
+                print(f"   {sym} {iv}: rows only in earlier {only_prev[:3]}..., only in later {only_cur[:3]}... "
+                      f"({len(only_prev)} / {len(only_cur)}; the 5d window slides)")
+    if not any_change:
+        print("   no value changed in any common row")
