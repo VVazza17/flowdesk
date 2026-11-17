@@ -2928,3 +2928,13 @@ Snapshots (MEASURED): Mon 2026-11-16 18:26 ET (in-session loop), Tue 01:55 ET (K
 **Limit for Wednesday's report:** each snapshot fetches `period="5d"`, so how far back daily revisions reach is visible only within five sessions (Wednesday's snapshot covers about Nov 11–17). A revision older than that cannot be seen by this probe.
 
 **Wednesday's report (Kyle, 2026-11-17), expected per interval, not one number:** S for 15m prices and 15m volume separately; S for daily bars, including whether Monday's daily bar changes again on Tuesday night and how far back daily revisions reach; and, after each proposed S, the count of changed rows and the size of the changes, by field. Kyle decides from that whether post-S revisions are stored as dated versions (like macro) or flagged by validation. **Step 2 still waits.**
+
+### Addendum 2026-11-17 (fourth) — daily look-back widened; revision policy for `bars` decided
+
+- **Probe change, made at 09:40 ET, before the 16:01 ET run:** `docs/evidence/settle/probe.py.txt`'s daily fetch is now `period="3mo"`; the 15m fetch stays `period="5d"`.
+  **Snapshots from 2026-11-17 16:01 ET onward carry about 3 months of daily bars; earlier ones carry 5 sessions.** A revision to an older daily date therefore becomes visible only from the 16:01 baseline onward, never against the three earlier snapshots.
+  `compare.py.txt` diffs only rows present in both snapshots, so mixing the two periods is safe; its "rows only in one snapshot" line now names the widening.
+- **Decided (Kyle), so step 2 is not blocked by the revision policy: `bars` holds the FIRST settled value, and it is never overwritten.**
+  Whether later revisions are kept as dated versions in a separate table (like D2's `bar_total_return`) or only flagged by validation is **decided from a two-week tail measurement. Either answer leaves `bars` unchanged.**
+  Consequence for the M2 gate's "re-ingesting identical payloads yields identical canonical rows": a re-fetch that returns a revised value does not change `bars` under either answer.
+- **Gate for step 2:** Wednesday's report still sets S per interval (15m prices, 15m volume, daily). **Step 2's schema starts once Kyle has approved S for both 15m and daily. It does not wait for the two-week tail.**

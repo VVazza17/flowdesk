@@ -1,4 +1,4 @@
-"""Slice 6 F-a settle measurement: snapshot 15m and 1d bars for three symbols, to find when settled values stop changing.
+"""Slice 6 F-a settle measurement: snapshot 15m (5d) and 1d (3mo, from 2026-11-17 16:01 ET; 5d before) bars for three symbols.
 
 Measurement script, not repo code (named .txt so no linter picks it up). Run in the pinned base image with yfinance 1.8.0:
     python probe.py.txt <out_dir>
@@ -24,7 +24,7 @@ for s in SYMBOLS:
     t = yf.Ticker(s)
     out["data"][s] = {
         "15m": rows(t.history(period="5d", interval="15m", auto_adjust=False, prepost=False, actions=False)),
-        "1d": rows(t.history(period="5d", interval="1d", auto_adjust=False, prepost=False, actions=False)),
+        "1d": rows(t.history(period="3mo", interval="1d", auto_adjust=False, prepost=False, actions=False)),
     }
 out["finished_utc"] = datetime.now(UTC).isoformat()
 stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
