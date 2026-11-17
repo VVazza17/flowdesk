@@ -2938,3 +2938,10 @@ Snapshots (MEASURED): Mon 2026-11-16 18:26 ET (in-session loop), Tue 01:55 ET (K
   Whether later revisions are kept as dated versions in a separate table (like D2's `bar_total_return`) or only flagged by validation is **decided from a two-week tail measurement. Either answer leaves `bars` unchanged.**
   Consequence for the M2 gate's "re-ingesting identical payloads yields identical canonical rows": a re-fetch that returns a revised value does not change `bars` under either answer.
 - **Gate for step 2:** Wednesday's report still sets S per interval (15m prices, 15m volume, daily). **Step 2's schema starts once Kyle has approved S for both 15m and daily. It does not wait for the two-week tail.**
+
+### Addendum 2026-11-17 (fifth) — the two-week tail measurement is scheduled
+
+**Kyle registered a Windows scheduled task, `FlowDesk-settle-daily`:** daily at 09:00 ET from 2026-11-19 through 2026-12-03, running the same `docs/evidence/settle/run.sh` (so the same probe: 15m `5d`, 1d `3mo`).
+Read back 2026-11-17 (`Get-ScheduledTask`, read-only): start `2026-11-19T09:00:00`, every 1 day, end boundary `2026-12-03T09:30:00`, action `bash.exe …/docs/evidence/settle/run.sh`.
+It follows `FlowDesk-settle-probe`, whose last trigger is 2026-11-18 09:00 ET. The tail decides whether post-S revisions are kept as dated versions or only flagged by validation; `bars` is unchanged either way.
+**The snapshots land on this machine only until committed:** commit them as they arrive, not just at the end.
