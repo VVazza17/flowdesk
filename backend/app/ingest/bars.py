@@ -393,6 +393,10 @@ def _parse_symbol(
         if settle is None or settle > now:
             result.unsettled += 1
             continue
+        # Intraday rows carry no Stock Splits column, so a 15m batch rebuilds from `known` only.
+        # STEP 6 REQUIREMENT (Kyle, 2026-11-18): every 15m run first fetches its own daily
+        # actions=True batch (same symbols, same window plus the next session) and checks any new
+        # split here, so `known` is complete before a 15m bar is accepted. Never a schedule rule.
         factor = _factor(all_splits, session_date)
         volume = Decimal(_whole(v))
         raw_volume = volume / factor

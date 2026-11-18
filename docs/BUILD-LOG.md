@@ -3445,3 +3445,23 @@ first matched no test (pytest exit 5); the tool counted that as SURVIVED, as des
 periodic history re-fetch (step 3 or 4, decided); reading `provider_mappings` into the batch (the client takes yfinance symbols); the 15m feed must
 run after the daily one, because intraday rows carry no `Stock Splits` column and rebuild only from stored splits (a split not yet stored would
 leave a 15m bar labelled `live` but split-adjusted). That ordering is step 6's to enforce.
+
+### Addendum 2026-11-18 (fifth) — Kyle: the private-API live check, and the 15m feed is self-contained
+
+Written the turn they were given.
+
+1. **A live check on `_download_impl`'s BEHAVIOUR, not just its signature** (`backend/tests/test_yfinance_live.py`). The signature test cannot prove
+   `_DownloadCtx` still captures per-ticker errors, and the replayed fixtures would not notice if it stopped (they hold errors recorded when it
+   worked). The live test calls Yahoo once with SPY and the known-dead `ZZZQXFAKE` and asserts that the dead ticker's error was captured in the
+   context and classified as "no data" (parse does not raise; it is dead), and that SPY's rows came back and settle. **It runs only on a seeded
+   development stack** (the database has active yfinance mappings; `tests/livedb.py::require_dev_stack_provider`) **and skips LOUDLY elsewhere**:
+   CI's test job starts Postgres only and never seeds, so no live call is made from GitHub. MEASURED 2026-11-18: passes on the dev stack; on an
+   unseeded, migrated database it skips with the live-data banner and `tools/junit_skips.py` allows and prints it.
+   **This is THE CHECK TO RUN AFTER ANY yfinance UPGRADE:** `python -m pytest tests/test_yfinance_live.py -rs` on the dev stack (it also runs in
+   `ci-checks.sh test` there).
+2. **DECIDED (Kyle): the 15m feed is self-contained, not ordering-dependent. A STEP 6 REQUIREMENT.** The tables are insert-only, so a 15m bar stored
+   split-adjusted but labelled `live` can never be corrected, and that cannot rest on a schedule convention. **Every 15m run fetches its own split
+   check: a daily `actions=True` batch for the same symbols over the same window plus the next session, in the same run, before parsing any 15m bar.**
+   Any split found and not yet stored is checked against stored splits under the existing rules (a disagreement fails the symbol, never
+   overwrites) before a 15m bar is accepted. One extra batch per run, well inside the budget (one 24-ticker batch a minute). **This replaces the
+   step 3 note "the 15m feed must run after the daily one"** (CLAUDE.md updated).

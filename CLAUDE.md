@@ -159,8 +159,11 @@ below).
   `ck_bars_intraday_interval` adds the rule 9 test with a second interval and its mutation in the same commit.**
   **Step 3 built (2026-11-18): the yfinance client** (`app/ingest/yfinance_client.py`, pure parsing in `app/ingest/bars.py`), yfinance 1.8.0 pinned.
   `yf.download` swallows per-ticker errors (a rate limit looks like a dead symbol), so the client calls the PRIVATE `_download_impl` with its own
-  context; a test pins its signature: a yfinance bump re-checks it. Budget one 24-ticker batch a minute (safety factor ASSUMED). Nothing writes bars
-  yet (step 4 backfill, step 6 poll); **the 15m feed must run after the daily one** (15m rows carry no split column). `mutation-check.sh m2-slice6-step3`.
+  context; a test pins its signature, and `tests/test_yfinance_live.py` (dev stack only, loud skip elsewhere) checks its behaviour: **run it after
+  any yfinance upgrade**. Budget one 24-ticker batch a minute (safety factor ASSUMED). Nothing writes bars
+  yet (step 4 backfill, step 6 poll). **Step 6 requirement (Kyle, 2026-11-18): the 15m feed is self-contained, not ordering-dependent.** Every
+  15m run fetches its own daily actions=True batch (same symbols, same window plus the next session) and checks any new split against stored
+  ones before accepting a 15m bar: an insert-only table cannot fix a 15m bar stored split-adjusted but labelled `live`. `mutation-check.sh m2-slice6-step3`.
 - **The base image is pinned by digest** (M2 slice 0, 2026-11-08). The `FROM` line in `backend/Dockerfile` is
   the one definition. The CI tooling container, `lock-deps.sh` and the smokes read it through
   `infra/base-image.sh`, and lint fails on a second definition. The base no longer updates itself: the daily
