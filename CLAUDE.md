@@ -146,6 +146,11 @@ below).
 - **Slice 5 gate review is written (2026-11-14, `docs/BUILD-LOG.md`); it closes with two named gaps:** Beat's 08:00 firing on an awake machine is unobserved
   (schedule, queue and DST pinned by test; a Beat container recreate dropping a missed firing was ASSUMED, then MEASURED 2026-11-15 (it does, with the schedule file in /tmp) and fixed: IDEA-043, schedule file on the `beat_schedule` named volume at `/var/lib/beat`, owned by uid 10001 in the Dockerfile; `infra/smoke-m2-beat-schedule.sh` reruns the test. Beat catching up is NOT a gap check: slice 7 must detect gaps in the data), and no real FRED 429/423/500 has ever been seen
   (handling is tested: `infra/smoke-m2-slice5-fred-failures.sh` runs each through the real worker and proves the api_key is in no stored or served text). Step 6 is done.
+- **M2 slice 6 (bars): the settle point S is set, MEASURED 2026-11-18** (`docs/BUILD-LOG.md`, addendum 2026-11-18 second). A bar is stored in
+  `bars` only after its settle point, `available_at` = that point, counted in sessions: **15m at 09:00 ET on D+1, daily at 09:00 ET on D+2.**
+  Thin evidence (one session's night 1, three symbols; 16:00–18:26 unobserved); reopen daily to D+3 if the two-week tail (to 2026-12-03) shows
+  frequent post-D+2 revisions. **S controls freshness, not correctness:** `bars` keeps the first settled value and never changes. Step 2's schema
+  is proposed, not built.
 - **The base image is pinned by digest** (M2 slice 0, 2026-11-08). The `FROM` line in `backend/Dockerfile` is
   the one definition. The CI tooling container, `lock-deps.sh` and the smokes read it through
   `infra/base-image.sh`, and lint fails on a second definition. The base no longer updates itself: the daily

@@ -1366,3 +1366,10 @@ computation §11 schedules intraday.** **M4 planning item:** decide whether `com
 cadence (§11) binds M4. If it does, M4 builds the provisional table; if not, the rule passes to the next candidate
 (M6 names "sector-level intraday" breadth; M7's per-input timestamps). The M2 gate does not require it, so slice 6
 does not build it.
+
+### Finding for the milestone that builds it: provisional volume is unreliable (MEASURED 2026-11-16 and 2026-11-18)
+In session, a just-completed 15m bar's volume was seen jumping about 20x within 3 minutes of the bar ending (SPY 11:00 on
+2026-11-18: 735,252 at 11:15:53 ET, 15,549,598 at 11:18:21 ET), and inflated volumes like it are corrected overnight
+(2026-11-16: 22 bars over SPY/QQQ/XLK, −50% to −99%). **Provisional intraday volume is unreliable by up to an order of
+magnitude; any intraday computation that uses volume must treat it that way.** Prices showed no such problem (no price
+revision of a completed bar seen). Evidence: `docs/evidence/settle/`, BUILD-LOG addendum 2026-11-18 (second).

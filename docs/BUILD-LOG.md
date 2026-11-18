@@ -3020,3 +3020,30 @@ Counts and sizes at the other candidates (`settle-by-s-2026-11-18.txt`):
 3. **The P rule needs `trading_sessions` for D+k**, which the seed already holds.
 
 **State: S proposed, NOT set. Step 2's schema has NOT started; it starts once Kyle approves S for 15m and daily.**
+
+### Addendum 2026-11-18 (second) — Kyle's decision: S is set (MEASURED 2026-11-18)
+
+Written the turn it was given. **S is MEASURED 2026-11-18** (five snapshots and two midday fetches; `docs/evidence/settle/settle-by-s-2026-11-18.txt`).
+Counted in **sessions**, not calendar days (Friday's daily bar was revised after Monday's session, not over the weekend); D+k is the k-th
+session after D in `trading_sessions`. All times ET.
+
+- **15m bars: settle point = 09:00 on D+1** (the next session). Prices and volume together: a `bars` row settles at the later of the two.
+  **Zero changes after it in 390 rows.** Limits: rests on **one session's night 1 (Monday 2026-11-16) and three symbols** (SPY, QQQ, XLK);
+  **the 16:00–18:26 window is unobserved.**
+- **Daily bars: settle point = 09:00 on D+2.** Prices are final by D+1 (night-1 moves of at most 0.01). Only volume revises after that,
+  by 0.1–1.8% (night 2). At D+2: 0 certain revisions after it, 3 straddling (Monday's night-2 revision, ASSUMED overnight like every
+  other bracketed revision, so before Wednesday 09:00).
+  **D+3 rejected (Kyle):** it delays every daily read by a session to guard against a revision measured on 9 rows.
+  **Reopen and move to D+3 if the two-week tail shows post-D+2 revisions are frequent.**
+- **Principle (Kyle): S controls freshness, not correctness.** The first settled value, with `available_at` = the settle point, is always
+  a true record of what was known then. Revisions after S are handled by the pending revision policy (dated versions or validation flags,
+  decided from the tail), and `bars` does not change either way.
+- **The two-week tail:** `run.sh`'s Docker wait goes from 10 to 30 minutes (60 × 30 s). Kyle has set the PC not to sleep on mains power
+  until 2026-12-03, so the tail does not rely on wake timers, which fired once in seven tries (Kyle's count). **Each 09:00 snapshot also
+  re-tests the 15m S for the previous sessions** (it is a look after D+1 09:00 for every earlier session in the 5-day window).
+- **Finding for the milestone that builds the provisional table, recorded in IDEA-045:** in session, a just-completed 15m bar's volume
+  jumped about 20× within 3 minutes of the bar ending (SPY 11:00 on 2026-11-18, 735,252 → 15,549,598), and such inflated volumes are
+  corrected overnight (Monday: 22 bars, −50% to −99%). **Provisional intraday volume is unreliable by up to an order of magnitude**; any
+  intraday computation that uses volume must treat it that way. Prices showed no such problem.
+
+**Next: step 2's schema, proposal only. No migration until Kyle approves it.**
