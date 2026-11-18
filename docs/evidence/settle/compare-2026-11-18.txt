@@ -1,0 +1,83 @@
+Snapshots:
+  snap-20261116T232646Z.json  2026-11-16 23:26 UTC (Mon 18:26 ET)
+  snap-20261117T065548Z.json  2026-11-17 06:55 UTC (Tue 01:55 ET)
+  snap-20261117T140003Z.json  2026-11-17 14:00 UTC (Tue 09:00 ET)
+  snap-20261118T161553Z.json  2026-11-18 16:15 UTC (Wed 11:15 ET)
+  snap-20261118T161821Z.json  2026-11-18 16:18 UTC (Wed 11:18 ET)
+
+== snap-20261116T232646Z.json -> snap-20261117T065548Z.json
+   2026-11-16 23:26 UTC (Mon 18:26 ET) -> 2026-11-17 06:55 UTC (Tue 01:55 ET)
+   SPY 15m session 2026-11-16: 17/26 rows changed
+      Volume: 17 rows, max abs 30,962,875.0000 (14:45 32,445,065.0000->1,482,190.0000), max rel 95.43% (14:45)
+   SPY 1d session 2026-11-13: 1/1 rows changed
+      Volume: 1 rows, max abs 328,800.0000 (00:00 38,391,200.0000->38,720,000.0000), max rel 0.86% (00:00)
+   SPY 1d session 2026-11-16: 1/1 rows changed
+      Volume: 1 rows, max abs 1,216,267.0000 (00:00 67,827,833.0000->69,044,100.0000), max rel 1.79% (00:00)
+   QQQ 15m session 2026-11-16: 21/26 rows changed
+      Volume: 21 rows, max abs 61,169,683.0000 (11:15 62,254,615.0000->1,084,932.0000), max rel 98.61% (12:00)
+   QQQ 1d session 2026-11-13: 1/1 rows changed
+      Volume: 1 rows, max abs 300,100.0000 (00:00 41,798,500.0000->42,098,600.0000), max rel 0.72% (00:00)
+   QQQ 1d session 2026-11-16: 1/1 rows changed
+      Open: 1 rows, max abs 0.0100 (00:00 671.0500->671.0400), max rel 0.00% (00:00)
+      High: 1 rows, max abs 0.0100 (00:00 672.1400->672.1500), max rel 0.00% (00:00)
+      Volume: 1 rows, max abs 990,594.0000 (00:00 41,810,606.0000->42,801,200.0000), max rel 2.37% (00:00)
+   XLK 15m session 2026-11-16: 13/26 rows changed
+      Volume: 13 rows, max abs 2,219,511.0000 (09:45 3,157,665.0000->938,154.0000), max rel 70.29% (09:45)
+   XLK 1d session 2026-11-16: 1/1 rows changed
+      Low: 1 rows, max abs 0.0001 (00:00 164.1601->164.1600), max rel 0.00% (00:00)
+      Volume: 1 rows, max abs 173,259.0000 (00:00 12,985,041.0000->13,158,300.0000), max rel 1.33% (00:00)
+
+== snap-20261117T065548Z.json -> snap-20261117T140003Z.json
+   2026-11-17 06:55 UTC (Tue 01:55 ET) -> 2026-11-17 14:00 UTC (Tue 09:00 ET)
+   no value changed in any common row
+
+== snap-20261117T140003Z.json -> snap-20261118T161553Z.json
+   2026-11-17 14:00 UTC (Tue 09:00 ET) -> 2026-11-18 16:15 UTC (Wed 11:15 ET)
+   SPY 15m: rows only in earlier ['2026-11-10 09:30:00-05:00', '2026-11-10 09:45:00-05:00', '2026-11-10 10:00:00-05:00']..., only in later ['2026-11-17 09:30:00-05:00', '2026-11-17 09:45:00-05:00', '2026-11-17 10:00:00-05:00']... (52 / 34; the window slides, and 1d widened from 5d to 3mo; the first 3mo snapshot is 2026-11-18 11:15 ET)
+   SPY 1d session 2026-11-16: 1/1 rows changed
+      Volume: 1 rows, max abs 163,200.0000 (00:00 69,044,100.0000->69,207,300.0000), max rel 0.24% (00:00)
+   SPY 1d: rows only in earlier []..., only in later ['2026-08-18 00:00:00-04:00', '2026-08-19 00:00:00-04:00', '2026-08-20 00:00:00-04:00']... (0 / 61; the window slides, and 1d widened from 5d to 3mo; the first 3mo snapshot is 2026-11-18 11:15 ET)
+   QQQ 15m: rows only in earlier ['2026-11-10 09:30:00-05:00', '2026-11-10 09:45:00-05:00', '2026-11-10 10:00:00-05:00']..., only in later ['2026-11-17 09:30:00-05:00', '2026-11-17 09:45:00-05:00', '2026-11-17 10:00:00-05:00']... (52 / 34; the window slides, and 1d widened from 5d to 3mo; the first 3mo snapshot is 2026-11-18 11:15 ET)
+   QQQ 1d session 2026-11-16: 1/1 rows changed
+      Volume: 1 rows, max abs 775,800.0000 (00:00 42,801,200.0000->43,577,000.0000), max rel 1.81% (00:00)
+   QQQ 1d: rows only in earlier []..., only in later ['2026-08-18 00:00:00-04:00', '2026-08-19 00:00:00-04:00', '2026-08-20 00:00:00-04:00']... (0 / 61; the window slides, and 1d widened from 5d to 3mo; the first 3mo snapshot is 2026-11-18 11:15 ET)
+   XLK 15m: rows only in earlier ['2026-11-10 09:30:00-05:00', '2026-11-10 09:45:00-05:00', '2026-11-10 10:00:00-05:00']..., only in later ['2026-11-17 09:30:00-05:00', '2026-11-17 09:45:00-05:00', '2026-11-17 10:00:00-05:00']... (52 / 34; the window slides, and 1d widened from 5d to 3mo; the first 3mo snapshot is 2026-11-18 11:15 ET)
+   XLK 1d session 2026-11-16: 1/1 rows changed
+      Volume: 1 rows, max abs 13,200.0000 (00:00 13,158,300.0000->13,171,500.0000), max rel 0.10% (00:00)
+   XLK 1d: rows only in earlier []..., only in later ['2026-08-18 00:00:00-04:00', '2026-08-19 00:00:00-04:00', '2026-08-20 00:00:00-04:00']... (0 / 61; the window slides, and 1d widened from 5d to 3mo; the first 3mo snapshot is 2026-11-18 11:15 ET)
+
+== snap-20261118T161553Z.json -> snap-20261118T161821Z.json
+   2026-11-18 16:15 UTC (Wed 11:15 ET) -> 2026-11-18 16:18 UTC (Wed 11:18 ET)
+   SPY 15m session 2026-11-18: 2/8 rows changed
+      Open: 2 rows, max abs 0.1571 (11:15 729.1171->728.9600), max rel 0.02% (11:15)
+      Volume: 2 rows, max abs 14,814,346.0000 (11:00 735,252.0000->15,549,598.0000), max rel inf% (11:15)
+      High: 1 rows, max abs 0.2129 (11:15 729.1171->729.3300), max rel 0.03% (11:15)
+      Low: 1 rows, max abs 1.2771 (11:15 729.1171->727.8400), max rel 0.18% (11:15)
+      Close: 1 rows, max abs 1.2771 (11:15 729.1171->727.8400), max rel 0.18% (11:15)
+      Adj Close: 1 rows, max abs 1.2771 (11:15 729.1171->727.8400), max rel 0.18% (11:15)
+   SPY 1d session 2026-11-18: 1/1 rows changed
+      Low: 1 rows, max abs 0.5500 (00:00 728.3400->727.7900), max rel 0.08% (00:00)
+      Close: 1 rows, max abs 1.3300 (00:00 729.1200->727.7900), max rel 0.18% (00:00)
+      Adj Close: 1 rows, max abs 1.3300 (00:00 729.1200->727.7900), max rel 0.18% (00:00)
+      Volume: 1 rows, max abs 200,026.0000 (00:00 15,589,481.0000->15,789,507.0000), max rel 1.28% (00:00)
+   QQQ 15m session 2026-11-18: 1/8 rows changed
+      Open: 1 rows, max abs 0.0007 (11:15 656.3173->656.3180), max rel 0.00% (11:15)
+      High: 1 rows, max abs 0.2727 (11:15 656.3173->656.5900), max rel 0.04% (11:15)
+      Low: 1 rows, max abs 1.9273 (11:15 656.3173->654.3900), max rel 0.29% (11:15)
+      Close: 1 rows, max abs 1.9273 (11:15 656.3173->654.3900), max rel 0.29% (11:15)
+      Adj Close: 1 rows, max abs 1.9273 (11:15 656.3173->654.3900), max rel 0.29% (11:15)
+      Volume: 1 rows, max abs 36,483,328.0000 (11:15 0.0000->36,483,328.0000), max rel inf% (11:15)
+   QQQ 1d session 2026-11-18: 1/1 rows changed
+      Close: 1 rows, max abs 1.9273 (00:00 656.3173->654.3900), max rel 0.29% (00:00)
+      Adj Close: 1 rows, max abs 1.9273 (00:00 656.3173->654.3900), max rel 0.29% (00:00)
+      Volume: 1 rows, max abs 283,659.0000 (00:00 17,842,952.0000->18,126,611.0000), max rel 1.59% (00:00)
+   XLK 15m session 2026-11-18: 2/8 rows changed
+      Volume: 2 rows, max abs 73,079.0000 (11:15 0.0000->73,079.0000), max rel inf% (11:15)
+      High: 1 rows, max abs 0.0600 (11:15 162.9000->162.9600), max rel 0.04% (11:15)
+      Low: 1 rows, max abs 0.5200 (11:15 162.9000->162.3800), max rel 0.32% (11:15)
+      Close: 1 rows, max abs 0.5200 (11:15 162.9000->162.3800), max rel 0.32% (11:15)
+      Adj Close: 1 rows, max abs 0.5200 (11:15 162.9000->162.3800), max rel 0.32% (11:15)
+   XLK 1d session 2026-11-18: 1/1 rows changed
+      Close: 1 rows, max abs 0.5200 (00:00 162.9000->162.3800), max rel 0.32% (00:00)
+      Adj Close: 1 rows, max abs 0.5200 (00:00 162.9000->162.3800), max rel 0.32% (00:00)
+      Volume: 1 rows, max abs 45,743.0000 (00:00 6,590,088.0000->6,635,831.0000), max rel 0.69% (00:00)

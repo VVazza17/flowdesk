@@ -68,6 +68,6 @@ for prev, cur in zip(snaps, snaps[1:]):
                     print(f"      {p_}")
             if only_prev or only_cur:
                 print(f"   {sym} {iv}: rows only in earlier {only_prev[:3]}..., only in later {only_cur[:3]}... "
-                      f"({len(only_prev)} / {len(only_cur)}; the window slides, and 1d widened from 5d to 3mo at 2026-11-17 16:01 ET)")
+                      f"({len(only_prev)} / {len(only_cur)}; the window slides, and 1d widened from 5d to 3mo; the first 3mo snapshot is 2026-11-18 11:15 ET)")
     if not any_change:
         print("   no value changed in any common row")

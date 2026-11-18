@@ -1,0 +1,156 @@
+"""Slice 6 F-a settle measurement: which observed revisions fall after each candidate settle point S.
+
+Measurement script, not repo code (named .txt so no linter picks it up). Run from this directory:
+    python settle_by_s.py.txt > settle-by-s-<date>.txt
+
+Observations: every snap-*.json here, plus step 1(b)'s two midday SPY 15m fetches and its in-session SPY daily bar
+(../2026-11-16-yfinance-probe-run2.json, Mon 2026-11-16 12:13 and 12:28 ET).
+For each row (symbol, interval, bar), consecutive observations that differ give a change BRACKET (t_prev, t_cur]: the
+revision happened at some instant in that interval, never known more precisely. For a candidate settle point P:
+  after     t_prev >= P            the revision certainly happened after P (a stored first-settled value would differ)
+  straddles t_prev <  P < t_cur    it may have happened after P; the snapshots cannot say
+  before    t_cur  <= P            it certainly happened before P
+'Tested' counts rows with at least one pair of observations both at or after P: only those rows could have shown a
+post-P revision. A candidate with 0 'after' and few 'tested' rows is unmeasured, not clean.
+Session closes are hard-coded (all 16:00 ET; no early close in 2026-11-10..19).
+"""
+
+import glob
+import json
+from collections import defaultdict
+from datetime import date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
+
+ET = ZoneInfo("America/New_York")
+FIELDS = ("Open", "High", "Low", "Close", "Adj Close", "Volume")
+SESSIONS = [date(2026, 11, d) for d in (10, 11, 12, 13, 16, 17, 18, 19, 20)]  # Mon-Fri, no holiday in range
+# Earlier sessions appear only in 3mo daily rows of the last snapshot(s); they are observed once at most per row
+# pair below, so they can only add to 'tested', never to a bracket, unless two 3mo snapshots exist.
+
+
+def sessions_after(d, k):
+    """The session k sessions after d, for d in or before SESSIONS (weekday arithmetic before the list)."""
+    if d in SESSIONS and SESSIONS.index(d) + k < len(SESSIONS):
+        return SESSIONS[SESSIONS.index(d) + k]
+    x = d
+    while k:
+        x += timedelta(days=1)
+        if x.weekday() < 5:
+            k -= 1
+    return x
+
+
+def close_of(d):
+    return datetime.combine(d, time(16, 0), ET)
+
+
+CANDIDATES = {
+    # close+2h25: just before the first post-close observation (Mon 18:26 ET), so revisions bracketed from 18:26 count as after.
+    "close+2h25": lambda d: close_of(d) + timedelta(hours=2, minutes=25),
+    "D+1 09:00 (next session, pre-open)": lambda d: datetime.combine(sessions_after(d, 1), time(9, 0), ET),
+    "D+2 09:00": lambda d: datetime.combine(sessions_after(d, 2), time(9, 0), ET),
+    "D+3 09:00": lambda d: datetime.combine(sessions_after(d, 3), time(9, 0), ET),
+}
+
+# obs[(sym, iv, bar)] = [(t, row), ...]
+obs = defaultdict(list)
+for p in sorted(glob.glob("snap-*.json")):
+    s = json.load(open(p))
+    t = datetime.fromisoformat(s["started_utc"]).astimezone(ET)
+    for sym, ivs in s["data"].items():
+        for iv, rows in ivs.items():
+            for k, r in rows.items():
+                obs[(sym, iv, k)].append((t, r))
+mid = json.load(open("../2026-11-16-yfinance-probe-run2.json"))
+for key in ("A_fetch1", "A_fetch2"):
+    t = datetime.fromisoformat(mid[key]["fetched_at"]).astimezone(ET)
+    for r in mid[key]["rows"]:
+        obs[("SPY", "15m", r["ts"])].append((t, {f: r[f] for f in FIELDS}))
+for r in mid["A_daily_today"]["rows"]:
+    t = datetime.fromisoformat(mid["A_fetch1"]["fetched_at"]).astimezone(ET)  # fetched with fetch1
+    obs[("SPY", "1d", r["ts"])].append((t, {f: r[f] for f in FIELDS}))
+
+
+def bar_end(iv, k):
+    start = datetime.fromisoformat(k)
+    return start + timedelta(minutes=15) if iv == "15m" else close_of(start.date())
+
+
+changes = []  # (sym, iv, bar, session, t_prev, t_cur, {field: (x, y)})
+for (sym, iv, k), seq in obs.items():
+    seq.sort(key=lambda o: o[0])
+    end = bar_end(iv, k)
+    seq = [o for o in seq if o[0] >= end]  # a bar still forming is not a revision
+    obs[(sym, iv, k)] = seq
+    for (t0, a), (t1, b) in zip(seq, seq[1:]):
+        diff = {f: (a.get(f), b.get(f)) for f in FIELDS if a.get(f) != b.get(f)}
+        if diff:
+            changes.append((sym, iv, k, datetime.fromisoformat(k).date(), t0, t1, diff))
+
+
+def age(t, d):
+    h = (t - close_of(d)).total_seconds() / 3600
+    return f"{'+' if h >= 0 else ''}{h:.1f}h"
+
+
+print("Observations (ET):")
+for t in sorted({o[0] for seq in obs.values() for o in seq}):
+    print(f"  {t:%a %Y-%m-%d %H:%M}")
+
+print("\nEvery observed revision of a completed bar, with its bracket (age = hours after that session's 16:00 close):")
+for sym, iv, k, d, t0, t1, diff in sorted(changes, key=lambda c: (c[1], c[3], c[0], c[2])):
+    parts = ", ".join(
+        f"{f} {x:,.4f}->{y:,.4f} ({(y - x) / x:+.2%})" if x else f"{f} {x}->{y}" for f, (x, y) in diff.items()
+    )
+    print(f"  {iv:3} {sym} {k[:16]}  ({age(t0, d)}, {age(t1, d)}]  {parts}")
+
+GROUPS = {
+    "15m prices": ("15m", ("Open", "High", "Low", "Close", "Adj Close")),
+    "15m volume": ("15m", ("Volume",)),
+    "1d prices": ("1d", ("Open", "High", "Low", "Close", "Adj Close")),
+    "1d volume": ("1d", ("Volume",)),
+}
+
+print("\nPer candidate settle point P, per group: revisions after / straddling P, and rows whose post-P window was tested.")
+for g, (iv, fields) in GROUPS.items():
+    print(f"\n== {g}")
+    for name, P in CANDIDATES.items():
+        after, straddle = defaultdict(list), defaultdict(list)
+        for sym, civ, k, d, t0, t1, diff in changes:
+            if civ != iv:
+                continue
+            p = P(d)
+            for f in fields:
+                if f in diff:
+                    x, y = diff[f]
+                    rec = (abs(y - x), abs(y - x) / abs(x) if x else float("inf"), sym, k[:16])
+                    if t0 >= p:
+                        after[f].append(rec)
+                    elif t0 < p < t1:
+                        straddle[f].append(rec)
+        tested = 0
+        first_look = {}  # session -> hours from P to the first observation at or after P, over tested rows
+        for (sym, civ, k), seq in obs.items():
+            if civ != iv:
+                continue
+            p = P(datetime.fromisoformat(k).date())
+            post = [o[0] for o in seq if o[0] >= p]
+            if len(post) >= 2:
+                tested += 1
+                gap = (post[0] - p).total_seconds() / 3600
+                first_look[k[:10]] = min(gap, first_look.get(k[:10], gap))
+        looks = ", ".join(f"{d} (first look P+{h:.1f}h)" for d, h in sorted(first_look.items())) or "none"
+        print(f"  P = {name}: tested rows {tested}; sessions {looks}")
+        for label, bag in (("after", after), ("straddles", straddle)):
+            if not bag:
+                print(f"    {label}: 0")
+                continue
+            for f, recs in bag.items():
+                rows = {(r[2], r[3]) for r in recs}
+                mx_a = max(recs)
+                mx_r = max(recs, key=lambda r: r[1])
+                med = sorted(r[1] for r in recs)[len(recs) // 2]
+                print(
+                    f"    {label}: {f}: {len(rows)} rows; max abs {mx_a[0]:,.4f} ({mx_a[2]} {mx_a[3]}); "
+                    f"max rel {mx_r[1]:.2%} ({mx_r[2]} {mx_r[3]}); median rel {med:.2%}"
+                )

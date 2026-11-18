@@ -2945,3 +2945,73 @@ Snapshots (MEASURED): Mon 2026-11-16 18:26 ET (in-session loop), Tue 01:55 ET (K
 Read back 2026-11-17 (`Get-ScheduledTask`, read-only): start `2026-11-19T09:00:00`, every 1 day, end boundary `2026-12-03T09:30:00`, action `bash.exe …/docs/evidence/settle/run.sh`.
 It follows `FlowDesk-settle-probe`, whose last trigger is 2026-11-18 09:00 ET. The tail decides whether post-S revisions are kept as dated versions or only flagged by validation; `bars` is unchanged either way.
 **The snapshots land on this machine only until committed:** commit them as they arrive, not just at the end.
+
+### Addendum 2026-11-18 — settle measurement: the S proposal per interval (S NOT set; Kyle's)
+
+Evidence (`docs/evidence/settle/`): four snapshots, `compare-2026-11-18.txt` (consecutive diffs, `compare.py.txt`), and
+`settle-by-s-2026-11-18.txt` from the new `settle_by_s.py.txt`, which also reads step 1(b)'s Monday 12:13 / 12:28 ET SPY fetches.
+It brackets each revision of a **completed** bar as (previous look, next look], ages from the session's 16:00 ET close, then counts,
+for each candidate settle point P, revisions certainly after P ("after"), possibly after ("straddles"), and the rows whose post-P
+window was looked at twice ("tested", with the gap from P to the first look).
+
+#### What ran and what didn't (MEASURED 2026-11-18, System event log and `Get-ScheduledTaskInfo`)
+
+- **Tuesday's post-close points (16:01, 16:10, 16:20, 16:35, 17:05, 18:05 ET) and Wednesday 09:00 ET never ran.** The laptop slept
+  15:08–18:54, 19:04–19:59 and 20:10–11:12 (Wed); the 16:01–18:05 and Wed 09:00 triggers did not wake it (wake source "Unknown").
+- **The 20:00 trigger did wake it** (wake source names `FlowDesk-settle-probe`), but Docker Desktop did not come up within `run.sh`'s
+  10-minute wait (`run.log` 01:10Z: `failed to connect to the docker API`), and the machine slept again at 20:10, when the script ended.
+- **A substitute was taken by hand: Wed 2026-11-18 11:15 ET** (same `run.sh`, after starting Docker Desktop; in session, so
+  Wednesday's rows are still forming; `settle_by_s.py.txt` drops observations made before a bar ended, `compare.py.txt` does not).
+  It is the **first snapshot with 3 months of daily bars** (the 16:01 run that was to be the first never happened).
+- **Consequence:** the 16:00–18:26 window is unobserved for every session, and **Tuesday's session has one look only, so it measures
+  nothing.** Night-1 behaviour (the first overnight after a session) is observed for **one session (Monday 11-16), three symbols.**
+- **Risk to the two-week tail (`FlowDesk-settle-daily`, from 2026-11-19 09:00):** same settings as the probe task (WakeToRun,
+  StartWhenAvailable, DisallowStartIfOnBatteries, StopIfGoingOnBatteries, Interactive). The same failure is expected unless Docker
+  Desktop is running before 09:00. Not changed: the task is Kyle's.
+
+#### Findings (MEASURED, from the four snapshots and the two midday fetches)
+
+- **15m prices: no revision of a completed 15m bar's price observed at any age after the close** (earliest look close+2h26, Monday;
+  390 rows over five sessions, but only Monday's looked at within hours). 16:00–18:26 unobserved.
+- **15m volume: revised once, in night 1, never again.** Monday's 51 rows changed in (close+2h26, close+9h55]; none changed in
+  (+9h55, +17h00] or (+17h00, +43h15]. Friday 11-13's rows did not change in its night 2 (Mon night) or night 3 (Tue night).
+  Sizes: 22 rows are the F-b inflated bars corrected (−49.6% to −98.6%, max abs 61.2 M shares, QQQ 11:15); the rest move by
+  under 0.5% (median of all 51: 0.14%). In-session, a completed bar's volume was seen changing up to 28 min after it ended (F-a).
+- **Daily: revised in night 1 AND night 2, not in night 3.**
+  - Night 1 (Monday's bar, Mon night): Volume all three (SPY +1.79%, QQQ +2.37%, XLK +1.33%; to round hundreds); prices by at most
+    0.01 (QQQ Open, High) and 0.0001 (XLK Low).
+  - **Night 2, Volume only:** Monday's bar again on Tue night, bracket (Tue 09:00, Wed 11:15] (SPY +0.24%, QQQ +1.81%, XLK +0.10%;
+    still round hundreds); Friday's bar on **Mon** night, bracket (Mon 18:26, Tue 01:55] (SPY +0.86%, QQQ +0.72%, XLK none).
+    **Friday's revision followed the next session, not the calendar,** so S is counted in sessions, not hours.
+  - Night 3 onward: no change (Friday's bar on Tue night; Thursday 11-12's on Mon and Tue nights). Tested on 9 rows, 3 sessions.
+  - **Every revision whose bracket closes before Wednesday fell between 18:26 and 01:55 ET; none in 01:55–09:00.** That the Tuesday-night
+    revision also fell before 09:00 Wed is ASSUMED from this (its bracket reaches 11:15).
+- **How far back daily revisions reach: unmeasured beyond five sessions.** Only one 3-month snapshot exists; the tail measures it.
+
+#### Proposal per interval (Claude's; NOT set. Settle point P for session D, in ET, counted in sessions)
+
+| Interval | Proposed P | Margin over the last observed revision | After P (certain / possible) | Tested |
+|---|---|---|---|---|
+| 15m prices | **09:00 on D+1** (same as volume: a `bars` row stores prices and volume together, so a row settles at the later of the two) | none observed at all after close+2h26 | 0 / 0 | 390 rows; Monday from P+0h |
+| 15m volume | **09:00 on D+1** | ≥ 7h05 past the latest bracket end (01:55) | 0 / 0 | 390 rows; Monday from P+0h, Friday from P+9.4h |
+| Daily | **09:00 on D+3** | one full session and night past night 2 | 0 / 0 | 9 rows (11-10, 11-11, 11-12); Monday's D+3 is 11-20 |
+
+Counts and sizes at the other candidates (`settle-by-s-2026-11-18.txt`):
+- 15m volume at close+2h25: **51 rows after** (max rel −98.61%, median 0.14%); plus 1 straddling (SPY 12:00, +4.63%, in session). At D+1, D+2, D+3: 0 / 0.
+- 15m prices: 0 / 0 at every candidate.
+- Daily prices at close+2h25: 2 rows after (Open, High, Low; max abs 0.01). At D+1 and later: 0 / 0.
+- Daily volume at close+2h25: 5 rows after (max rel 2.37%, median 1.33%); at **D+1 09:00: 5 rows after** (max rel 1.81%, median 0.72%: the
+  night-2 revisions); at **D+2 09:00: 0 after, 3 straddling** (the Tuesday-night bracket; 0 if the ASSUMED overnight timing holds);
+  at D+3: 0 / 0.
+
+**For Kyle to weigh (not decided):**
+1. **Daily latency.** P = D+3 means a session's daily bar reaches `bars` three sessions later (Monday's on Thursday morning); D+2 means two.
+   Every daily read and backtest reads only `bars`. The cost of a shorter P is volume only: prices settle by D+1 (max move 0.01).
+   Shortening P for daily is possible only if a first-settled volume that later moves by up to ~2.4% (observed) is acceptable, or if the
+   tail's answer (dated versions) absorbs it.
+2. **Evidence is thin:** night 1 is one session, three large ETFs; weekend and holiday behaviour is one Friday. The tail (if it runs) adds
+   about ten sessions of night-2/night-3 evidence for daily and none for 15m night 1 except where a snapshot lands both before and after it,
+   which a 09:00-only schedule never does (it brackets a whole close-to-open span).
+3. **The P rule needs `trading_sessions` for D+k**, which the seed already holds.
+
+**State: S proposed, NOT set. Step 2's schema has NOT started; it starts once Kyle approves S for 15m and daily.**
