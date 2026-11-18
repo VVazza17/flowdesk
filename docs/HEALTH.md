@@ -256,8 +256,10 @@ these tables no status vocabulary (IDEA-022). The one exception is `task_runs`, 
 
 `ingestion[]` (one entry per feed: its latest run) is written by `run_feed` with `status` `running` /
 `succeeded` / `failed` (a stopgap under IDEA-022; TEXT, no CHECK). There is one row per run, however many
-attempts the run took. `error` is `<kind>:<Class>: <text>` with credentials removed; the public profile
-removes the key.
+attempts the run took. **Nothing the library says is ever stored** (Kyle, 2026-11-18). `error` is
+`<kind>:<Class>: <text>` only for FlowDesk's own `ProviderError`s, whose text the client wrote (fixed text, such as
+the dead symbols D4 names), scrubbed for credentials as a second net; any other exception is stored as
+`<kind>:<Class>` alone. The public profile removes the key.
 
 **`rows_written` is a verification signal, not a statistic.** It counts the rows a run created or *changed*
 in canonical state, never the rows it attempted to write. `rows_read` is what the provider returned. A re-ingest
@@ -485,8 +487,9 @@ source going away, and the machinery (worker, Redis, Postgres) is still working.
 **`providers_health.last_error` is the kind and the exception class, never the error text.** That column is served
 by `/health/providers`; the public profile removes the key but the private profile does not, and a client
 exception routinely carries the request URL (FRED authenticates with `api_key=` in the query string). So the
-text is not stored there at all. The scrubbed text goes into `ingestion_runs.error`, which the public profile
-also removes. `backend/tests/test_ingest_runner.py` reads the stored rows back with SQL and asserts that no
+text is not stored there at all: **`providers_health.last_error` is strictly `<kind>:<Class>`.** `ingestion_runs.error`
+may carry FlowDesk's own fixed text after it, never the library's (`app.ingest.errors.run_error`); the public
+profile removes that key too. `backend/tests/test_ingest_runner.py` reads the stored rows back with SQL and asserts that no
 credential is in them.
 
 ### The test

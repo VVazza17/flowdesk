@@ -666,3 +666,41 @@ Closed: keep everything, no compression. The compressed rows above stay as the m
 ### The version that would be legitimate
 ### Unfreeze triggers
 ```
+
+---
+
+## IDEA-047: `/health/providers` infers `last_attempt_failed` by ordering two wall-clock stamps
+
+**Status:** Parked (Kyle, 2026-11-18). Not fixed now.
+**Raised:** 2026-11-18 (the heartbeat-flake diagnosis, docs/BUILD-LOG.md)
+
+### The gap
+`app/services/health.py` reports `last_attempt_failed = last_error_at > last_success_at`. On this machine the wall clock steps back about 2.3 s
+every 30 s (IDEA-048), so two attempts on one feed less than about 2.5 s apart can be ordered wrongly and the flag can say the opposite of what
+happened. Attempts on one feed are normally minutes apart, so the practical risk is small.
+
+### The version that would be legitimate
+Record the last attempt's outcome directly (a column written with the attempt) instead of inferring order from two timestamps.
+
+### Unfreeze trigger
+Any feed whose attempts can land within a few seconds of each other (a retry policy with second-scale waits), or IDEA-048 reaching a deployed
+instance.
+
+---
+
+## IDEA-048: The dev machine's VM wall clock runs about 8% fast and steps back about 2.3 s every 30 s
+
+**Status:** Parked (Kyle, 2026-11-18): a dev-machine quirk, absent on a real server. Not fixed.
+**Raised:** 2026-11-18 (MEASURED: docs/evidence/clock-step-probe.py.txt; docs/BUILD-LOG.md, the heartbeat flake)
+
+### The finding
+Docker Desktop's WSL2 VM (kernel 5.15.167.4-microsoft-standard-WSL2, clocksource tsc): CLOCK_REALTIME steps back 2.2 to 2.5 s every 30 s, idle
+and under load, and runs about 8% fast between steps. Two wall-clock instants less than about 2.5 s apart cannot be ordered here, and a duration
+measured by the wall clock (or by a Redis TTL) is off by about 8%.
+
+### What it already changed
+Tests that order two `datetime.now()` readings inject `tests/clocks.py`'s `stepless_clock()` (the heartbeat test failed 5 of 150 runs before).
+
+### Unfreeze trigger
+The first deployed instance: run `clock-step-probe.py.txt` there. A real server is expected to show no steps (ASSUMED, not measured). If it does,
+this becomes a defect to fix, and IDEA-047 with it.

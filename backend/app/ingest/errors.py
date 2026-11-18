@@ -151,5 +151,14 @@ def scrub(text: str, secrets: Iterable[str] = ()) -> str:
 
 
 def run_error(exc: BaseException, secrets: Iterable[str] = ()) -> str:
-    """What goes into ingestion_runs.error: `<kind>:<Class>: <scrubbed text>` (private only)."""
+    """What goes into ingestion_runs.error (private profile only).
+
+    The rule (Kyle, 2026-11-18): NOTHING THE LIBRARY SAYS IS EVER STORED. A FlowDesk `ProviderError`
+    is built by our own clients with fixed text (the FRED client never echoes FRED; the yfinance
+    client names the symbols it failed), so its text follows the kind and class, scrubbed as a
+    second net. Any other exception (a library's that escaped a client's mapping, or a bug of ours)
+    may carry anything, a request URL included, so it is stored as `<kind>:<Class>` alone.
+    """
+    if not isinstance(exc, ProviderError):
+        return health_error(exc)
     return f"{health_error(exc)}: {scrub(str(exc), secrets)}"[:ERROR_TEXT_MAX_CHARS]

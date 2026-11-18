@@ -3370,3 +3370,27 @@ IDEA-027 makes every new allow-list entry the owner's decision. Re-adding is the
    fast, so 900 s is about 830 s real, still far inside what was measured (batches 2 s apart).
 4. **D4's `likely_gone` after 5 sessions**: proposed derivation from stored data, not a new table: a symbol whose last stored bar is 5 or more sessions
    behind the newest session any symbol in the batch stored. An outage that empties every symbol therefore never reads as 24 retirements.
+
+### Addendum 2026-11-18 (fourth) — Kyle's decisions: the four licences, stored errors, the yfinance budget, likely_gone, two IDEAs
+
+Written the turn they were given.
+
+1. **Licences: all four approved, each in the narrowest form** (IDEA-027 addendum, `backend/tools/license_audit.py`): `MIT-0` globally (cffi);
+   `3-Clause BSD License` as an alias of `BSD-3-Clause` (protobuf); peewee by a per-package exception keyed to its exact version 4.5.3, citing its
+   MIT licence text (an upgrade must re-verify); certifi by a per-package MPL-2.0 exception, on condition it ships unmodified with its source public
+   on PyPI (a commercial distribution warrants a proper licence review).
+2. **Stored errors: nothing the library says is ever stored.** `providers_health.last_error` stays strictly `<kind>:<Class>`. `ingestion_runs.error`
+   may carry FlowDesk's own fixed text after it (the dead symbols D4 names). HEALTH.md did NOT say exactly that: it described `error` as
+   `<kind>:<Class>: <text>` with credentials removed, and the code matched it: `run_error` stored `str(exc)` for ANY exception, so a library
+   exception that escaped a client's mapping would have had its text stored. **Fixed in code and document**: `run_error` keeps text only from
+   FlowDesk's own `ProviderError`s (whose clients build fixed text); anything else is stored as `<kind>:<Class>` alone.
+3. **yfinance rate budget: one 24-ticker batch per minute** (`RateBudget(60.0, 24)`). This corrects the earlier instruction of 900 s: step 1(b)
+   MEASURED 10 batches 2 s apart with no throttling (2026-11-16), so 15 minutes was far stricter than the evidence and would make the daily and
+   intraday feeds collide. **One per minute is 30x slower than measured; that safety factor is ASSUMED.** The VM's 8% fast clock is irrelevant at
+   that spacing.
+4. **D4 `likely_gone`: APPROVED as proposed.** A symbol whose last stored bar is 5 or more sessions behind the newest session any symbol stored. It
+   prompts the operator and never retires a symbol on its own.
+5. **Logged as IDEAs, not fixed:** IDEA-047 (`last_attempt_failed` can misorder two attempts under about 2.5 s apart on this machine) and IDEA-048
+   (the VM clock: 8% fast, stepping back every 30 s; a dev-machine quirk, absent on a real server). Both in `docs/IDEAS.md`.
+
+Then: restore the yfinance dependency, re-lock, run the licence gate and audit, and continue step 3 as specified.

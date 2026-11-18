@@ -719,6 +719,18 @@ Revisit when per-package MPL review becomes tedious, or before any distribution 
 when the shipped set should get a proper legal read (decision 24 says as much). The repo's own LICENSE
 file is a separate question, held by the owner.
 
+### Addendum 2026-11-18 (Kyle): yfinance's dependency tree, four licences, each in the narrowest form
+
+Found by the licence gate when `yfinance==1.8.0` was locked (M2 slice 6 step 3; licence files read from each wheel, docs/BUILD-LOG.md 2026-11-18).
+All four ship in the image.
+- **`MIT-0` is added to the allow-list globally** (cffi 2.1.1, via curl-cffi). MIT No Attribution: MIT without the notice requirement.
+- **`3-Clause BSD License` is added as an alias of `BSD-3-Clause`** (protobuf 7.36.2, via yfinance). The licence file is BSD-3-Clause text (Google Inc.).
+- **peewee: a per-package exception keyed to its exact version (4.5.3)**, because its metadata carries no licence at all (`UNKNOWN`); its licence
+  file is MIT text ("Permission is hereby granted, free of charge…", Copyright (c) 2010 Charles Leifer). **An upgrade must re-verify**: another
+  version fails the gate.
+- **certifi: a per-package MPL-2.0 exception**, the `pathspec` precedent, except that certifi SHIPS. **Condition: shipped unmodified, its source
+  public on PyPI. A commercial distribution warrants a proper licence review.**
+
 ---
 
 ## IDEA-028: Decision 14 bans bare "arbitrage"; §7.5, §15 and §17 ban only "arbitrage opportunity"

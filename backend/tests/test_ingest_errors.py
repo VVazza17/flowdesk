@@ -57,3 +57,18 @@ def test_scrub_keeps_ordinary_text_and_truncates() -> None:
 
 def test_run_error_names_kind_and_class() -> None:
     assert e.run_error(e.Permanent("bad series"), []).startswith("permanent:Permanent: bad series")
+
+
+def test_nothing_a_library_says_is_ever_stored() -> None:
+    # Kyle, 2026-11-18: a library exception that escaped a client's mapping may carry anything (a
+    # request URL with a key, provider text). It is stored as <kind>:<Class> and nothing else.
+    leaked = ValueError("GET https://query1.example/v8/chart/XLK?crumb=abc123 said: try later")
+    assert e.run_error(leaked, []) == "unexpected:ValueError"
+    assert e.health_error(leaked) == "unexpected:ValueError"
+
+
+def test_our_own_fixed_text_follows_the_kind_and_class() -> None:
+    # D4: the run names the dead symbols. That text is FlowDesk's, written by the client.
+    err = e.EmptyResult("no rows today for: XLK, XLE")
+    assert e.run_error(err, []) == "empty_result:EmptyResult: no rows today for: XLK, XLE"
+    assert e.health_error(err) == "empty_result:EmptyResult"

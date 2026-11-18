@@ -28,11 +28,16 @@ ALLOWED = frozenset(
         "BSD License",
         "BSD-2-Clause",
         "BSD-3-Clause",
+        # protobuf's spelling of BSD-3-Clause (IDEA-027 addendum 2026-11-18): an alias, not a
+        # new licence.
+        "3-Clause BSD License",
         "Apache-2.0",
         "Apache 2.0",
         "Apache License 2.0",
         "Apache Software License",
         "PSF-2.0",
+        # MIT No Attribution (cffi, via curl-cffi; IDEA-027 addendum 2026-11-18). Permissive.
+        "MIT-0",
         "Python Software Foundation License",
     }
 )
@@ -45,6 +50,10 @@ _MPL = frozenset({"MPL-2.0", "Mozilla Public License 2.0 MPL 2.0"})
 # alike (IDEA-027).
 PACKAGE_EXCEPTIONS: Mapping[str, frozenset[str]] = {
     "pathspec": _MPL,
+    # certifi (CA bundle, via curl-cffi and requests) SHIPS, unlike pathspec. Allowed on condition
+    # it is shipped unmodified with its source public on PyPI; a commercial distribution warrants a
+    # proper licence review (IDEA-027 addendum 2026-11-18).
+    "certifi": _MPL,
 }
 
 
@@ -54,6 +63,14 @@ PACKAGE_EXCEPTIONS: Mapping[str, frozenset[str]] = {
 # numpy fails the gate and stops for review instead of inheriting this entry.
 EXPRESSION_EXCEPTIONS: Mapping[str, frozenset[str]] = {
     "numpy": frozenset({"BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0"}),
+}
+
+# peewee publishes no licence metadata at all (pip-licenses reports UNKNOWN). Its licence FILE is
+# MIT text ("Permission is hereby granted, free of charge...", Copyright (c) 2010 Charles Leifer),
+# read 2026-11-18 (IDEA-027 addendum). Keyed to the exact (name, version) whose file was read: an
+# upgrade fails the gate and must be re-verified, never inherited.
+VERSION_EXCEPTIONS: Mapping[tuple[str, str], frozenset[str]] = {
+    ("peewee", "4.5.3"): frozenset({"UNKNOWN"}),
 }
 
 
@@ -71,6 +88,8 @@ def violations(packages: list[dict[str, str]]) -> list[str]:
         expression = package["License"]
         parts = license_parts(expression)
         if expression in EXPRESSION_EXCEPTIONS.get(name.lower(), frozenset()):
+            continue
+        if expression in VERSION_EXCEPTIONS.get((name.lower(), version), frozenset()):
             continue
         if not parts or any(part not in allowed for part in parts):
             problems.append(f"{name} {version}: {expression!r}")

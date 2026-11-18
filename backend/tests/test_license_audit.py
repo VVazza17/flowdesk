@@ -55,8 +55,10 @@ def test_everything_else_fails(license_text: str) -> None:
 def test_mpl_is_allowed_only_for_named_packages(license_text: str) -> None:
     assert violations([_package(license_text, name="pathspec")]) == []
     assert len(violations([_package(license_text, name="otherpkg")])) == 1
-    # Removed on 2026-11-04 (IDEA-027). If it returns with an HTTP client, it stops for a review.
-    assert len(violations([_package(license_text, name="certifi")])) == 1
+    # Removed on 2026-11-04 (IDEA-027); it returned with yfinance's HTTP stack, stopped for a
+    # review, and was approved on condition (IDEA-027 addendum 2026-11-18): shipped unmodified,
+    # source public.
+    assert violations([_package(license_text, name="certifi")]) == []
 
 
 def test_package_exception_does_not_cover_other_licences() -> None:
@@ -82,3 +84,27 @@ def test_a_violation_names_the_package_and_its_licence() -> None:
 
 def test_license_parts_splits_operators_and_classifier_separators() -> None:
     assert license_parts("(MIT OR Apache-2.0) AND X; Y") == ["MIT", "Apache-2.0", "X", "Y"]
+
+
+# --- IDEA-027 addendum 2026-11-18: yfinance's dependency tree, each in the narrowest form ---------
+
+
+def _pkg(name: str, version: str, licence: str) -> dict[str, str]:
+    return {"Name": name, "Version": version, "License": licence}
+
+
+def test_mit0_and_the_protobuf_spelling_are_allowed_for_anyone() -> None:
+    assert violations([_pkg("cffi", "2.1.1", "MIT-0"), _pkg("anything", "1", "MIT-0")]) == []
+    assert violations([_pkg("protobuf", "7.36.2", "3-Clause BSD License")]) == []
+
+
+def test_peewee_unknown_passes_only_at_the_version_whose_licence_file_was_read() -> None:
+    assert violations([_pkg("peewee", "4.5.3", "UNKNOWN")]) == []
+    assert violations([_pkg("peewee", "4.5.4", "UNKNOWN")]) != []  # an upgrade must re-verify
+    assert violations([_pkg("other", "4.5.3", "UNKNOWN")]) != []
+
+
+def test_mpl_is_still_per_package() -> None:
+    mpl = "Mozilla Public License 2.0 (MPL 2.0)"
+    assert violations([_pkg("certifi", "2026.10.23", mpl)]) == []
+    assert violations([_pkg("not-certifi", "1", mpl)]) != []
