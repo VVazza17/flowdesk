@@ -80,10 +80,10 @@ create table $1 (
   source text not null, feed text not null, venue_scope text not null, raw_basis text not null,
   available_at timestamptz not null, ingested_at timestamptz not null, ingestion_run_id bigint,
   primary key (symbol_id, "interval", ts));
-select create_hypertable('$1','ts', chunk_time_interval => interval '7 days');
+select create_hypertable('$1','ts', chunk_time_interval => interval '${2:-7 days}');
 SQL
 }
-fill() { # table nsym label step days
+fill() { # table nsym label step days [start offset in days; default 0]
 q >/dev/null <<SQL
 insert into $1
 select s, '$3', t,
@@ -94,7 +94,7 @@ select s, '$3', t,
 from (
   select s, t, round((100 + 20*sin(s + extract(epoch from t)/1e6))::numeric,4) as p
   from generate_series(1,$2) s,
-       generate_series(timestamptz '2025-01-02 14:30+00', timestamptz '2025-01-02 14:30+00' + interval '$5 days', interval '$4') t
+       generate_series(timestamptz '2025-01-02 14:30+00' + interval '${6:-0} days', timestamptz '2025-01-02 14:30+00' + interval '${6:-0} days' + interval '$5 days', interval '$4') t
   where extract(isodow from t) < 6 and ('$3'='1d' or t::time between '14:30' and '20:45')
 ) x;
 analyze $1;
@@ -131,8 +131,46 @@ run_size() { # label nsym ivl step days
   say "  free now: host C: $(( $(free_kb)/1024/1024 )) GB, VM disk $(( $(vm_kb)/1024/1024 )) GB"
 }
 
+# Step 2 (2026-11-18): one table vs two, and the chunk interval. SCENARIO=step2 runs this instead of step 1(a).
+# A daily bar's ts is its session's open (09:30 ET), the SAME instant as that session's first 15m bar, so a
+# mixed table's cross-section at a daily ts reads rows of both intervals at that instant and must filter.
+reads() { # table nsym ivl label: the three reads of step 1(a) plus a whole-history window for one symbol
+  local T="$1" n="$2" ivl="$3" XTS
+  XTS=$(q -c "select ts from $T where symbol_id=1 and \"interval\"='$ivl' order by ts offset (select count(*)/2 from $T where symbol_id=1 and \"interval\"='$ivl') limit 1")
+  local ql="select b.* from generate_series(1,$n) s cross join lateral (select * from $T where symbol_id=s and \"interval\"='$ivl' order by ts desc limit 1) b"
+  local qw="select * from $T where symbol_id=7 and \"interval\"='$ivl' and ts >= (select max(ts) from $T where \"interval\"='$ivl') - interval '30 days'"
+  local qa="select * from $T where symbol_id=7 and \"interval\"='$ivl'"
+  local qx="select * from $T where \"interval\"='$ivl' and ts='$XTS'"
+  say "  $4: latest-per-symbol ms=$(timeit "$ql")  one-symbol 30d ms=$(timeit "$qw")  one-symbol all ms=$(timeit "$qa")  cross-section ms=$(timeit "$qx") (rows $(q -c "select count(*) from ($qx) z"))"
+  say "      cross-section plan: $(plan "$qx")"
+}
+step2() {
+  local c
+  for c in "7 days" "28 days" "365 days"; do
+    local T="d_${c%% *}"
+    say ""; say "=== daily only, 24 symbols, 700 calendar days, chunk $c ==="
+    mk "$T" "$c"; fill "$T" 24 1d "1 day" 700; say "  $(sizes "$T")"; reads "$T" 24 1d "1d"
+  done
+  for c in "7 days" "28 days"; do
+    local T="m_${c%% *}"
+    say ""; say "=== 15m only, 24 symbols, 365 calendar days, chunk $c ==="
+    mk "$T" "$c"; fill "$T" 24 15m "15 minutes" 365; say "  $(sizes "$T")"; reads "$T" 24 15m "15m"
+  done
+  for n in 24 500; do
+    local T="x_$n"
+    say ""; say "=== MIXED one table, $n symbols: 1d over 700 days + 15m over its LAST 365 days (both end together), chunk 7 days ==="
+    mk "$T" "7 days"; fill "$T" "$n" 1d "1 day" 700; fill "$T" "$n" 15m "15 minutes" 365 335; say "  $(sizes "$T")"
+    reads "$T" "$n" 1d "1d " ; reads "$T" "$n" 15m "15m"
+  done
+  say "  free now: host C: $(( $(free_kb)/1024/1024 )) GB, VM disk $(( $(vm_kb)/1024/1024 )) GB"
+}
+
 say "timescaledb $(q -c "select extversion from pg_extension where extname='timescaledb'")  postgres $(q -c 'show server_version')  $(date -Is)"
-run_size 12k   24  1d  "1 day"     700
-run_size 157k  24  15m "15 minutes" 365
-run_size 3300k 500 15m "15 minutes" 365
+if [ "${SCENARIO:-step1a}" = step2 ]; then
+  step2
+else
+  run_size 12k   24  1d  "1 day"     700
+  run_size 157k  24  15m "15 minutes" 365
+  run_size 3300k 500 15m "15 minutes" 365
+fi
 say "DONE"

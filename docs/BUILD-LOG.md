@@ -3047,3 +3047,151 @@ session after D in `trading_sessions`. All times ET.
   intraday computation that uses volume must treat it that way. Prices showed no such problem.
 
 **Next: step 2's schema, proposal only. No migration until Kyle approves it.**
+
+### Step 2 proposal (2026-11-18) — the price schema. PROPOSAL, NOT BUILT; waiting on Kyle
+
+Nothing below is migrated. Numbers are MEASURED (date, how) or ASSUMED, per rule 10.
+
+#### Measured first: one table or two, and the chunk interval (MEASURED 2026-11-18)
+
+`SCENARIO=step2 bash infra/bench-bars.sh` (new scenario in the step 1(a) harness, same throwaway container, both disk guards; this run
+used about 2.0 GB of the VM disk). Evidence: `docs/evidence/2026-11-18-bars-step2-benchmark.txt`. TimescaleDB 2.31.0 / PG 16.15,
+synthetic data, uncompressed, median of 5 `EXPLAIN ANALYZE`, PK plus the hypertable's default time index only.
+The mixed table reproduces the real collision: **a daily bar's instant is its session's 09:30 open, the same instant as the first 15m bar.**
+
+| Table | Rows | Chunk | B/row | Latest per symbol (ms) | 1 symbol, 30 d | 1 symbol, all | Cross-section |
+|---|---|---|---|---|---|---|---|
+| daily only, 24 sym, 700 d | 12,024 | 7 d (101 chunks) | 755.6 | 2.35 | 4.98 | 3.27 | 0.047 |
+| daily only | 12,024 | 28 d (26) | 430.6 | 0.49 | 1.84 | 1.34 | 0.044 |
+| **daily only** | 12,024 | **365 d (2)** | **253.4** | **0.44** | **0.98** | **0.56** | 0.054 |
+| 15m only, 24 sym, 365 d | 162,888 | 7 d (53) | 286.7 | 0.92 | 3.12 | 7.91 | 0.049 |
+| **15m only** | 162,888 | **28 d (14)** | **250.3** | **0.69** | **2.20** | **6.68** | 0.061 |
+| MIXED, 24 sym, 1d + 15m | 174,912 | 7 d (101) | 289.3 | 1d 1.48 / 15m 1.50 | 3.82 / 4.28 | 3.76 / 9.05 | 0.061 / 0.054 |
+| MIXED, 500 sym, 1d + 15m | 3,644,000 | 7 d (101) | 242.3 | 1d 6.99 / **15m 43.1** | 3.96 / 6.65 | 4.68 / 31.6 | 0.240 / 0.194 |
+
+- **The cross-section in a mixed table is fine**: 0.05 to 0.24 ms, correct row counts (24, 500), via the time index plus the `interval` filter.
+  So step 1(a)'s result (no `(interval, ts)` index needed) **holds for a mixed table too**, and the cross-section does not decide the question.
+- **What differs is the chunk interval.** One hypertable has one. Daily bars want long chunks (365 d: about a third of the 7 d size on disk, every
+  read under 1 ms); 15m wants about 28 d. A mixed table must use the 15m size, and its daily rows then sit at about 120 a chunk.
+- At 500 symbols (Phase 2's scanner size, ASSUMED) the mixed table's 15m latest-per-symbol is 43 ms, against 4.2 ms for a 15m-only table of
+  3.4 M rows at step 1(a) (a different run; not a controlled comparison).
+- **A first run was discarded as an artifact and is not in the evidence file:** its 15m history ended 335 days before the daily history, so
+  15m reads walked empty chunks (61 ms). The fill now puts the 15m history at the end, as it will be in reality (daily backfilled 2 years,
+  15m from go-live).
+
+#### Recommendation: two tables
+
+**`bars_daily` and `bars_intraday`, both settled, both insert-only.** Reasons, in order:
+1. They need different chunk intervals (measured above).
+2. They have different settle points (D+2 vs D+1) and write paths.
+3. Total return exists for daily only: 15m `Adj Close` equals `Close` in all 1,842 15m rows across the five settle snapshots, while daily
+   differs in 68 of 198 rows of the 3-month window (MEASURED 2026-11-18, the snapshots).
+4. The 60-day limit and the unrecoverable-gap record are intraday concerns.
+
+**This departs from §8's single `bars` (with an `interval` column): flagged, not silently reinterpreted.** `bars_intraday` keeps `interval`
+(CHECK `'15m'` only) so 30m or 1m can join later without a new table. If Kyle prefers one table, the cross-section is measured fine; the cost
+is daily rows on 28-day or 7-day chunks.
+
+#### `bars_daily` (hypertable, chunk 365 days)
+
+| Column | Type | Notes |
+|---|---|---|
+| `symbol_id` | BIGINT NOT NULL FK `symbols.id` | `symbols.id` is BIGINT (MEASURED 2026-11-18, `information_schema`) |
+| `effective_at` | TIMESTAMPTZ NOT NULL | the session's `opens_at` (D5). **Named by the binding vocabulary, not D5's `ts`**: Q2 |
+| `o_raw`, `h_raw`, `l_raw`, `c_raw` | NUMERIC NOT NULL | as traded (D3 b): live, or adjusted × later split ratios. The provider's float by its shortest repr, no rounding (Q7) |
+| `v_raw` | BIGINT NOT NULL | as traded: adjusted volume ÷ later split ratios (Q6) |
+| `raw_basis` | TEXT NOT NULL, CHECK IN (`live`, `reconstructed`, `unreconstructed`) | D1. `live` = no split after the session at fetch time; `reconstructed` = a later split was multiplied back |
+| `source` | TEXT NOT NULL | `'yfinance'` |
+| `feed` | TEXT NOT NULL | `yfinance.daily` for the poll, `yfinance.daily.backfill` for the backfill, so a reader can tell them apart (Q4) |
+| `venue_scope` | TEXT NOT NULL, CHECK IN (`provider_default`) | D1: never `consolidated` until measured; widening the CHECK is a migration |
+| `available_at` | TIMESTAMPTZ NOT NULL | **the settle point, 09:00 ET on D+2** (S, MEASURED 2026-11-18). CHECK `available_at > effective_at`: a cheap guard against an in-session value, safe here (unlike macro, where a value can be known before its period) |
+| `ingested_at` | TIMESTAMPTZ NOT NULL DEFAULT now() | never used for point-in-time filtering |
+| `ingestion_run_id` | BIGINT NULL FK `ingestion_runs.id` ON DELETE SET NULL | as `macro_metrics` |
+
+**Key: PRIMARY KEY (`symbol_id`, `effective_at`).** No other index (measured). **Immutable, enforced by the database** with the `macro_metrics`
+trigger pattern (UPDATE, DELETE and TRUNCATE refused; only `ingestion_run_id` may go to NULL). That is what "`bars` holds the first settled value
+and is never overwritten" means in DDL. A re-fetch inserts with ON CONFLICT DO NOTHING (`rows_written` counts real inserts, so a re-run writes 0);
+a re-fetch that disagrees with a stored row is a validation failure (D3), detected in code, never an overwrite.
+
+**Dropped from §8's `bars`, each a departure, flagged:** `c_split_adj`, `v_split_adj`, `adjustment_factor` (D3 b derives adjusted values on read
+from `splits`; storing them would store the rewritten value D3 exists to avoid); `dollar_volume` (derived from `c_raw × v_raw`, no M2 consumer);
+**`c_total_return`, Q3.**
+
+#### `bars_intraday` (hypertable, chunk 28 days)
+
+The same columns as `bars_daily`, plus **`interval` TEXT NOT NULL CHECK IN (`15m`)**. **Key: PRIMARY KEY (`symbol_id`, `interval`, `effective_at`)**,
+§8's shape. `effective_at` = the bar's open instant (open-labelled, MEASURED 2026-11-16). **`available_at` = 09:00 ET on D+1.** `feed` =
+`yfinance.15m`. Immutable by the same trigger. Not built here: the provisional table (IDEA-045's milestone rule).
+
+#### `bar_total_return` (plain table; D2, now daily only)
+
+`symbol_id` FK, `effective_at` TIMESTAMPTZ, `revision` INT NOT NULL DEFAULT 0, `value` NUMERIC NOT NULL, `available_at`, `ingested_at`, `source`,
+`ingestion_run_id`. **PRIMARY KEY (`symbol_id`, `effective_at`, `revision`)**, immutable trigger, as `macro_metrics`.
+Revision 0's `available_at` is the bar's settle point; a later revision's is the fetch that saw it (dated by the poll, because no provider vintage
+exists: the ADR-0003 F1 situation). Plain table, not a hypertable: at most about 48,000 rows a year (ASSUMED, the plan's figure), following the
+`macro_metrics` precedent. Written in the same transaction as the bar (D2).
+
+#### `splits` (plain table; D3 b)
+
+`symbol_id` FK; **`effective_at` DATE** (the exchange-local session date the split takes effect: a date, like a macro period); `ratio` NUMERIC
+NOT NULL CHECK `ratio > 0` (10.0, 2.0; a reverse split is below 1); `available_at` TIMESTAMPTZ NOT NULL; `ingested_at`; `source`; `ingestion_run_id`.
+**PRIMARY KEY (`symbol_id`, `effective_at`).** Immutable trigger: a re-fetch reporting a different ratio for the same date is a validation failure,
+never an overwrite.
+- **Kyle's "first-seen timestamp" is `ingested_at`**: the table is insert-only, so a row's write time is when we first saw it.
+- **`available_at` = the effective session's `opens_at`.** yfinance gives no announcement date; a split is certainly known when it takes effect.
+  With that, **the adjusted read as of T uses `splits.available_at <= T`**, the same filter as every other table, and it is exactly Kyle's rule
+  "only splits effective on or before T".
+- Reference values for step 4's tests: NVDA 2024-06-07 rebuilds to 1,208.88; XLK 2025-12-04 to 291.07; XLK 2025-12-05 stays 146.60.
+
+#### `bar_gaps`: the unrecoverable-gap record (plain table)
+
+`id` BIGINT identity PK; `symbol_id` FK; `interval` TEXT CHECK IN (`1d`, `15m`); **`missing_from`, `missing_to` TIMESTAMPTZ NOT NULL, half-open
+`[missing_from, missing_to)` over bar open instants**, CHECK `missing_to > missing_from`; `recorded_at` TIMESTAMPTZ NOT NULL DEFAULT now();
+`ingestion_run_id` FK (the run that found it) ON DELETE SET NULL; `resolved_at` TIMESTAMPTZ NULL. **UNIQUE (`symbol_id`, `interval`,
+`missing_from`)**, so a re-run cannot record the same gap twice.
+- **Two columns, not a range type**: the `universe_membership` `valid_from`/`valid_to` precedent. An exclusion constraint against overlapping
+  ranges would need `btree_gist`, a new extension (0003 declined it for the same reason).
+- **Never deleted; resolving sets `resolved_at` once.** A trigger refuses DELETE, TRUNCATE and any UPDATE except `resolved_at` from NULL to a
+  value (and `ingestion_run_id` to NULL).
+- `recorded_at`, not `ingested_at`: a gap is a fact about our own data, not a provider observation (the `universe_membership` tripwire's reasoning).
+- **The gap is computed against `trading_sessions`**, so holidays and early closes are never gaps. The limit is 59 calendar days on `start=` (decided).
+- Expected use: intraday. A daily gap is reachable through the backfill's deep history, so a daily row would mean the backfill itself failed.
+
+#### `universe_membership.close_reason` (D4, as decided 2026-11-15)
+
+`ALTER TABLE universe_membership ADD COLUMN close_reason TEXT NULL`, plus `CHECK ((valid_to IS NULL) = (close_reason IS NULL))` and
+`CHECK (close_reason IN ('delisted', 'merged', 'removed_by_operator'))`.
+**Confirmed against the live table (MEASURED 2026-11-18, dev database): 24 rows, 0 with `valid_to` set**, so both CHECKs go on without a backfill.
+
+#### Also step 2 (from the plan), not schema
+
+24 `provider_mappings` rows for yfinance, through the seed (insert-only), not the migration. MEASURED 2026-11-18: 0 exist; alembic head is 0009.
+
+#### Migrations and tests
+
+`0010` the price tables (`bars_daily`, `bars_intraday`, `bar_total_return`, `splits`), `0011` `bar_gaps`, `0012` `close_reason`. Each with column
+comments, a downgrade, the migration smoke and `alembic check`. Tests: every trigger refuses UPDATE, DELETE and TRUNCATE and allows only its
+carve-out; every CHECK; **rule 9 for every keyed write** (a second symbol whose rows would win every ordering, left exactly as it was, checked by
+mutation; `bars_intraday` cannot yet have a second interval value, so the second key is a symbol).
+
+#### Questions for Kyle (each blocks the migration; recommendations, not decisions)
+
+1. **One table or two.** Recommend two (above).
+2. **`ts` or `effective_at`.** The vocabulary entry (IDEA-034, settled 2026-11-11) binds names on every observation table and says `bars`
+   "does not re-decide it"; D5 wrote `ts`. Recommend `effective_at` (an instant here, a DATE in `macro_metrics`, as that entry already allows).
+3. **`c_total_return`: two decisions conflict.** D2: "`bars.c_total_return` holds the latest vintage". 2026-11-17: "`bars` holds the FIRST settled
+   value and is never overwritten". Both cannot hold. Recommend **no `c_total_return` column on `bars_daily`**: total return lives only in
+   `bar_total_return`, which also removes D2's "two homes for one number" risk.
+4. **`available_at` for backfilled rows.** No vintage exists for a 2-year backfill. Recommend the settle point (D+2 09:00) like the poll, with
+   `feed` saying `backfill`; its hindsight is bounded by post-S revisions, which the tail is measuring. The alternative, the fetch instant, is
+   honest but makes all history invisible to any replay before 2026. **It is a statement about what was known, so it is yours.**
+5. **Database-enforced immutability on `bars_*`** (the `macro_metrics` triggers). Recommend yes.
+6. **Volume reconstruction exactness (ASSUMED):** adjusted volume ÷ ratio is assumed to be an integer. Step 4 checks it on the five 2025-12-05
+   splits; a non-integer fails the symbol and is never rounded.
+7. **Prices stored as the float's shortest repr** (yfinance sends float32-looking values such as 749.6599731445312), never rounded. Recommend yes.
+8. **Not schema, but it decides whether `bar_total_return` ever gets a revision 1:** the gap-driven poll fetches only from the last stored bar,
+   so a dividend that rewrites old `Adj Close` is never seen. Detecting it needs a periodic history re-fetch. That is step 3/4's; raised now.
+9. **15m across a split (ASSUMED):** intraday prices are assumed split-adjusted like daily. No split falls inside the 60-day window now, so it
+   cannot be measured; the client reconstructs from `splits` either way.
+
+**State: S set. Step 2 PROPOSED, not built. No migration until Kyle approves.**

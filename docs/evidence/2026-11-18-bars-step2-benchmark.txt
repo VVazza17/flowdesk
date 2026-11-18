@@ -1,0 +1,46 @@
+host C: free at start: 1316 GB; abort floor: 1301 GB (budget 15 GB)
+VM disk free at start: 893 GB; abort floor: 878 GB
+timescaledb 2.31.0  postgres 16.15  2026-11-18T11:26:44-05:00
+
+=== daily only, 24 symbols, 700 calendar days, chunk 7 days ===
+  rows=12024 size_MB=8.7 bytes/row=755.6 chunks=101
+  1d: latest-per-symbol ms=2.349  one-symbol 30d ms=4.976  one-symbol all ms=3.274  cross-section ms=0.047 (rows 24)
+      cross-section plan: Index Scan using _hyper_1_51_chunk_d_7_ts_idx;
+
+=== daily only, 24 symbols, 700 calendar days, chunk 28 days ===
+  rows=12024 size_MB=4.9 bytes/row=430.6 chunks=26
+  1d: latest-per-symbol ms=0.487  one-symbol 30d ms=1.843  one-symbol all ms=1.335  cross-section ms=0.044 (rows 24)
+      cross-section plan: Index Scan using _hyper_2_115_chunk_d_28_ts_idx;
+
+=== daily only, 24 symbols, 700 calendar days, chunk 365 days ===
+  rows=12024 size_MB=2.9 bytes/row=253.4 chunks=2
+  1d: latest-per-symbol ms=0.439  one-symbol 30d ms=0.981  one-symbol all ms=0.564  cross-section ms=0.054 (rows 24)
+      cross-section plan: Index Scan using _hyper_3_129_chunk_d_365_ts_idx;
+
+=== 15m only, 24 symbols, 365 calendar days, chunk 7 days ===
+  rows=162888 size_MB=44.5 bytes/row=286.7 chunks=53
+  15m: latest-per-symbol ms=0.924  one-symbol 30d ms=3.121  one-symbol all ms=7.910  cross-section ms=0.049 (rows 24)
+      cross-section plan: Index Scan using _hyper_4_156_chunk_m_7_ts_idx;
+
+=== 15m only, 24 symbols, 365 calendar days, chunk 28 days ===
+  rows=162888 size_MB=38.9 bytes/row=250.3 chunks=14
+  15m: latest-per-symbol ms=0.693  one-symbol 30d ms=2.198  one-symbol all ms=6.681  cross-section ms=0.061 (rows 24)
+      cross-section plan: Index Scan using _hyper_5_190_chunk_m_28_ts_idx;
+
+=== MIXED one table, 24 symbols: 1d over 700 days + 15m over its LAST 365 days (both end together), chunk 7 days ===
+  rows=174912 size_MB=48.3 bytes/row=289.3 chunks=101
+  1d : latest-per-symbol ms=1.476  one-symbol 30d ms=3.823  one-symbol all ms=3.759  cross-section ms=0.061 (rows 24)
+      cross-section plan: Index Scan using _hyper_6_247_chunk_x_24_ts_idx;
+  15m: latest-per-symbol ms=1.495  one-symbol 30d ms=4.282  one-symbol all ms=9.046  cross-section ms=0.054 (rows 24)
+      cross-section plan: Index Scan using _hyper_6_270_chunk_x_24_ts_idx;
+
+=== MIXED one table, 500 symbols: 1d over 700 days + 15m over its LAST 365 days (both end together), chunk 7 days ===
+  rows=3644000 size_MB=841.9 bytes/row=242.3 chunks=101
+  1d : latest-per-symbol ms=6.994  one-symbol 30d ms=3.963  one-symbol all ms=4.683  cross-section ms=0.240 (rows 500)
+      cross-section plan: Index Scan using _hyper_7_348_chunk_x_500_ts_idx;
+  15m: latest-per-symbol ms=43.148  one-symbol 30d ms=6.649  one-symbol all ms=31.632  cross-section ms=0.194 (rows 500)
+      cross-section plan: Index Scan using _hyper_7_371_chunk_x_500_ts_idx;
+  free now: host C: 1316 GB, VM disk 891 GB
+DONE
+lowest seen: host C: 1316 GB free (start 1316); VM disk 891 GB free (start 893, used by this run: 2020 MB)
+end: host C: 1316 GB free (started 1316 GB)
