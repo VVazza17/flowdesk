@@ -164,6 +164,9 @@ below).
   yet (step 4 backfill, step 6 poll). **Step 6 requirement (Kyle, 2026-11-18): the 15m feed is self-contained, not ordering-dependent.** Every
   15m run fetches its own daily actions=True batch (same symbols, same window plus the next session) and checks any new split against stored
   ones before accepting a 15m bar: an insert-only table cannot fix a 15m bar stored split-adjusted but labelled `live`. `mutation-check.sh m2-slice6-step3`.
+  **Step 4 built and run (2026-11-18): `python -m app.bars_backfill`**, 2 years daily, `feed = 'backfill'`, ON CONFLICT DO NOTHING (a re-run writes
+  0), a re-fetch that differs fails the symbol and overwrites nothing (D3), batches of at most 24. Dev stack: 24 x 499 bars (2024-11-19 to
+  2026-11-16), 5 splits, verified in SQL. **Yahoo's Adj Close differs at ~1e-7 between fetches minutes apart**: the re-fetch job needs a tolerance.
 - **The base image is pinned by digest** (M2 slice 0, 2026-11-08). The `FROM` line in `backend/Dockerfile` is
   the one definition. The CI tooling container, `lock-deps.sh` and the smokes read it through
   `infra/base-image.sh`, and lint fails on a second definition. The base no longer updates itself: the daily
@@ -355,11 +358,12 @@ bash infra/smoke-m2-slice5-fred-failures.sh # M2 slice 5: FRED 500/423/429 via a
 bash infra/smoke-m2-beat-schedule.sh # IDEA-043: image owns /var/lib/beat, compose volume, a recreated Beat catches up a missed firing with the volume and not without it (~9 min)
 bash infra/smoke-m2-slice2.sh     # M2 slice 2: encrypt, SFTP copy to stand-in sshd (3 permission policies), restore with the private key only
 docker compose run --rm worker python -m app.backfill   # FRED revision history, every series not yet captured; --series A,B [--force]
+docker compose run --rm worker python -m app.bars_backfill   # 2 years of settled daily bars, every mapped symbol; --symbols A,B. A re-run writes 0
 bash infra/backup.sh              # dump + manifest into dumps/. Restoring and the version trap: docs/BACKUP.md
 bash infra/restore.sh dumps/<name>.dump --db <new-or-empty-db>   # refuses a non-empty target
 bash infra/restore-backup.sh <name>.tar.age --identity <age key> --db <new-or-empty-db>   # a scheduled backup, on the desktop
 bash infra/mutation-check.sh m2-slice6-step2   # rule 9 mutations in a copy of backend/ (backend/tools/mutate.py); each must be caught
-bash infra/mutation-check.sh m2-slice6-step3   # the yfinance client and parser (also: heartbeat-clock)
+bash infra/mutation-check.sh m2-slice6-step3   # the yfinance client and parser (also: heartbeat-clock, m2-slice6-step4)
 bash infra/ci-checks.sh lint      # also: test | audit | license | arm64. Same code ci.yml runs
                                   # LINT COVERAGE (pinned by backend/tests/test_lint_coverage.py): the gate runs INSIDE backend/ as
                                   #   `ruff check .`, `ruff format --check .`, `mypy` (config: backend/pyproject.toml; mypy `files` =
