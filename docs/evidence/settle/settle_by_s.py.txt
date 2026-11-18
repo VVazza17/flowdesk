@@ -10,8 +10,9 @@ revision happened at some instant in that interval, never known more precisely. 
   after     t_prev >= P            the revision certainly happened after P (a stored first-settled value would differ)
   straddles t_prev <  P < t_cur    it may have happened after P; the snapshots cannot say
   before    t_cur  <= P            it certainly happened before P
-'Tested' counts rows with at least one pair of observations both at or after P: only those rows could have shown a
-post-P revision. A candidate with 0 'after' and few 'tested' rows is unmeasured, not clean.
+'Tested' counts rows with two observations at or after P at least 12 h apart (so at least one overnight lies between them):
+only those rows could have shown a post-P revision. Two looks minutes apart (11:15 and 11:18 ET on 2026-11-18) test nothing.
+A candidate with 0 'after' and few 'tested' rows is unmeasured, not clean.
 Session closes are hard-coded (all 16:00 ET; no early close in 2026-11-10..19).
 """
 
@@ -135,7 +136,7 @@ for g, (iv, fields) in GROUPS.items():
                 continue
             p = P(datetime.fromisoformat(k).date())
             post = [o[0] for o in seq if o[0] >= p]
-            if len(post) >= 2:
+            if len(post) >= 2 and (post[-1] - post[0]) >= timedelta(hours=12):
                 tested += 1
                 gap = (post[0] - p).total_seconds() / 3600
                 first_look[k[:10]] = min(gap, first_look.get(k[:10], gap))

@@ -2948,7 +2948,7 @@ It follows `FlowDesk-settle-probe`, whose last trigger is 2026-11-18 09:00 ET. T
 
 ### Addendum 2026-11-18 — settle measurement: the S proposal per interval (S NOT set; Kyle's)
 
-Evidence (`docs/evidence/settle/`): four snapshots, `compare-2026-11-18.txt` (consecutive diffs, `compare.py.txt`), and
+Evidence (`docs/evidence/settle/`): five snapshots, `compare-2026-11-18.txt` (consecutive diffs, `compare.py.txt`), and
 `settle-by-s-2026-11-18.txt` from the new `settle_by_s.py.txt`, which also reads step 1(b)'s Monday 12:13 / 12:28 ET SPY fetches.
 It brackets each revision of a **completed** bar as (previous look, next look], ages from the session's 16:00 ET close, then counts,
 for each candidate settle point P, revisions certainly after P ("after"), possibly after ("straddles"), and the rows whose post-P
@@ -2963,13 +2963,18 @@ window was looked at twice ("tested", with the gap from P to the first look).
 - **A substitute was taken by hand: Wed 2026-11-18 11:15 ET** (same `run.sh`, after starting Docker Desktop; in session, so
   Wednesday's rows are still forming; `settle_by_s.py.txt` drops observations made before a bar ended, `compare.py.txt` does not).
   It is the **first snapshot with 3 months of daily bars** (the 16:01 run that was to be the first never happened).
+- **A fifth snapshot, Wed 11:18 ET, was not taken by hand:** `FlowDesk-settle-probe`'s StartWhenAvailable catch-up of the missed 09:00
+  run (LastRunTime 11:18:17, result 0), which had been waiting for Docker since the 11:12 wake. Committed with the others.
+  Being 3 minutes after the 11:15 one, it tests nothing about settling (`settle_by_s.py.txt` counts a row as tested only when its
+  post-P looks are at least 12 h apart). **In-session, it shows SPY's 11:00 bar (ended 11:15) going from 735,252 to 15,549,598 shares
+  within 3 minutes of ending** (XLK's 11:00: +6.75%): F-b's inflated volume appears on a just-completed bar, not only later.
 - **Consequence:** the 16:00–18:26 window is unobserved for every session, and **Tuesday's session has one look only, so it measures
   nothing.** Night-1 behaviour (the first overnight after a session) is observed for **one session (Monday 11-16), three symbols.**
 - **Risk to the two-week tail (`FlowDesk-settle-daily`, from 2026-11-19 09:00):** same settings as the probe task (WakeToRun,
   StartWhenAvailable, DisallowStartIfOnBatteries, StopIfGoingOnBatteries, Interactive). The same failure is expected unless Docker
   Desktop is running before 09:00. Not changed: the task is Kyle's.
 
-#### Findings (MEASURED, from the four snapshots and the two midday fetches)
+#### Findings (MEASURED, from the five snapshots and the two midday fetches)
 
 - **15m prices: no revision of a completed 15m bar's price observed at any age after the close** (earliest look close+2h26, Monday;
   390 rows over five sessions, but only Monday's looked at within hours). 16:00–18:26 unobserved.
