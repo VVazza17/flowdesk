@@ -155,6 +155,8 @@ below).
   (`available_at` = effective open); `bar_gaps` (never deleted, resolved once); `universe_membership.close_reason` (two-way CHECK). All
   insert-only by trigger. `feed` is `poll` | `backfill`; **backfilled rows' `available_at` is the settle point, a recorded exception** (may
   include later corrections; a strict replay excludes `feed = 'backfill'`). Mutation-checked: `bash infra/mutation-check.sh m2-slice6-step2`.
+  **Untested by design: `interval` in `bars_intraday`'s key** (only `15m` is allowed, so no second interval can collide). **Whoever widens
+  `ck_bars_intraday_interval` adds the rule 9 test with a second interval and its mutation in the same commit.**
 - **The base image is pinned by digest** (M2 slice 0, 2026-11-08). The `FROM` line in `backend/Dockerfile` is
   the one definition. The CI tooling container, `lock-deps.sh` and the smokes read it through
   `infra/base-image.sh`, and lint fails on a second definition. The base no longer updates itself: the daily

@@ -75,6 +75,9 @@ SUITES: dict[str, tuple[str, list[Mutation]]] = {
                 '        comment=TABLE_COMMENTS["bars_daily"],',
                 "test_bar_key_is_per_symbol and bars_daily",
             ),
+            # NOT HERE, on purpose: bars_intraday's key losing `interval`. Only '15m' is allowed, so
+            # no test can collide two intervals. Whoever widens ck_bars_intraday_interval adds that
+            # test and this mutation in the same commit (BUILD-LOG, 2026-11-18).
             Mutation(
                 "bars_intraday key loses symbol_id",
                 M10,

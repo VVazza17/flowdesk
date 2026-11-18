@@ -3327,3 +3327,10 @@ support. The robust form records the last attempt's outcome directly instead of 
 measured by the wall clock runs ~8% long. Nothing in the design today depends on that precision (heartbeat 120 s, settle points hours, FRED 72 h).
 **But the rate limiter's spacing is a Redis key TTL on the same VM clock, so a configured spacing is about 8% shorter in real time** (step 3's yfinance
 budget must allow for it). Whether to fix the VM clock (Docker Desktop / WSL settings) is Kyle's; it is not changed.
+
+### 2026-11-18 — recorded: `bars_intraday`'s `interval` key column has no mutation test (Kyle)
+
+While `ck_bars_intraday_interval` allows only `'15m'`, no test can put two intervals side by side, so dropping `interval` from `bars_intraday`'s primary
+key would pass every test (the one gap in step 2's 38/38). **Rule: whoever widens that CHECK adds, in the same commit, a rule 9 test with a second
+interval whose rows would win the ordering, and the matching mutation in `backend/tools/mutate.py`.** Written beside the CHECK in
+`app/models/prices.py`, in the mutation suite, and in CLAUDE.md.

@@ -206,6 +206,9 @@ class BarIntraday(_BarColumns, Base):
         PrimaryKeyConstraint("symbol_id", "interval", "effective_at"),
         Index("ix_bars_intraday_effective_at", "effective_at"),
         *_bar_checks(),
+        # NOT MUTATION-TESTED while only '15m' is allowed: no second interval can exist, so dropping
+        # `interval` from the key above cannot be caught. Whoever widens this CHECK adds, in the same
+        # commit, a rule 9 test with a second interval and its mutation in tools/mutate.py.
         CheckConstraint("interval IN ('15m')", name="interval"),
         {"comment": TABLE_COMMENTS["bars_intraday"]},
     )
