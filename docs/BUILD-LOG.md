@@ -3334,3 +3334,39 @@ While `ck_bars_intraday_interval` allows only `'15m'`, no test can put two inter
 key would pass every test (the one gap in step 2's 38/38). **Rule: whoever widens that CHECK adds, in the same commit, a rule 9 test with a second
 interval whose rows would win the ordering, and the matching mutation in `backend/tools/mutate.py`.** Written beside the CHECK in
 `app/models/prices.py`, in the mutation suite, and in CLAUDE.md.
+
+### 2026-11-18 — step 3 STOPPED at the licence gate (yfinance's dependency tree); nothing of step 3 committed
+
+`yfinance==1.8.0` was pinned and locked (`bash infra/lock-deps.sh`), then the gates were run. **Reverted, not committed**: the licence gate fails, and
+IDEA-027 makes every new allow-list entry the owner's decision. Re-adding is the two lines in `requirements.txt` plus `lock-deps.sh`.
+
+**MEASURED 2026-11-18:**
+- **Licence gate: 73 packages, 4 not allowed.** All four are RUNTIME (they ship in the image). The licence text was read from each wheel's metadata
+  and licence file:
+
+| Package | Via | pip-licenses string | What the licence file says |
+|---|---|---|---|
+| certifi 2026.10.23 | curl-cffi, requests | `Mozilla Public License 2.0 (MPL 2.0)` | MPL-2.0 (a CA bundle). Weak copyleft, the `pathspec` precedent (`PACKAGE_EXCEPTIONS`), but that one is dev-only |
+| cffi 2.1.1 | curl-cffi | `MIT-0` (License-Expression) | MIT No Attribution: MIT minus the notice requirement |
+| peewee 4.5.3 | yfinance | `UNKNOWN` (no licence metadata at all) | MIT text ("Permission is hereby granted, free of charge…"), Copyright (c) 2010 Charles Leifer |
+| protobuf 7.36.2 | yfinance | `3-Clause BSD License` | BSD-3-Clause text, Google Inc.; an allowed licence under a spelling the allow-list does not have |
+
+- **Vulnerability audit: no known vulnerabilities** in any of the three locks.
+- **arm64 (QEMU, not hardware): the lock installs with binary wheels only (`--only-binary=:all:`) and `curl_cffi` 0.17.0, `yfinance` 1.8.0 and
+  `pandas` 3.1.1 import.** The lock moves numpy to 2.5.4; its licence expression must still match the exact one IDEA-027 reviewed (not checked,
+  since the gate stopped first on these four).
+
+**For Kyle, to decide together with the licence entries (none chosen):**
+1. **The four entries.** certifi needs a per-package MPL exception (and this one ships, unlike pathspec); cffi needs `MIT-0`; peewee needs an
+   expression exception keyed to `UNKNOWN` for that package after reading its MIT file (the numpy pattern); protobuf needs the spelling
+   `3-Clause BSD License`, globally or per package.
+2. **"Stored errors are `<kind>:<Class>` only."** Recorded today (HEALTH.md, slice 5): `providers_health.last_error` is exactly `<kind>:<Class>`;
+   `ingestion_runs.error` is `<kind>:<Class>: <text we wrote>`, never the library's; and D4 requires the run to NAME the dead symbols, which only
+   the second form can do. Claude reads the instruction as "nothing the library says is stored" (fixed-text exceptions, as the FRED client). The
+   literal reading would change HEALTH.md's format and contradict D4; flagged, not chosen.
+3. **Rate budget vs the limiter's wait.** The budget from the measured floor is one 24-ticker batch per 900 s. The limiter refuses after waiting 60 s
+   (`max_wait_seconds`), so a second request inside 15 minutes (the 15m batch after the daily one at the same settle time, or any retry) is refused
+   with `budget_unavailable`, by design. Scheduling must space the feeds (step 6). Also: the spacing is a Redis TTL on the VM clock, which runs ~8%
+   fast, so 900 s is about 830 s real, still far inside what was measured (batches 2 s apart).
+4. **D4's `likely_gone` after 5 sessions**: proposed derivation from stored data, not a new table: a symbol whose last stored bar is 5 or more sessions
+   behind the newest session any symbol in the batch stored. An outage that empties every symbol therefore never reads as 24 retirements.
