@@ -42,6 +42,11 @@ STATUS_SKIPPED = "skipped"
 # unchanged.
 FRED_BACKFILL = "ingest.fred_backfill"
 
+# The 2-year daily bars backfill (M2 slice 6, step 4): `python -m app.bars_backfill`, the
+# counterpart to `python -m app.backfill`. Not a Celery task, for the same reasons; this is its
+# name in `task_runs`.
+BARS_BACKFILL = "ingest.bars_backfill"
+
 # The daily FRED poll (M2 slice 5, step 3). A Celery task on the ingest queue, scheduled by Beat at
 # 08:00 America/New_York (6.4): it asks FRED only for what changed since each series was captured.
 FRED_POLL = "ingest.fred_poll"

@@ -37,9 +37,10 @@ from app.ingest.bars import (
 from app.ingest.errors import RateLimited, SchemaMismatch, Transient, health_error, run_error
 from tests.yfixtures import load, nyse
 
+# The 24 seeded symbols (settings.UNIVERSES), as recorded in daily_3mo_universe_plus_dead.
 UNIVERSE = [
-    *("XLK", "XLF", "XLE", "XLV", "XLI", "XLY", "XLP", "XLU", "XLB", "XLRE", "XLC"),
-    *("SMH", "IGV", "IBB", "SPY", "QQQ", "RSP", "USO", "UNG", "GLD", "SLV", "CPER", "URA", "DBA"),
+    *("XLK", "SMH", "IGV", "XLF", "XLE", "XLI", "XLV", "XLY", "XLP", "XLU", "XLB", "XLRE", "IWM"),
+    *("ARKK", "SPY", "QQQ", "RSP", "USO", "UNG", "GLD", "SLV", "CPER", "URA", "DBA"),
 ]
 DEAD = "ZZZQXFAKE"
 

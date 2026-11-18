@@ -1,0 +1,66 @@
+"""Measure how the yfinance Adj Close of identical bars differs between two fetches minutes apart.
+
+Measurement script, not repo code (named .txt so no linter picks it up). Read-only: it fetches one
+2-year daily batch through the real client and parser and compares each bar's Adj Close with the
+stored bar_total_return revision 0. Run in the worker container on the dev stack:
+
+    docker compose run --rm -v "$(pwd -W)/docs/evidence:/e:ro" worker python /e/tr-drift-probe.py.txt
+"""
+
+import asyncio
+from collections import defaultdict
+from datetime import UTC, datetime
+from decimal import Decimal
+
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+
+from app import settings
+from app.ingest.bars import DAILY, NEW_YORK, parse_batch
+from app.ingest.yfinance_client import YFinanceClient
+from app.services import bars_store
+
+
+async def main() -> None:
+    engine = create_async_engine(settings.database_url())
+    calendar = await bars_store.load_calendar(engine)
+    symbols = await bars_store.load_symbols(engine)
+    tickers = [m.provider_symbol for m in symbols]
+    by_id = {m.symbol_id: m.provider_symbol for m in symbols}
+    now = datetime.now(UTC)
+    batch = await YFinanceClient(max_batch=24).fetch(
+        tickers, DAILY, today=now.astimezone(NEW_YORK).date(), period="2y"
+    )
+    stored = await bars_store.load_splits(engine, by_id)
+    result = parse_batch(
+        batch.frame, batch.errors, tickers=tickers, interval=DAILY, calendar=calendar, now=now,
+        known_splits={by_id[i]: s for i, s in stored.items()},
+    )
+    async with engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                text("SELECT symbol_id, effective_at, value FROM bar_total_return WHERE revision = 0")
+            )
+        ).all()
+    old = {(by_id[r.symbol_id], r.effective_at): r.value for r in rows}
+    per = defaultdict(list)
+    raw_diff = 0
+    for t, bars in result.bars.items():
+        for b in bars:
+            v = old.get((t, b.effective_at))
+            if v is not None and v != b.total_return:
+                per[t].append((abs(b.total_return - v) / v, b.session_date, v, b.total_return))
+    print(f"fetched {now.isoformat()}; bars compared {sum(len(v) for v in result.bars.values())}")
+    print(f"differing {sum(len(v) for v in per.values())} across {len(per)} of {len(result.bars)} symbols")
+    for t, ds in sorted(per.items()):
+        worst = max(ds)
+        newest = max(ds, key=lambda d: d[1])
+        oldest = min(ds, key=lambda d: d[1])
+        print(
+            f"  {t}: {len(ds)} bars, sessions {oldest[1]} .. {newest[1]}, max rel {worst[0]:.2e} "
+            f"({worst[1]}: {worst[2]} -> {worst[3]})"
+        )
+    await engine.dispose()
+
+
+asyncio.run(main())

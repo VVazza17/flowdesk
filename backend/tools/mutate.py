@@ -30,6 +30,8 @@ M11 = "alembic/versions/0011_bar_gaps.py"
 M12 = "alembic/versions/0012_universe_membership_close_reason.py"
 BARS = "app/ingest/bars.py"
 CLIENT = "app/ingest/yfinance_client.py"
+STORE = "app/services/bars_store.py"
+BACKFILL = "app/bars_backfill.py"
 # The trigger-creating loop in 0010 and 0011 (each file has it once).
 TRIGGER_LOOP = (
     'for event, scope in (("UPDATE", "ROW"), ("DELETE", "ROW"), ("TRUNCATE", "STATEMENT")):'
@@ -47,6 +49,102 @@ class Mutation:
 
 
 SUITES: dict[str, tuple[str, list[Mutation]]] = {
+    "m2-slice6-step4": (
+        "tests/test_bars_backfill.py",
+        [
+            # --- rule 9: the re-fetch comparison is keyed by symbol ---
+            Mutation(
+                "the stored-bar comparison loses its symbol filter",
+                STORE,
+                "                    BarDaily.symbol_id == symbol_id, BarDaily.effective_at.in_(i"
+                "nstants)",
+                "                    BarDaily.effective_at.in_(instants)",
+                "test_a_refetch_that_differs",
+            ),
+            Mutation(
+                "a re-fetch that differs is accepted (D3)",
+                STORE,
+                "                and stored_raw[b.effective_at] != tuple(getattr(b, f) for f in R"
+                "AW_FIELDS)",
+                "                and False",
+                "test_a_refetch_that_differs",
+            ),
+            # --- idempotence ---
+            Mutation(
+                "bars_daily insert without ON CONFLICT DO NOTHING",
+                STORE,
+                "                .on_conflict_do_nothing()\n                .returning(BarDaily.e"
+                "ffective_at)",
+                "                .returning(BarDaily.effective_at)",
+                "test_a_second_run_writes_zero_rows",
+            ),
+            # --- what is written ---
+            Mutation(
+                "backfilled rows are labelled poll",
+                BACKFILL,
+                'BACKFILL_FEED_VALUE = "backfill"',
+                'BACKFILL_FEED_VALUE = "poll"',
+                "test_bars_total_returns_and_splits_are_written",
+            ),
+            Mutation(
+                "a split is knowable at its effective close",
+                STORE,
+                "                        available_at=session.opens_at,",
+                "                        available_at=session.closes_at,",
+                "test_bars_total_returns_and_splits_are_written",
+            ),
+            Mutation(
+                "every total return takes the first bar's settle point",
+                STORE,
+                "                            # Revision 0 is knowable at the bar's settle point ("
+                "decided 2026-11-18).\n"
+                '                            "available_at": b.available_at,',
+                '                            "available_at": rows[-1].available_at,',
+                "test_bars_total_returns_and_splits_are_written",
+            ),
+            # --- coverage ---
+            Mutation(
+                "a young symbol is not reported as young",
+                STORE,
+                "first > window_first, missing))",
+                "False, missing))",
+                "test_coverage_reports",
+            ),
+            Mutation(
+                "a hole inside a span is not reported",
+                STORE,
+                "        missing = tuple(d for d in expected if first <= d <= last and d not in p"
+                "resent)",
+                "        missing: tuple[date, ...] = ()",
+                "test_coverage_reports",
+            ),
+            # --- batches and D4 ---
+            Mutation(
+                "every symbol in one batch, past max_batch",
+                BACKFILL,
+                "    batches = [symbols[i : i + max_batch] for i in range(0, len(symbols), max_ba"
+                "tch)]",
+                "    batches = [symbols]",
+                "test_a_dead_symbol_fails_the_run_by_name",
+            ),
+            Mutation(
+                "likely_gone is judged within the batch only",
+                BACKFILL,
+                "            every = await bars_store.stored_sessions(engine, [m.symbol_id for m "
+                "in symbols])",
+                "            every = await bars_store.stored_sessions(engine, by_provider.values("
+                "))",
+                "test_likely_gone_is_judged_against_every_symbol",
+            ),
+            Mutation(
+                "a failed batch does not fail the run",
+                BACKFILL,
+                "    if errors:\n        # DECISION",
+                "    if False:\n        # DECISION",
+                "test_a_dead_symbol_fails_the_run_by_name",
+            ),
+        ],
+    ),
     "m2-slice6-step3": (
         "tests/test_yfinance_bars.py",
         [

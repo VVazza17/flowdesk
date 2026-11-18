@@ -363,7 +363,7 @@ bash infra/mutation-check.sh m2-slice6-step3   # the yfinance client and parser 
 bash infra/ci-checks.sh lint      # also: test | audit | license | arm64. Same code ci.yml runs
                                   # LINT COVERAGE (pinned by backend/tests/test_lint_coverage.py): the gate runs INSIDE backend/ as
                                   #   `ruff check .`, `ruff format --check .`, `mypy` (config: backend/pyproject.toml; mypy `files` =
-                                  #   app, tests, alembic, tools = every directory of Python we own; 125 files). NEVER check a list of
+                                  #   app, tests, alembic, tools = every directory of Python we own; 129 files). NEVER check a list of
                                   #   paths (`ruff check app tests` let alembic/ through). The repo-root ruff.toml is only a guard for a
                                   #   run from the repo root (it keeps the FROZEN spec and spikes/ out of `ruff format .`, which rewrites
                                   #   Markdown code blocks); it does not change what backend/ lints (the nearest config wins). Not

@@ -3465,3 +3465,54 @@ Written the turn they were given.
    Any split found and not yet stored is checked against stored splits under the existing rules (a disagreement fails the symbol, never
    overwrites) before a 15m bar is accepted. One extra batch per run, well inside the budget (one 24-ticker batch a minute). **This replaces the
    step 3 note "the 15m feed must run after the daily one"** (CLAUDE.md updated).
+
+### 2026-11-18 — M2 slice 6 step 4 built and run: the 2-year daily backfill
+
+`python -m app.bars_backfill [--symbols A,B]` (`app/bars_backfill.py`, storage in `app/services/bars_store.py`), the counterpart to
+`python -m app.backfill`: an entry point, through `run_recorded` (task name `ingest.bars_backfill`) and `run_feed` (provider `yfinance`, feed
+`bars_daily`), with a `backfill_runs` progress row (`yfinance.bars_daily`).
+
+- **Writes** `bars_daily` (`feed = 'backfill'`, `available_at` = the settle point, the recorded exception), `bar_total_return` revision 0 (its
+  `available_at` = the bar's settle point) and `splits` (`available_at` = the effective session's open), one transaction per batch, every insert
+  ON CONFLICT DO NOTHING.
+- **D3, a re-fetch never overwrites:** before inserting, each symbol's re-fetched bars are compared with the stored ones; if any raw price or
+  volume differs, none of that symbol's rows are written and it fails (`RefetchMismatch`, kind `schema_mismatch`: DECISION, there is no validation
+  kind until slice 7). A differing total return is counted, not failed (dividends rewrite Adj Close; later revisions are the re-fetch job's).
+- **Batches of at most `max_batch` (24)**, each its own `run_feed` and ingestion run, so each takes its own rate-budget slot (several fetches in one
+  body would go round the limiter). Found by the tests: 25 mapped symbols were refused as one batch. A failed batch does not stop the others; the run
+  fails at the end naming every failed symbol. D4's `likely_gone` is judged against the newest session ANY mapped symbol stored, across batches.
+- **Coverage per symbol** over the window: bars, first and last session, "younger than the window (first bar X), not a gap", or "MISSING n sessions
+  inside its span". Nothing writes `bar_gaps` (that record is the poll's, for unrecoverable intraday gaps).
+- Tests: `tests/test_bars_backfill.py` (8), on a migrated, seeded, session-synced scratch database with the recorded batches; rule 9 on the re-fetch
+  comparison (XLE contradicted, XLK re-fetches cleanly in the same run and its new rows are written). **Mutation check: 11/11 caught**
+  (`bash infra/mutation-check.sh m2-slice6-step4`, `docs/evidence/2026-11-18-step4-mutation-check.txt`).
+- **A test-data mistake found and fixed on the way:** the step 3 recorder's universe was typed from memory (XLC and IBB instead of IWM and ARKK). The
+  seeded universe is `settings.UNIVERSES`; `daily_3mo_universe_plus_dead.json` was re-recorded (2026-11-18 18:37 ET) with the right 24, and the bar
+  tests use the same list. The other fixtures are unchanged.
+
+**The real run, on the dev stack (MEASURED 2026-11-18, 18:43 ET):** one batch of 24, 2 years, about 10 s. **bars_daily +11,976, bar_total_return
++11,976, splits +5 (rows written 23,957); 48 unsettled rows skipped** (Tue 11-17 and Wed 11-18 for each symbol). **Every symbol: 499 bars,
+2024-11-19 to 2026-11-16; none younger than the window, no session missing.** Exit 0.
+
+**Verified against the stored data (SQL on the dev database, 2026-11-18):**
+1. **XLK 2025-12-04 in `bars_daily`: `c_raw` 291.070007324218760, `v_raw` 4,997,600, `reconstructed`, `feed = backfill`, `available_at`
+   2025-12-08 09:00 ET** (D+2). 2025-12-05: 146.60000610351562, `live`.
+2. **The five 2025-12-05 splits are in `splits`** (XLB, XLE, XLK, XLU, XLY; ratio 2.0; `available_at` 2025-12-05 09:30 ET). **For each, all 261
+   sessions before the split are rebuilt, every rebuilt volume whole and positive; no other symbol has a rebuilt row.**
+3. **As of 2026-01-15 08:59 ET the newest visible session is 2026-01-12; at 09:00 ET it is 2026-01-13.** Every one of the 11,976 bars has
+   `available_at` exactly 09:00 ET on the second session after its own (0 off), and none is in the future.
+4. **A second run wrote 0 rows** (`ingestion_runs` 283: read 11,976, written 0; table counts unchanged).
+
+**Findings from the run (MEASURED 2026-11-18; reported, not acted on):**
+- **Yahoo's Adj Close is not deterministic between requests.** Two fetches a minute apart, no dividend between them: 2,387 and then 2,679 stored
+  total returns differ, across 15 of 24 symbols, every difference about 1e-7 relative (the last float32 digit; e.g. QQQ 2025-01-29 516.443115234375
+  to 516.4429321289062). Raw OHLCV were identical (no false D3 mismatch). Evidence: `docs/evidence/2026-11-18-total-return-drift.txt` (probe
+  `tr-drift-probe.py.txt`). **Consequence for the periodic history re-fetch: compared exactly, Adj Close would create a spurious revision on almost
+  every run; it needs a tolerance.** That is the re-fetch job's design, not decided here.
+- **yfinance cannot create its timezone and cookie caches** in the worker image (`Permission denied: '/home/flowdesk'`), so it runs without them and
+  makes extra requests per batch. Step 1(b) measured with the caches working (a root container). Not changed; a writable cache path (e.g. under
+  `/tmp`) is a small client-side fix, for Kyle.
+- `providers_health` row (`yfinance`, `bars_daily`) has no stale threshold yet (`no_threshold`); the poll (step 6) gives the feed its threshold.
+
+**Gate (2026-11-18):** `ci-checks.sh lint` passes (mypy over 129 files); `ci-checks.sh test` **881 passed, 0 failed** (the live yfinance check ran on
+the dev stack and passed); `m2-slice6-step3` still 32/32 after the fixture correction.

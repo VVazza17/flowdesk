@@ -1,7 +1,7 @@
 """Record yfinance fixtures for the slice 6 step 3 client tests. Measurement script, not repo code
 (named .txt so no linter picks it up). Run in the pinned base image with the runtime lock installed:
 
-    python record.py.txt <out_dir>
+    python record.py.txt <out_dir> [name,name]     (default: every fixture)
 
 Each fixture is one `yfinance.multi._download_impl` call exactly as the client makes it (group_by
 ticker, auto_adjust=False, prepost=False, threads, progress off), with our own `_DownloadCtx` so the
@@ -18,8 +18,11 @@ from datetime import UTC, datetime
 import yfinance as yf
 from yfinance.multi import _download_impl, _DownloadCtx
 
+# The 24 seeded symbols, exactly settings.UNIVERSES (rotation 14 + SPY + QQQ, RSP + 7 commodity proxies).
+# Corrected 2026-11-18: the first recording used a list typed from memory (XLC and IBB instead of IWM
+# and ARKK); daily_3mo_universe_plus_dead was re-recorded with this one.
 UNIVERSE = [
-    "XLK", "XLF", "XLE", "XLV", "XLI", "XLY", "XLP", "XLU", "XLB", "XLRE", "XLC", "SMH", "IGV", "IBB",
+    "XLK", "SMH", "IGV", "XLF", "XLE", "XLI", "XLV", "XLY", "XLP", "XLU", "XLB", "XLRE", "IWM", "ARKK",
     "SPY", "QQQ", "RSP", "USO", "UNG", "GLD", "SLV", "CPER", "URA", "DBA",
 ]
 DEAD = "ZZZQXFAKE"
@@ -61,7 +64,10 @@ def record(name: str, call: dict) -> dict:
     }
 
 
+only = set(sys.argv[2].split(",")) if len(sys.argv) > 2 else set(CALLS)
 for name, call in CALLS.items():
+    if name not in only:
+        continue
     out = record(name, call)
     path = f"{sys.argv[1]}/{name}.json"
     with open(path, "w") as f:

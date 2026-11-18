@@ -1,0 +1,13 @@
+baseline: tests/test_bars_backfill.py pass unmutated
+   1. caught                   the stored-bar comparison loses its symbol filter  [-k test_a_refetch_that_differs]  1 failed, 7 deselected, 4 warnings in 1.83s
+   2. caught                   a re-fetch that differs is accepted (D3)  [-k test_a_refetch_that_differs]  1 failed, 7 deselected, 4 warnings in 1.82s
+   3. caught                   bars_daily insert without ON CONFLICT DO NOTHING  [-k test_a_second_run_writes_zero_rows]  1 failed, 7 deselected, 4 warnings in 1.88s
+   4. caught                   backfilled rows are labelled poll  [-k test_bars_total_returns_and_splits_are_written]  1 failed, 7 deselected, 4 warnings in 1.81s
+   5. caught                   a split is knowable at its effective close  [-k test_bars_total_returns_and_splits_are_written]  1 failed, 7 deselected, 4 warnings in 1.84s
+   6. caught                   every total return takes the first bar's settle point  [-k test_bars_total_returns_and_splits_are_written]  1 failed, 7 deselected, 4 warnings in 1.92s
+   7. caught                   a young symbol is not reported as young  [-k test_coverage_reports]  1 failed, 7 deselected, 4 warnings in 1.87s
+   8. caught                   a hole inside a span is not reported  [-k test_coverage_reports]  1 failed, 7 deselected, 4 warnings in 1.85s
+   9. caught                   every symbol in one batch, past max_batch  [-k test_a_dead_symbol_fails_the_run_by_name]  1 failed, 7 deselected, 4 warnings in 1.72s
+  10. caught                   likely_gone is judged within the batch only  [-k test_likely_gone_is_judged_against_every_symbol]  1 failed, 7 deselected, 4 warnings in 2.71s
+  11. caught                   a failed batch does not fail the run  [-k test_a_dead_symbol_fails_the_run_by_name]  1 failed, 7 deselected, 4 warnings in 2.74s
+11/11 mutations caught
