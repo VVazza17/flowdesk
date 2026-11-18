@@ -149,8 +149,12 @@ below).
 - **M2 slice 6 (bars): the settle point S is set, MEASURED 2026-11-18** (`docs/BUILD-LOG.md`, addendum 2026-11-18 second). A bar is stored in
   `bars` only after its settle point, `available_at` = that point, counted in sessions: **15m at 09:00 ET on D+1, daily at 09:00 ET on D+2.**
   Thin evidence (one session's night 1, three symbols; 16:00–18:26 unobserved); reopen daily to D+3 if the two-week tail (to 2026-12-03) shows
-  frequent post-D+2 revisions. **S controls freshness, not correctness:** `bars` keeps the first settled value and never changes. Step 2's schema
-  is proposed, not built.
+  frequent post-D+2 revisions. **S controls freshness, not correctness:** `bars` keeps the first settled value and never changes.
+  **Step 2 built (2026-11-18, migrations 0010-0012):** `bars_daily` (365-day chunks) and `bars_intraday` (28-day, `15m` only) instead of §8's one
+  `bars` (IDEA-046); time column `effective_at`; total return only in `bar_total_return` (latest revision = current); `splits`
+  (`available_at` = effective open); `bar_gaps` (never deleted, resolved once); `universe_membership.close_reason` (two-way CHECK). All
+  insert-only by trigger. `feed` is `poll` | `backfill`; **backfilled rows' `available_at` is the settle point, a recorded exception** (may
+  include later corrections; a strict replay excludes `feed = 'backfill'`). Mutation-checked: `bash infra/mutation-check.sh m2-slice6-step2`.
 - **The base image is pinned by digest** (M2 slice 0, 2026-11-08). The `FROM` line in `backend/Dockerfile` is
   the one definition. The CI tooling container, `lock-deps.sh` and the smokes read it through
   `infra/base-image.sh`, and lint fails on a second definition. The base no longer updates itself: the daily
@@ -345,10 +349,11 @@ docker compose run --rm worker python -m app.backfill   # FRED revision history,
 bash infra/backup.sh              # dump + manifest into dumps/. Restoring and the version trap: docs/BACKUP.md
 bash infra/restore.sh dumps/<name>.dump --db <new-or-empty-db>   # refuses a non-empty target
 bash infra/restore-backup.sh <name>.tar.age --identity <age key> --db <new-or-empty-db>   # a scheduled backup, on the desktop
+bash infra/mutation-check.sh m2-slice6-step2   # rule 9 mutations in a copy of backend/ (backend/tools/mutate.py); each must be caught
 bash infra/ci-checks.sh lint      # also: test | audit | license | arm64. Same code ci.yml runs
                                   # LINT COVERAGE (pinned by backend/tests/test_lint_coverage.py): the gate runs INSIDE backend/ as
                                   #   `ruff check .`, `ruff format --check .`, `mypy` (config: backend/pyproject.toml; mypy `files` =
-                                  #   app, tests, alembic, tools = every directory of Python we own; 113 files). NEVER check a list of
+                                  #   app, tests, alembic, tools = every directory of Python we own; 119 files). NEVER check a list of
                                   #   paths (`ruff check app tests` let alembic/ through). The repo-root ruff.toml is only a guard for a
                                   #   run from the repo root (it keeps the FROZEN spec and spikes/ out of `ruff format .`, which rewrites
                                   #   Markdown code blocks); it does not change what backend/ lints (the nearest config wins). Not

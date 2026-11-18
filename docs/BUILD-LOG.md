@@ -3227,3 +3227,54 @@ Written the turn they were given.
     inside the 60-day window).
 
 **Then: build step 2** (migrations, triggers, comments, rule 9 tests, mutation checks, container gate).
+
+### 2026-11-18 — M2 slice 6 step 2 built: the price schema (migrations 0010–0012)
+
+Built as approved (addendum 2026-11-18 third). Alembic head is now **0012**.
+
+- **`0010_price_tables`**: `bars_daily` (hypertable, 365-day chunks, PK `(symbol_id, effective_at)`), `bars_intraday` (hypertable, 28-day chunks,
+  PK `(symbol_id, interval, effective_at)`, `interval` CHECK `'15m'`), `bar_total_return` (plain, PK `(symbol_id, effective_at, revision)`), `splits`
+  (plain, PK `(symbol_id, effective_at DATE)`, `ratio > 0`). CHECKs on the bars: `raw_basis` (three values), **`feed IN ('poll', 'backfill')`**,
+  `venue_scope IN ('provider_default')`, `available_at > effective_at`. The hypertables are created with `create_default_indexes => false` plus a named
+  plain btree on `effective_at` (TimescaleDB's DESC default cannot be declared on a model, so `alembic check` would report drift).
+- **`0011_bar_gaps`**: identity PK, UNIQUE `(symbol_id, interval, missing_from)`, half-open `[missing_from, missing_to)`, CHECKs on interval,
+  non-empty range and `resolved_at >= recorded_at`.
+- **`0012_universe_membership_close_reason`**: the column plus the two-way CHECK and the three-value CHECK, as decided.
+- **Insert-only triggers** (UPDATE, DELETE, TRUNCATE) on all four 0010 tables and on `bar_gaps`. **DECISION, one deviation from 0005's form, not its
+  rule:** the function compares the whole row as `jsonb` minus `ingestion_run_id`, instead of 0005's hand-written column list, so a column added later
+  is covered without anyone remembering to list it. The carve-out is the same (clearing `ingestion_run_id`, which ON DELETE SET NULL needs).
+  `bar_gaps`' function also lets `resolved_at` go from NULL to a value, once.
+- **Comments on every column and table**; each time column's comment starts `TIME COLUMN.` and says what the instant means, including the settle points
+  (D+1, D+2) and the backfill exception. Models in `app/models/prices.py` carry the same literals (`alembic check` compares them).
+- **`feed` is the closed pair `poll | backfill`** (DECISION, from Kyle's "every backfilled row carries feed = backfill"): a strict replay's
+  `feed <> 'backfill'` cannot be defeated by a spelling. The proposal's `yfinance.daily.backfill` form is not used.
+
+**Measured while building (MEASURED 2026-11-18, the tests on TimescaleDB 2.31.0):** a BEFORE TRUNCATE trigger on a hypertable fires (TRUNCATE is
+refused), and the row triggers are cloned onto chunks (an UPDATE or DELETE addressed to a chunk table directly is refused too).
+**Known ways around the triggers, all DDL, none a data path:** DROP TABLE, and TimescaleDB's `drop_chunks()` (drops chunk tables, no row trigger
+fires). Nothing in FlowDesk calls `drop_chunks` (IDEA-044: no retention policy). Stated in 0010's docstring.
+
+**Tests: `backend/tests/test_price_tables.py`, 125 tests.** Shape (columns, keys, hypertables and chunk intervals, indexes, comments), every CHECK both
+ways, every trigger and its carve-out, the downgrade to 0009 and back. **Rule 9:** every key test has a second symbol whose rows would win every
+ordering the key applies (the same instant and a later one, larger values; higher revisions; an earlier-recorded gap), and asserts those rows are
+exactly as they were; the run-pointer test purges one run and asserts the other symbol's pointer is untouched; the gap-resolve and membership-close
+writes are keyed and leave the other row alone.
+
+**Mutation check: 38/38 caught** (`bash infra/mutation-check.sh m2-slice6-step2`, driver `backend/tools/mutate.py`; output
+`docs/evidence/2026-11-18-step2-mutation-check.txt`). Each mutation breaks one snippet in a copy of `backend/` inside the container (the working tree is
+never touched), runs only the tests named for it, and counts as caught only on a real test FAILURE with no ERROR, so a mutation that broke the
+migration itself cannot pass for a catch. Only `test_price_tables.py` runs: `alembic check` would flag most schema mutations as drift, which would say
+nothing about these tests. Covered: each key losing a column (5 tables), each CHECK loosened or removed, each trigger removed, the jsonb comparison
+ignoring a column, the carve-out too loose and too strict, ON DELETE SET NULL removed, the chunk intervals, the default indexes, the comments.
+**Not mutation-testable yet:** `bars_intraday`'s `interval` in the key (only one value is allowed, so no second interval can exist to collide).
+
+**Gates:** `ci-checks.sh lint` passes (ruff, format, mypy over 119 files, banned phrases). `ci-checks.sh test`: **807 passed, 0 failed** (2026-11-18, third run). Two earlier runs failed: the first on two `test_reference_tables.py` tests that
+0012 changes correctly (the pinned column list gains `close_reason`; a hand-closed interval must now carry a reason, so the test sets
+`removed_by_operator`; what it checks, that the seed never reopens a closed interval, is unchanged); the second on
+**`test_task_heartbeat.py::test_a_task_longer_than_three_intervals_keeps_its_heartbeat_advancing`, a PRE-EXISTING INTERMITTENT FAILURE, not caused
+by this step**: under full-suite load a read of `task_runs.heartbeat_at` went backwards (17:30:37.302 then 17:30:36.848). It passed 5 of 5 alone and in
+the other two full runs. Not investigated or fixed here (out of scope); flagged for Kyle.
+The dev database was rebuilt and migrated to 0012 (`docker compose up -d`; `/health/ready` 200; the 24 memberships untouched, `close_reason` NULL).
+
+**Not done here, by design:** no ingest writes these tables yet (steps 3–4), the 24 yfinance `provider_mappings` (step 3, through the seed), the
+periodic history re-fetch job (step 3 or 4), the operator command that sets `close_reason`.

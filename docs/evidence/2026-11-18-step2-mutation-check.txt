@@ -1,0 +1,40 @@
+baseline: tests/test_price_tables.py passes unmutated
+   1. caught                   bars_daily key loses symbol_id  [-k test_bar_key_is_per_symbol and bars_daily]  1 failed, 124 deselected in 0.94s
+   2. caught                   bars_intraday key loses symbol_id  [-k test_bar_key_is_per_symbol and bars_intraday]  1 failed, 124 deselected in 0.97s
+   3. caught                   bar_total_return key loses revision  [-k test_total_return_key]  1 failed, 124 deselected in 0.88s
+   4. caught                   bar_total_return key loses symbol_id  [-k test_total_return_key]  1 failed, 124 deselected in 0.92s
+   5. caught                   splits key loses symbol_id  [-k test_splits_key]  1 failed, 124 deselected in 1.01s
+   6. caught                   bar_gaps uniqueness loses interval  [-k test_gap_uniqueness]  1 failed, 124 deselected in 0.90s
+   7. caught                   bar_gaps uniqueness loses symbol_id  [-k test_gap_uniqueness]  1 failed, 124 deselected in 1.17s
+   8. caught                   bar_gaps has no uniqueness at all  [-k test_gap_uniqueness]  1 failed, 124 deselected in 0.73s
+   9. caught                   raw_basis check accepts anything  [-k test_bar_checks_refuse_bad_values and raw_basis]  1 failed, 123 deselected in 0.65s
+  10. caught                   feed check accepts anything  [-k test_bar_checks_refuse_bad_values and feed]  1 failed, 121 deselected in 0.76s
+  11. caught                   feed check is case-insensitive  [-k test_bar_checks_refuse_bad_values and feed]  1 failed, 2 passed, 121 deselected in 1.83s
+  12. caught                   venue_scope check accepts consolidated  [-k test_bar_checks_refuse_bad_values and venue_scope]  1 failed, 123 deselected in 0.74s
+  13. caught                   a bar may be available at its own open  [-k test_bar_checks_refuse_bad_values and available_at]  1 failed, 121 deselected in 0.63s
+  14. caught                   intraday interval check accepts anything  [-k test_intraday_interval]  1 failed, 124 deselected in 0.63s
+  15. caught                   total return has no settle check  [-k test_total_return_is_settled]  1 failed, 124 deselected in 0.72s
+  16. caught                   split ratio may be zero  [-k test_split_ratio]  1 failed, 123 deselected in 0.71s
+  17. caught                   gap interval accepts anything  [-k test_gap_checks]  1 failed, 121 deselected in 0.72s
+  18. caught                   gap range may be empty  [-k test_gap_checks]  1 failed, 1 passed, 121 deselected in 1.28s
+  19. caught                   gap may be resolved before it was recorded  [-k test_gap_checks]  1 failed, 3 passed, 121 deselected in 2.36s
+  20. caught                   close_reason check is one-way (closed needs a reason)  [-k test_close_reason]  1 failed, 4 passed, 118 deselected in 2.94s
+  21. caught                   close_reason check is one-way (a reason needs closed)  [-k test_close_reason]  1 failed, 5 passed, 118 deselected in 3.58s
+  22. caught                   close_reason accepts any value  [-k test_close_reason]  1 failed, 6 passed, 118 deselected in 4.13s
+  23. caught                   no UPDATE trigger on the observation tables  [-k test_no_stored_column_can_be_updated]  1 failed, 91 deselected in 0.81s
+  24. caught                   no DELETE trigger on the observation tables  [-k test_rows_cannot_be_deleted]  1 failed, 121 deselected in 0.77s
+  25. caught                   no TRUNCATE trigger on the observation tables  [-k test_rows_cannot_be_deleted]  1 failed, 121 deselected in 0.83s
+  26. caught                   the trigger ignores c_raw  [-k test_no_stored_column_can_be_updated and c_raw]  1 failed, 123 deselected in 0.70s
+  27. caught                   the run pointer may be repointed  [-k test_the_run_pointer and not bar_gaps]  1 failed, 121 deselected in 0.77s
+  28. caught                   no carve-out: a purged run cannot be deleted  [-k test_the_run_pointer and not bar_gaps]  1 failed, 121 deselected in 1.04s
+  29. caught                   purged runs are blocked (no ON DELETE SET NULL)  [-k test_the_run_pointer and not bar_gaps]  1 failed, 121 deselected in 1.01s
+  30. caught                   bar_gaps may be re-resolved or reopened  [-k test_a_gap_is_resolved_once]  1 failed, 124 deselected in 0.79s
+  31. caught                   bar_gaps trigger ignores missing_to  [-k test_nothing_else_about_a_gap and missing_to]  1 failed, 124 deselected in 0.83s
+  32. caught                   bar_gaps has no DELETE trigger  [-k test_a_gap_cannot_be_deleted]  1 failed, 124 deselected in 0.67s
+  33. caught                   bar_gaps run pointer may be repointed  [-k test_the_run_pointer and bar_gaps]  1 failed, 124 deselected in 0.82s
+  34. caught                   daily chunk interval is 7 days  [-k test_hypertables]  1 failed, 124 deselected in 0.70s
+  35. caught                   intraday chunk interval is 7 days  [-k test_hypertables]  1 failed, 124 deselected in 0.69s
+  36. caught                   TimescaleDB default indexes come back  [-k test_the_only_indexes]  1 failed, 123 deselected in 0.79s
+  37. caught                   a time column's comment no longer says it is one  [-k test_every_column_and_the_table_carry_a_comment and bars_intraday]  1 failed, 124 deselected in 0.73s
+  38. caught                   the daily settle point is not stated  [-k test_the_settle_points_are_stated]  1 failed, 124 deselected in 0.73s
+38/38 mutations caught

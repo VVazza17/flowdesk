@@ -155,7 +155,17 @@ class UniverseMembership(Base):
     """
 
     __tablename__ = "universe_membership"
-    __table_args__ = (PrimaryKeyConstraint("universe_id", "entity_id", "valid_from"),)
+    __table_args__ = (
+        PrimaryKeyConstraint("universe_id", "entity_id", "valid_from"),
+        # D4 (migration 0012): two-way, a reason exactly when the interval is closed.
+        CheckConstraint(
+            "(valid_to IS NULL) = (close_reason IS NULL)", name="close_reason_iff_closed"
+        ),
+        CheckConstraint(
+            "close_reason IN ('delisted', 'merged', 'removed_by_operator')",
+            name="close_reason_values",
+        ),
+    )
 
     # DECISION: the spec's name `entity_id` is kept (line 1111). It points at symbols.id; non-symbol
     # membership (macro metrics in a theme) is theme_members.ref_type's job, not this table's.
@@ -168,6 +178,14 @@ class UniverseMembership(Base):
     valid_to: Mapped[date | None] = mapped_column(Date)
     source: Mapped[str] = mapped_column(Text)
     available_at: Mapped[datetime] = mapped_column(TZ)
+    # Set only by the operator command that closes the interval, never by the seed (0012).
+    close_reason: Mapped[str | None] = mapped_column(
+        Text,
+        comment=(
+            "Why the membership ended: delisted, merged or removed_by_operator. Set exactly when "
+            "valid_to is set, by the operator command; NULL while the symbol is a member."
+        ),
+    )
 
 
 class TradingSession(Base):

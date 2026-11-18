@@ -59,7 +59,16 @@ NEW_TABLES = {
     ),
     "universes": (["id", "slug", "name", "description"], ["id"]),
     "universe_membership": (
-        ["entity_id", "universe_id", "valid_from", "valid_to", "source", "available_at"],
+        # close_reason: migration 0012 (D4).
+        [
+            "entity_id",
+            "universe_id",
+            "valid_from",
+            "valid_to",
+            "source",
+            "available_at",
+            "close_reason",
+        ],
         ["universe_id", "entity_id", "valid_from"],
     ),
     "trading_sessions": (
@@ -395,7 +404,9 @@ def test_an_interval_closed_by_hand_is_not_reopened(db: str) -> None:
     seed(db)
     rows(
         db,
-        "UPDATE universe_membership SET valid_to = DATE '2026-11-11' WHERE entity_id = "
+        # A close carries its reason (0012's two-way CHECK, D4), as the operator command will.
+        "UPDATE universe_membership SET valid_to = DATE '2026-11-11', "
+        "close_reason = 'removed_by_operator' WHERE entity_id = "
         "(SELECT id FROM symbols WHERE ticker = 'URA')",
     )
     result = seed(db)
