@@ -1,0 +1,69 @@
+"""Record yfinance fixtures for the slice 6 step 3 client tests. Measurement script, not repo code
+(named .txt so no linter picks it up). Run in the pinned base image with the runtime lock installed:
+
+    python record.py.txt <out_dir>
+
+Each fixture is one `yfinance.multi._download_impl` call exactly as the client makes it (group_by
+ticker, auto_adjust=False, prepost=False, threads, progress off), with our own `_DownloadCtx` so the
+per-ticker errors yfinance swallows are kept beside the frame. The frame is serialised losslessly:
+floats by repr (JSON round-trips them exactly), NaN as null, the index as ISO strings with its
+timezone recorded (daily batches are timezone-naive, F-c; intraday are timezone-aware).
+"""
+
+import json
+import math
+import sys
+from datetime import UTC, datetime
+
+import yfinance as yf
+from yfinance.multi import _download_impl, _DownloadCtx
+
+UNIVERSE = [
+    "XLK", "XLF", "XLE", "XLV", "XLI", "XLY", "XLP", "XLU", "XLB", "XLRE", "XLC", "SMH", "IGV", "IBB",
+    "SPY", "QQQ", "RSP", "USO", "UNG", "GLD", "SLV", "CPER", "URA", "DBA",
+]
+DEAD = "ZZZQXFAKE"
+
+CALLS = {
+    # Daily, 3 months, the whole universe plus a dead ticker; actions on (Capital Gains, Stock Splits).
+    "daily_3mo_universe_plus_dead": dict(tickers=UNIVERSE + [DEAD], period="3mo", interval="1d", actions=True),
+    # The five 2:1 splits of 2025-12-05 (step 1(b)), with the sessions either side.
+    "daily_split_2025_12_05": dict(
+        tickers=["XLK", "XLE", "XLY", "XLU", "XLB"], start="2025-11-26", end="2025-12-13", interval="1d", actions=True
+    ),
+    # NVDA 10:1 effective 2024-06-10: the D3 reference value (2024-06-07 rebuilds to about 1,208.88).
+    "daily_split_nvda_2024_06_10": dict(tickers=["NVDA", "SPY"], start="2024-06-03", end="2024-06-15", interval="1d", actions=True),
+    # 15-minute bars, 5 days, three symbols plus the dead one; actions off (the client's intraday call).
+    "m15_5d_three_plus_dead": dict(tickers=["SPY", "QQQ", "XLK", DEAD], period="5d", interval="15m", actions=False),
+}
+
+
+def record(name: str, call: dict) -> dict:
+    ctx = _DownloadCtx()
+    started = datetime.now(UTC).isoformat()
+    df = _download_impl(
+        ctx, call["tickers"], start=call.get("start"), end=call.get("end"), period=call.get("period"),
+        interval=call["interval"], actions=call["actions"], auto_adjust=False, prepost=False,
+        group_by="ticker", threads=True, progress=False,
+    )
+    tz = str(df.index.tz) if getattr(df.index, "tz", None) is not None else None
+
+    def cell(v):
+        return None if v is None or (isinstance(v, float) and math.isnan(v)) else float(v)
+
+    return {
+        "meta": {"name": name, "yfinance": yf.__version__, "fetched_at": started, "call": call},
+        "errors": dict(ctx.errors),
+        "index_tz": tz,
+        "index": [ts.isoformat() for ts in df.index],
+        "columns": [list(c) for c in df.columns],
+        "data": [[cell(v) for v in row] for row in df.itertuples(index=False, name=None)],
+    }
+
+
+for name, call in CALLS.items():
+    out = record(name, call)
+    path = f"{sys.argv[1]}/{name}.json"
+    with open(path, "w") as f:
+        json.dump(out, f, separators=(",", ":"))
+    print(path, len(out["index"]), "rows", len(out["columns"]), "columns", "tz", out["index_tz"], "errors", out["errors"])

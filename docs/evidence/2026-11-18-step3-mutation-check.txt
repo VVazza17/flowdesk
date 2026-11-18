@@ -1,0 +1,34 @@
+baseline: tests/test_ingest_errors.py, tests/test_license_audit.py, tests/test_reference_tables.py, tests/test_yfinance_bars.py, tests/test_yfinance_client.py pass unmutated
+   1. caught                   every symbol gets every symbol's known splits  [-k test_a_known_split_applies_to_its_own_symbol_only]  1 failed, 36 deselected, 4 warnings in 0.78s
+   2. caught                   likely_gone reads the oldest last bar of any symbol  [-k test_likely_gone_reads_each_symbols_own_last_bar]  1 failed, 36 deselected, 4 warnings in 0.77s
+   3. caught                   daily settles on D+1  [-k test_daily_bars_settle]  1 failed, 36 deselected, 4 warnings in 0.82s
+   4. caught                   15m settles on its own session  [-k test_intraday_bars_settle]  1 failed, 36 deselected, 4 warnings in 0.98s
+   5. caught                   a bar is stored a moment before its settle point  [-k test_one_microsecond_before]  1 failed, 36 deselected, 4 warnings in 0.94s
+   6. caught                   the clock no longer excludes unsettled bars  [-k test_daily_bars_settle]  1 failed, 36 deselected, 4 warnings in 0.85s
+   7. caught                   bars outside an early close are kept  [-k test_intraday_bars_outside]  1 failed, 36 deselected, 4 warnings in 0.86s
+   8. caught                   a split applies to its own session too  [-k test_xlk_rebuilds]  1 failed, 36 deselected, 4 warnings in 0.81s
+   9. caught                   splits are read only from settled rows  [-k test_a_split_on_an_unsettled]  1 failed, 36 deselected, 4 warnings in 0.81s
+  10. caught                   a disagreeing split is ignored  [-k test_a_stored_split_that_disagrees]  1 failed, 36 deselected, 4 warnings in 0.75s
+  11. caught                   a non-whole rebuilt volume is truncated  [-k test_a_rebuilt_volume_that_is_not_whole]  1 failed, 36 deselected, 4 warnings in 0.75s
+  12. caught                   Capital Gains is not a known column  [-k test_capital_gains]  1 failed, 36 deselected, 4 warnings in 0.79s
+  13. caught                   any extra column is accepted  [-k test_an_unknown_column]  1 failed, 36 deselected, 4 warnings in 0.82s
+  14. caught                   a naive intraday index is accepted  [-k test_a_naive_intraday]  1 failed, 36 deselected, 4 warnings in 0.75s
+  15. caught                   a daily date that is not a session is accepted  [-k test_a_daily_date_that_is_not_a_session]  1 failed, 36 deselected, 4 warnings in 0.75s
+  16. caught                   a missing field is not a failure  [-k test_a_bar_with_a_missing_field]  1 failed, 36 deselected, 4 warnings in 0.79s
+  17. caught                   a differing duplicate: last write wins  [-k test_a_differing_duplicate]  1 failed, 36 deselected, 4 warnings in 0.87s
+  18. caught                   an identical duplicate fails the symbol  [-k test_an_identical_duplicate]  1 failed, 36 deselected, 4 warnings in 0.81s
+  19. caught                   a rate limit is read as transient  [-k test_a_rate_limit_or_network_error_on_any_ticker_fails_the_batch and RateLimit]  1 failed, 36 deselected, 4 warnings in 0.74s
+  20. caught                   an unknown error class is counted as a dead symbol  [-k test_a_rate_limit_or_network_error_on_any_ticker_fails_the_batch and Timeout]  1 failed, 36 deselected, 4 warnings in 0.79s
+  21. caught                   likely_gone needs more than 5 sessions  [-k test_likely_gone_at_five]  1 failed, 36 deselected, 4 warnings in 0.72s
+  22. caught                   broken data no longer comes first  [-k test_the_run_names_every_failed_symbol]  1 failed, 36 deselected in 0.50s
+  23. caught                   the 15m start limit is 58 days  [-k test_a_15m_start_beyond_59_days]  1 failed, 19 deselected in 0.81s
+  24. caught                   intraday asks for actions  [-k test_daily_asks_for_actions]  1 failed, 19 deselected in 0.77s
+  25. caught                   a library rate limit becomes transient  [-k test_library_exceptions_become_ours and rate_limit]  1 failed, 19 deselected in 0.80s
+  26. caught                   the library exception is chained (its text travels)  [-k test_library_exceptions_become_ours]  1 failed, 13 deselected in 0.74s
+  27. caught                   auto_adjust is left to the library default  [-k test_the_real_call_shape]  1 failed, 19 deselected in 0.81s
+  28. caught                   the yfinance budget is not one batch a minute  [-k test_the_yfinance_budget]  1 failed, 19 deselected in 0.84s
+  29. caught                   run_error stores any exception's text  [-k test_nothing_a_library_says_is_ever_stored]  1 failed, 18 deselected in 0.06s
+  30. caught                   a disagreeing mapping is not reported  [-k test_a_disagreeing_mapping]  1 failed, 31 deselected in 0.94s
+  31. caught                   the seed inserts a mapping even when one is active  [-k test_seed_maps_every_symbol]  1 failed, 31 deselected in 1.16s
+  32. caught                   peewee's exception is not keyed to its version  [-k test_peewee_unknown]  1 failed, 32 deselected in 0.06s
+32/32 mutations caught

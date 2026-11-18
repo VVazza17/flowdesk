@@ -442,3 +442,62 @@ def test_a_stored_session_is_reported_when_the_library_disagrees_and_never_rewri
     assert [d for d in result.drift if "2025-07-07" in d]
     got = rows(db, "SELECT closes_at FROM trading_sessions WHERE session_date = '2025-07-07'")
     assert got[0][0] == datetime(2025, 7, 7, 21, 0, tzinfo=UTC)  # the tampered value was kept
+
+
+# --- yfinance provider mappings (M2 slice 6 step 3) ----------------------------------------------
+
+
+def test_seed_maps_every_symbol_to_its_yfinance_ticker(db: str) -> None:
+    result = seed(db)
+    assert result.provider_mappings == 24
+    got = rows(
+        db,
+        "SELECT s.ticker, m.external_id, m.id_kind, m.retired_at FROM provider_mappings m "
+        "JOIN symbols s ON s.id = m.symbol_id WHERE m.provider = 'yfinance'",
+    )
+    assert len(got) == 24
+    assert all(r.ticker == r.external_id and r.id_kind == "ticker" for r in got)
+    assert all(r.retired_at is None for r in got)
+    assert seed(db).provider_mappings == 0  # insert-only and idempotent
+
+
+def test_a_disagreeing_mapping_is_reported_never_rewritten_and_only_for_its_symbol(db: str) -> None:
+    # Rule 9: SPY's active mapping is changed by hand to a different string, and QQQ gets a mapping
+    # for another provider. A second seed must report SPY, rewrite nothing, add nothing, and leave
+    # QQQ's rows exactly as they were.
+    seed(db)
+    rows(
+        db,
+        "UPDATE provider_mappings SET external_id = 'SPY.OLD' WHERE provider = 'yfinance' "
+        "AND symbol_id = (SELECT id FROM symbols WHERE ticker = 'SPY')",
+    )
+    rows(
+        db,
+        "INSERT INTO provider_mappings (symbol_id, provider, id_kind, external_id) "
+        "SELECT id, 'stooq', 'ticker', 'qqq.us' FROM symbols WHERE ticker = 'QQQ'",
+    )
+    qqq_before = rows(
+        db,
+        "SELECT provider, external_id FROM provider_mappings m "
+        "JOIN symbols s ON s.id = m.symbol_id "
+        "WHERE s.ticker = 'QQQ' ORDER BY provider",
+    )
+    again = seed(db)
+    assert again.provider_mappings == 0
+    assert [d for d in again.drift if d.startswith("SPY: active yfinance mapping is 'SPY.OLD'")]
+    assert not [d for d in again.drift if d.startswith("QQQ")]
+    spy = rows(
+        db,
+        "SELECT external_id FROM provider_mappings m JOIN symbols s ON s.id = m.symbol_id "
+        "WHERE s.ticker = 'SPY' AND m.provider = 'yfinance'",
+    )
+    assert [r.external_id for r in spy] == ["SPY.OLD"]
+    assert (
+        rows(
+            db,
+            "SELECT provider, external_id FROM provider_mappings m "
+            "JOIN symbols s ON s.id = m.symbol_id "
+            "WHERE s.ticker = 'QQQ' ORDER BY provider",
+        )
+        == qqq_before
+    )

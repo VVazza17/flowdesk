@@ -28,6 +28,8 @@ BACKEND = Path(__file__).resolve().parent.parent
 M10 = "alembic/versions/0010_price_tables.py"
 M11 = "alembic/versions/0011_bar_gaps.py"
 M12 = "alembic/versions/0012_universe_membership_close_reason.py"
+BARS = "app/ingest/bars.py"
+CLIENT = "app/ingest/yfinance_client.py"
 # The trigger-creating loop in 0010 and 0011 (each file has it once).
 TRIGGER_LOOP = (
     'for event, scope in (("UPDATE", "ROW"), ("DELETE", "ROW"), ("TRUNCATE", "STATEMENT")):'
@@ -41,9 +43,260 @@ class Mutation:
     old: str
     new: str
     tests: str  # a pytest -k expression: the tests that must catch it
+    test_file: str | None = None  # when the catching tests live outside the suite's file
 
 
 SUITES: dict[str, tuple[str, list[Mutation]]] = {
+    "m2-slice6-step3": (
+        "tests/test_yfinance_bars.py",
+        [
+            # --- rule 9: values keyed by ticker ---
+            Mutation(
+                "every symbol gets every symbol's known splits",
+                BARS,
+                "                known_splits.get(ticker, ()),",
+                "                [s for v in known_splits.values() for s in v],",
+                "test_a_known_split_applies_to_its_own_symbol_only",
+            ),
+            Mutation(
+                "likely_gone reads the oldest last bar of any symbol",
+                BARS,
+                "        last = last_stored.get(ticker)",
+                "        last = min(v for v in last_stored.values() if v)",
+                "test_likely_gone_reads_each_symbols_own_last_bar",
+            ),
+            # --- the settle point (S, MEASURED 2026-11-18) ---
+            Mutation(
+                "daily settles on D+1",
+                BARS,
+                "SETTLE_SESSIONS_AFTER = {DAILY: 2, INTRADAY_15M: 1}",
+                "SETTLE_SESSIONS_AFTER = {DAILY: 1, INTRADAY_15M: 1}",
+                "test_daily_bars_settle",
+            ),
+            Mutation(
+                "15m settles on its own session",
+                BARS,
+                "SETTLE_SESSIONS_AFTER = {DAILY: 2, INTRADAY_15M: 1}",
+                "SETTLE_SESSIONS_AFTER = {DAILY: 2, INTRADAY_15M: 0}",
+                "test_intraday_bars_settle",
+            ),
+            Mutation(
+                "a bar is stored a moment before its settle point",
+                BARS,
+                "        if settle is None or settle > now:",
+                "        if settle is None or settle >= now + timedelta(seconds=1):",
+                "test_one_microsecond_before",
+            ),
+            Mutation(
+                "the clock no longer excludes unsettled bars",
+                BARS,
+                "        if settle is None or settle > now:",
+                "        if settle is None:",
+                "test_daily_bars_settle",
+            ),
+            Mutation(
+                "bars outside an early close are kept",
+                BARS,
+                "                or key + INTERVAL_LENGTH[interval] > session.closes_at",
+                "                or key > session.closes_at",
+                "test_intraday_bars_outside",
+            ),
+            # --- as traded (D3) ---
+            Mutation(
+                "a split applies to its own session too",
+                BARS,
+                "        if s.effective_at > session_date:",
+                "        if s.effective_at >= session_date:",
+                "test_xlk_rebuilds",
+            ),
+            Mutation(
+                "splits are read only from settled rows",
+                BARS,
+                "        if ratio is not None and not pd.isna(ratio) and ratio != 0:",
+                "        if ratio is not None and not pd.isna(ratio) and ratio != 0 and False:",
+                "test_a_split_on_an_unsettled",
+            ),
+            Mutation(
+                "a disagreeing split is ignored",
+                BARS,
+                "        if d in stored and stored[d] != ratio:",
+                "        if False:",
+                "test_a_stored_split_that_disagrees",
+            ),
+            Mutation(
+                "a non-whole rebuilt volume is truncated",
+                BARS,
+                "        if raw_volume != raw_volume.to_integral_value():",
+                "        if False:",
+                "test_a_rebuilt_volume_that_is_not_whole",
+            ),
+            # --- shape ---
+            Mutation(
+                "Capital Gains is not a known column",
+                BARS,
+                'ACTION_COLUMNS = frozenset({"Dividends", "Stock Splits", "Capital Gains"})',
+                'ACTION_COLUMNS = frozenset({"Dividends", "Stock Splits"})',
+                "test_capital_gains",
+            ),
+            Mutation(
+                "any extra column is accepted",
+                BARS,
+                "    extra = cols - set(PRICE_COLUMNS) - ACTION_COLUMNS",
+                "    extra: set[str] = set()",
+                "test_an_unknown_column",
+            ),
+            Mutation(
+                "a naive intraday index is accepted",
+                BARS,
+                '    if getattr(index, "tz", None) is None:',
+                "    if False:",
+                "test_a_naive_intraday",
+            ),
+            Mutation(
+                "a daily date that is not a session is accepted",
+                BARS,
+                "        if calendar.get(d) is None:",
+                "        if False:",
+                "test_a_daily_date_that_is_not_a_session",
+            ),
+            Mutation(
+                "a missing field is not a failure",
+                BARS,
+                "        if any(pd.isna(v) for v in prices):",
+                "        if False:",
+                "test_a_bar_with_a_missing_field",
+            ),
+            # --- duplicates (D5 iv) ---
+            Mutation(
+                "a differing duplicate: last write wins",
+                BARS,
+                "            if rows[key] != stamp:",
+                "            if False:",
+                "test_a_differing_duplicate",
+            ),
+            Mutation(
+                "an identical duplicate fails the symbol",
+                BARS,
+                "            continue  # an identical duplicate is deduplicated (D5 iv)",
+                '            raise DuplicateBar("identical")',
+                "test_an_identical_duplicate",
+            ),
+            # --- yfinance's swallowed errors ---
+            Mutation(
+                "a rate limit is read as transient",
+                BARS,
+                '            raise RateLimited("yfinance rate-limited the batch") from None',
+                '            raise Transient("yfinance rate-limited the batch") from None',
+                "test_a_rate_limit_or_network_error_on_any_ticker_fails_the_batch and RateLimit",
+            ),
+            Mutation(
+                "an unknown error class is counted as a dead symbol",
+                BARS,
+                '        raise Transient("yfinance could not fetch part of the batch") from None',
+                "        return None",
+                "test_a_rate_limit_or_network_error_on_any_ticker_fails_the_batch and Timeout",
+            ),
+            # --- D4 ---
+            Mutation(
+                "likely_gone needs more than 5 sessions",
+                BARS,
+                "        if behind >= LIKELY_GONE_SESSIONS:",
+                "        if behind > LIKELY_GONE_SESSIONS:",
+                "test_likely_gone_at_five",
+            ),
+            Mutation(
+                "broken data no longer comes first",
+                BARS,
+                "    if broken:\n        return SymbolsFailed(text)",
+                "    if broken:\n        return DeadSymbols(text)",
+                "test_the_run_names_every_failed_symbol",
+            ),
+            # --- the client ---
+            Mutation(
+                "the 15m start limit is 58 days",
+                CLIENT,
+                "            and start < today - timedelta(days=INTRADAY_START_LIMIT_DAYS)",
+                "            and start <= today - timedelta(days=INTRADAY_START_LIMIT_DAYS)",
+                "test_a_15m_start_beyond_59_days",
+                "tests/test_yfinance_client.py",
+            ),
+            Mutation(
+                "intraday asks for actions",
+                CLIENT,
+                "                actions=interval == DAILY,",
+                "                actions=True,",
+                "test_daily_asks_for_actions",
+                "tests/test_yfinance_client.py",
+            ),
+            Mutation(
+                "a library rate limit becomes transient",
+                CLIENT,
+                '        return RateLimited("yfinance reported a rate limit")',
+                '        return Transient("yfinance reported a rate limit")',
+                "test_library_exceptions_become_ours and rate_limit",
+                "tests/test_yfinance_client.py",
+            ),
+            Mutation(
+                "the library exception is chained (its text travels)",
+                CLIENT,
+                "            raise mapped from None",
+                "            raise mapped from exc",
+                "test_library_exceptions_become_ours",
+                "tests/test_yfinance_client.py",
+            ),
+            Mutation(
+                "auto_adjust is left to the library default",
+                CLIENT,
+                "        auto_adjust=False,\n",
+                "",
+                "test_the_real_call_shape",
+                "tests/test_yfinance_client.py",
+            ),
+            Mutation(
+                "the yfinance budget is not one batch a minute",
+                "app/settings.py",
+                '"yfinance": RateBudget(min_interval_seconds=60.0, max_batch=24),',
+                '"yfinance": RateBudget(min_interval_seconds=900.0, max_batch=24),',
+                "test_the_yfinance_budget",
+                "tests/test_yfinance_client.py",
+            ),
+            # --- nothing the library says is stored (Kyle, 2026-11-18) ---
+            Mutation(
+                "run_error stores any exception's text",
+                "app/ingest/errors.py",
+                "    if not isinstance(exc, ProviderError):\n        return health_error(exc)\n",
+                "",
+                "test_nothing_a_library_says_is_ever_stored",
+                "tests/test_ingest_errors.py",
+            ),
+            # --- the seed: insert-only, per symbol ---
+            Mutation(
+                "a disagreeing mapping is not reported",
+                "app/services/reference_seed.py",
+                "            elif have != wanted_symbol:",
+                "            elif False:",
+                "test_a_disagreeing_mapping",
+                "tests/test_reference_tables.py",
+            ),
+            Mutation(
+                "the seed inserts a mapping even when one is active",
+                "app/services/reference_seed.py",
+                "            if have is None:",
+                "            if True:",
+                "test_seed_maps_every_symbol",
+                "tests/test_reference_tables.py",
+            ),
+            # --- the licence gate (IDEA-027 addendum 2026-11-18) ---
+            Mutation(
+                "peewee's exception is not keyed to its version",
+                "tools/license_audit.py",
+                "VERSION_EXCEPTIONS.get((name.lower(), version), frozenset())",
+                'VERSION_EXCEPTIONS.get((name.lower(), "4.5.3"), frozenset())',
+                "test_peewee_unknown",
+                "tests/test_license_audit.py",
+            ),
+        ],
+    ),
     "heartbeat-clock": (
         "tests/test_task_heartbeat.py",
         [
@@ -389,11 +642,13 @@ def main(suite: str) -> int:
     with tempfile.TemporaryDirectory() as tmp:
         base = Path(tmp) / "clean"
         shutil.copytree(BACKEND, base, ignore=shutil.ignore_patterns("__pycache__", ".*"))
-        code, summary = pytest(base, test_file, None)
-        if code != 0:
-            print(f"FAIL: the unmutated suite does not pass (pytest exit {code}: {summary})")
-            return 1
-        print(f"baseline: {test_file} passes unmutated")
+        files = sorted({test_file, *(m.test_file for m in mutations if m.test_file)})
+        for f in files:
+            code, summary = pytest(base, f, None)
+            if code != 0:
+                print(f"FAIL: the unmutated {f} does not pass (pytest exit {code}: {summary})")
+                return 1
+        print(f"baseline: {', '.join(files)} pass unmutated")
         survived = 0
         for i, m in enumerate(mutations, 1):
             work = Path(tmp) / f"m{i}"
@@ -404,7 +659,7 @@ def main(suite: str) -> int:
                 print(f"FAIL: '{m.name}': snippet occurs {src.count(m.old)} times in {m.file}")
                 return 1
             target.write_text(src.replace(m.old, m.new), encoding="utf-8")
-            code, summary = pytest(work, test_file, m.tests)
+            code, summary = pytest(work, m.test_file or test_file, m.tests)
             ok = caught(code, summary)
             verdict = "caught" if ok else f"SURVIVED (pytest exit {code})"
             survived += not ok

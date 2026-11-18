@@ -154,8 +154,8 @@ def ingest_worker_stale_after() -> timedelta:
 
 # --- Ingest framework (M2 slice 4) -------------------------------------------------------------
 # Rate budgets by provider (app.ingest.budget). A provider with no entry cannot be called: the
-# limiter refuses rather than run unthrottled. yfinance (>=1 s spacing, ~100 per batch, §6.12) is
-# added by slice 6 and FRED by slice 5, each with a number it has verified.
+# limiter refuses rather than run unthrottled. §6.12's yfinance figure (>=1 s spacing, ~100 per
+# batch) is not used: slice 6 set its own from a measurement, and FRED's is slice 5's.
 #
 # FRED: one request a second, 60 a minute, half the documented cap. The cap is DOCUMENTED, NOT
 # MEASURED (no 429 has been observed). Kyle read FRED's errors page on 2026-11-12: "429 Too
@@ -163,9 +163,16 @@ def ingest_worker_stale_after() -> timedelta:
 # code. Not complying with the throttling can result in a temporary block.)" The half is
 # headroom for that being wrong and for a page that is not the whole story; the "temporary
 # block" is the cost of finding out.
+#
+# yfinance: one 24-ticker batch a minute (Kyle, 2026-11-18). MEASURED 2026-11-16 (step 1(b)): ten
+# 24-ticker batches 2 s apart and about 45 single calls in 20 minutes, no throttling; the threshold
+# was not found (deliberately not provoked). One a minute is 30x slower than what was measured, and
+# that safety factor is ASSUMED. The VM's ~8% fast clock (IDEA-048) is irrelevant at this spacing.
+# max_batch is the measured batch size; a bigger batch is unmeasured.
 RATE_BUDGETS: dict[str, RateBudget] = {
     "fake": RateBudget(min_interval_seconds=0.2, max_batch=100),
     "fred": RateBudget(min_interval_seconds=1.0, max_batch=1),
+    "yfinance": RateBudget(min_interval_seconds=60.0, max_batch=24),
 }
 
 

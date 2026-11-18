@@ -3394,3 +3394,54 @@ Written the turn they were given.
    (the VM clock: 8% fast, stepping back every 30 s; a dev-machine quirk, absent on a real server). Both in `docs/IDEAS.md`.
 
 Then: restore the yfinance dependency, re-lock, run the licence gate and audit, and continue step 3 as specified.
+
+### 2026-11-18 — M2 slice 6 step 3 built: the yfinance client
+
+Built to the recorded decisions; nothing writes bars yet (the backfill is step 4, the poll step 6).
+
+- **Dependency:** `yfinance==1.8.0`, hash-pinned (`requirements.lock`, curl-cffi 0.17.0, pandas 3.1.1, numpy 2.5.4). Licence gate 73 packages,
+  0 not allowed (after the IDEA-027 addendum); vulnerability audit clean; **`ci-checks.sh arm64` passes** under QEMU, and its explicit import list
+  now loads `_cffi_backend`, `curl_cffi.curl` (the compiled dependency), `yfinance` and the two new modules on every push.
+- **`app/ingest/yfinance_client.py`:** one batch per call, `auto_adjust=False` and `prepost=False` always, grouped by ticker, actions for daily only;
+  at most `max_batch` (24) distinct tickers; exactly one of `start` (poll) or `period` (backfill); a 15m `start` beyond 59 days is refused before
+  calling. Library exceptions become ProviderErrors with fixed text (`from None`); one the client does not know passes through and is stored as
+  `<kind>:<Class>` only.
+  **Finding, MEASURED 2026-11-18 by reading yfinance 1.8.0: `yf.download` swallows every per-ticker exception, a rate limit and a network error
+  included**, and returns an all-NaN group, so in the frame a rate-limited symbol looks dead. The client calls the private
+  `yfinance.multi._download_impl` with its own `_DownloadCtx` to read those errors (to classify; never stored). A test pins that function's
+  parameters against the installed version, so a yfinance bump that changes them fails in the gate.
+- **`app/ingest/bars.py` (pure: no DB, HTTP or clock):** columns by name (six required; Dividends, Stock Splits, Capital Gains allowed; anything
+  else is `schema_mismatch`); a naive daily index read as the session date and matched against the calendar, an aware one read in New York, a naive
+  intraday index rejected; intraday bars only inside the session window (D5 iii); **unsettled bars excluded by the clock** (09:00 New York on D+2
+  daily, D+1 15m); splits read from every row, settled or not, checked against stored splits (a disagreement fails the symbol, never overwrites);
+  prices as the float's shortest repr × later split ratios, volume ÷ those ratios, a non-whole result failing the symbol; identical duplicates
+  deduplicated, differing ones failing the symbol; a partly missing bar failing the symbol; dead symbols as all-NaN groups, classified by D4 as
+  `EmptyToday` or `LikelyGone` (5 or more sessions behind the newest stored session); one run failure naming every failed symbol in FlowDesk's words.
+- **Seed:** 24 `provider_mappings` (yfinance, `ticker`, the ticker itself), insert-only; a disagreeing active mapping is reported as drift, never
+  rewritten.
+- **Budget:** `RATE_BUDGETS["yfinance"] = RateBudget(60.0, 24)`.
+
+**Fixtures recorded 2026-11-18 16:56 ET with 1.8.0** (`backend/tests/fixtures/yfinance/`, recorder `record.py.txt`): daily 3 months for the 24 plus a
+dead ticker; the five 2:1 splits of 2025-12-05; NVDA's 10:1 of 2024-06-10; 15m 5 days for three plus the dead one.
+**MEASURED from them:** volume divides exactly on all six splits (Q6 holds on every case available); Capital Gains is present on the 24 ETFs and
+absent on NVDA (a stock), so it is allowed per ticker, not required; the dead ticker's group carries only the six price columns, all NaN, and
+yfinance's soft error `No data found, symbol may be delisted`; the prices are float32 values widened to float64. **A consequence of Q7 (repr,
+never rounded), recorded so it is not mistaken for a bug:** XLK 2025-12-04's adjusted Close is the float whose exact value is 145.535003662109375
+and whose shortest repr is 145.53500366210938, so its rebuilt as-traded Close is 291.07000732421876, not 291.07000732421875 (D3: the rebuilt value
+inherits the provider's rounding, here the repr's too). NVDA 2024-06-07 rebuilds to 1208.8800048828125 ("about 1,208.88", the D3 reference).
+
+**Tests:** `test_yfinance_bars.py` (pure, against the fixtures), `test_yfinance_client.py` (the request, the call shape, the exception mapping, and
+the two sinks read back from a real database through `run_feed`), seed mapping tests in `test_reference_tables.py`, the stored-error rule in
+`test_ingest_errors.py`, the licence entries in `test_license_audit.py`. **Rule 9:** a second ticker's stored split must not reach the first; a
+second ticker's older last bar must not decide the first's likely_gone; one symbol's broken data must leave the others' bars intact; a second
+symbol's mappings (another provider) are untouched by the seed.
+**Mutation check: 32/32 caught** (`bash infra/mutation-check.sh m2-slice6-step3`; `docs/evidence/2026-11-18-step3-mutation-check.txt`). One selector
+first matched no test (pytest exit 5); the tool counted that as SURVIVED, as designed, and the test's cases were given explicit ids.
+
+**Gate (2026-11-18):** `ci-checks.sh lint` passes (ruff, format, mypy over 125 files); `ci-checks.sh test` **872 passed, 0 failed**; `license` 73/0;
+`audit` clean; `arm64` passes under QEMU. The dev stack was rebuilt and re-seeded: 24 yfinance mappings, each equal to its ticker; `/health/ready` 200.
+
+**For step 4 and later, not done here:** writing `bars_daily`/`bars_intraday`/`bar_total_return`/`splits` (step 4's backfill, step 6's poll); the
+periodic history re-fetch (step 3 or 4, decided); reading `provider_mappings` into the batch (the client takes yfinance symbols); the 15m feed must
+run after the daily one, because intraday rows carry no `Stock Splits` column and rebuild only from stored splits (a split not yet stored would
+leave a 15m bar labelled `live` but split-adjusted). That ordering is step 6's to enforce.

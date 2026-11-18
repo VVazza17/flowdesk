@@ -45,6 +45,7 @@ async def run() -> None:
         universes=seeded.universes,
         symbols=seeded.symbols,
         memberships=seeded.memberships,
+        provider_mappings=seeded.provider_mappings,
         sessions_inserted=sessions.inserted,
         feeds_registered=feeds,
         drift=len(seeded.drift) + len(sessions.drift),

@@ -458,6 +458,30 @@ off for ingest tasks. Beat is the outer retry: the next firing tries again. A Ce
 `ingestion_runs` row for one logical run, which would break the record that idempotency is measured against
 (the §6.11 / §11 overlap is IDEA-042).
 
+### yfinance's failures (M2 slice 6, step 3): read from yfinance 1.8.0, not provoked
+
+**`yf.download` swallows every per-ticker exception** (a rate limit and a network failure included) and returns
+an all-NaN group for that ticker (MEASURED 2026-11-18 by reading yfinance 1.8.0). In the frame alone a rate-limited
+symbol looks dead. The client therefore calls `yfinance.multi._download_impl` with its own `_DownloadCtx` and reads
+the per-ticker errors to CLASSIFY them; they are never stored (`app/ingest/yfinance_client.py`, `app/ingest/bars.py`).
+No real yfinance rate limit has been seen; handling is tested against recorded batches and injected errors.
+
+| What happened | Kind | Effect | Note |
+|---|---|---|---|
+| A ticker's error is `YFRateLimitError`, or the call raised it | `rate_limited` | the whole batch fails, nothing stored | The next run is gap-driven and fills it. |
+| A ticker's error is a network class (`ReadTimeout`, `CurlError`, any class not known to mean "no data"), or the call raised a curl/requests/timeout/connection error | `transient` | the whole batch fails | Never counted as a dead symbol: dead symbols feed `likely_gone`. |
+| `YFInvalidPeriodError`, any other `YFException` raised by the call | `permanent` | the run fails | Our request was wrong. |
+| A ticker's group is all-NaN (soft "No data found", `YFPricesMissingError`, `YFTzMissingError`, or no error) | `empty_result` | **the good symbols' rows are kept; the run fails naming the dead** (D4) | `EmptyToday`, or **`LikelyGone` when its last stored bar is 5 or more sessions behind the newest session any symbol stored** (approved 2026-11-18). An operator prompt only: nothing retires a symbol on its own. |
+| A ticker's columns are not the known set; a differing duplicate bar; a bar with a missing field; a non-whole volume (as sent, or after dividing by later split ratios); a split ratio that disagrees with the stored one | `schema_mismatch` | that symbol fails, the others are kept; the run fails naming it | Never guessed, filled, rounded, or last-write-wins. |
+| A daily label that is not a `trading_sessions` date; a timezone-naive intraday index; a ticker that was not requested | `schema_mismatch` | the whole batch fails | |
+
+**Stored:** `providers_health.last_error` is `<kind>:<Class>` (e.g. `empty_result:DeadSymbols`); `ingestion_runs.error`
+adds FlowDesk's own text, e.g. `empty_result:DeadSymbols: no rows in this batch for: URA`. Nothing yfinance said is in
+either (`tests/test_yfinance_client.py` reads both back from the database).
+
+**Budget:** one 24-ticker batch a minute (`RateBudget(60.0, 24)`, Kyle 2026-11-18): 30x slower than the ten batches 2 s
+apart measured with no throttling on 2026-11-16; the safety factor is ASSUMED.
+
 ### What has and has not been shown for a killed FRED (M2 slice 5 gate, 2026-11-14)
 
 - **Shown on the real stack against real FRED: success only.** The backfill (17 series), the manual `ingest.fred_poll` runs and the Beat-fired run

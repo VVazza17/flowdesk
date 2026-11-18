@@ -157,6 +157,10 @@ below).
   include later corrections; a strict replay excludes `feed = 'backfill'`). Mutation-checked: `bash infra/mutation-check.sh m2-slice6-step2`.
   **Untested by design: `interval` in `bars_intraday`'s key** (only `15m` is allowed, so no second interval can collide). **Whoever widens
   `ck_bars_intraday_interval` adds the rule 9 test with a second interval and its mutation in the same commit.**
+  **Step 3 built (2026-11-18): the yfinance client** (`app/ingest/yfinance_client.py`, pure parsing in `app/ingest/bars.py`), yfinance 1.8.0 pinned.
+  `yf.download` swallows per-ticker errors (a rate limit looks like a dead symbol), so the client calls the PRIVATE `_download_impl` with its own
+  context; a test pins its signature: a yfinance bump re-checks it. Budget one 24-ticker batch a minute (safety factor ASSUMED). Nothing writes bars
+  yet (step 4 backfill, step 6 poll); **the 15m feed must run after the daily one** (15m rows carry no split column). `mutation-check.sh m2-slice6-step3`.
 - **The base image is pinned by digest** (M2 slice 0, 2026-11-08). The `FROM` line in `backend/Dockerfile` is
   the one definition. The CI tooling container, `lock-deps.sh` and the smokes read it through
   `infra/base-image.sh`, and lint fails on a second definition. The base no longer updates itself: the daily
@@ -352,10 +356,11 @@ bash infra/backup.sh              # dump + manifest into dumps/. Restoring and t
 bash infra/restore.sh dumps/<name>.dump --db <new-or-empty-db>   # refuses a non-empty target
 bash infra/restore-backup.sh <name>.tar.age --identity <age key> --db <new-or-empty-db>   # a scheduled backup, on the desktop
 bash infra/mutation-check.sh m2-slice6-step2   # rule 9 mutations in a copy of backend/ (backend/tools/mutate.py); each must be caught
+bash infra/mutation-check.sh m2-slice6-step3   # the yfinance client and parser (also: heartbeat-clock)
 bash infra/ci-checks.sh lint      # also: test | audit | license | arm64. Same code ci.yml runs
                                   # LINT COVERAGE (pinned by backend/tests/test_lint_coverage.py): the gate runs INSIDE backend/ as
                                   #   `ruff check .`, `ruff format --check .`, `mypy` (config: backend/pyproject.toml; mypy `files` =
-                                  #   app, tests, alembic, tools = every directory of Python we own; 120 files). NEVER check a list of
+                                  #   app, tests, alembic, tools = every directory of Python we own; 125 files). NEVER check a list of
                                   #   paths (`ruff check app tests` let alembic/ through). The repo-root ruff.toml is only a guard for a
                                   #   run from the repo root (it keeps the FROZEN spec and spikes/ out of `ruff format .`, which rewrites
                                   #   Markdown code blocks); it does not change what backend/ lints (the nearest config wins). Not

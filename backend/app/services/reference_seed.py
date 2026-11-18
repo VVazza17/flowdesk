@@ -27,6 +27,7 @@ from app import settings
 from app.models.reference import (
     Currency,
     Exchange,
+    ProviderMapping,
     Symbol,
     Universe,
     UniverseMembership,
@@ -52,6 +53,11 @@ EXCHANGES = (
 # 'etf' is a stopgap, since §8 gives asset_class no vocabulary (IDEA-033).
 SEED_ASSET_CLASS = "etf"
 
+# M2 slice 6 step 3: every seeded symbol gets a yfinance ticker mapping. For these 24 US ETFs the
+# yfinance symbol is the ticker itself; an exception (a class share written BRK-B) goes here.
+YFINANCE_PROVIDER = "yfinance"
+YFINANCE_SYMBOL_OVERRIDES: dict[str, str] = {}
+
 
 @dataclass(frozen=True)
 class SeedResult:
@@ -61,6 +67,7 @@ class SeedResult:
     symbols: int
     memberships: int
     drift: tuple[str, ...]
+    provider_mappings: int = 0
 
 
 def _utcnow() -> datetime:
@@ -191,6 +198,41 @@ async def seed_reference(
                         "config; interval left open (closing needs IDEA-040)"
                     )
 
+        # Provider mappings: insert-only, like the rest. A symbol that already has an ACTIVE
+        # yfinance ticker mapping keeps it; one that disagrees with config is reported, never
+        # rewritten (retiring a mapping is a deliberate act, IDEA-033).
+        active_maps = {
+            r.symbol_id: r.external_id
+            for r in (
+                await conn.execute(
+                    select(ProviderMapping.symbol_id, ProviderMapping.external_id).where(
+                        ProviderMapping.provider == YFINANCE_PROVIDER,
+                        ProviderMapping.id_kind == "ticker",
+                        ProviderMapping.retired_at.is_(None),
+                    )
+                )
+            ).all()
+        }
+        new_maps = 0
+        for ticker, sid in symbol_ids.items():
+            wanted_symbol = YFINANCE_SYMBOL_OVERRIDES.get(ticker, ticker)
+            have = active_maps.get(sid)
+            if have is None:
+                await conn.execute(
+                    pg_insert(ProviderMapping).values(
+                        symbol_id=sid,
+                        provider=YFINANCE_PROVIDER,
+                        id_kind="ticker",
+                        external_id=wanted_symbol,
+                    )
+                )
+                new_maps += 1
+            elif have != wanted_symbol:
+                drift.append(
+                    f"{ticker}: active yfinance mapping is {have!r}, config says "
+                    f"{wanted_symbol!r}; not rewritten"
+                )
+
     return SeedResult(
         currencies=len(new_ccy),
         exchanges=len(new_ex),
@@ -198,4 +240,5 @@ async def seed_reference(
         symbols=new_symbols,
         memberships=new_members,
         drift=tuple(drift),
+        provider_mappings=new_maps,
     )
