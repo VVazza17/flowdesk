@@ -1,0 +1,33 @@
+"""Does the container's wall clock step? Measurement script, not repo code (named .txt so no linter picks it up).
+
+    python clock-step-probe.py.txt <seconds>
+
+Samples CLOCK_REALTIME (what datetime.now() reads) and CLOCK_MONOTONIC (never steps) every 2 ms. A
+correct clock keeps (realtime - monotonic) constant apart from slow slewing. Prints every sample where
+realtime went BACKWARDS, and every jump of the offset larger than 20 ms, then a summary.
+"""
+
+import sys
+import time
+from datetime import UTC, datetime
+
+seconds = float(sys.argv[1]) if len(sys.argv) > 1 else 60
+end = time.monotonic() + seconds
+prev_rt = time.time()
+prev_off = prev_rt - time.monotonic()
+backwards = jumps = samples = 0
+worst = 0.0
+while time.monotonic() < end:
+    time.sleep(0.002)
+    rt, mono = time.time(), time.monotonic()
+    off = rt - mono
+    samples += 1
+    if rt < prev_rt:
+        backwards += 1
+        worst = min(worst, rt - prev_rt)
+        print(f"{datetime.fromtimestamp(rt, UTC).isoformat()} realtime went BACKWARDS by {prev_rt - rt:.6f} s", flush=True)
+    if abs(off - prev_off) > 0.020:
+        jumps += 1
+        print(f"{datetime.fromtimestamp(rt, UTC).isoformat()} offset jump {off - prev_off:+.6f} s", flush=True)
+    prev_rt, prev_off = rt, off
+print(f"SUMMARY samples={samples} backwards={backwards} worst_backwards={-worst:.6f}s offset_jumps={jumps} over {seconds:.0f}s", flush=True)

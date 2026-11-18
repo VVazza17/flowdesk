@@ -4,6 +4,7 @@ Rule 9 (CLAUDE.md) says a keyed test is checked by mutation: delete the key or f
 test fail. This runs that, for a named suite, without touching the working tree:
 
     python -m tools.mutate m2-slice6-step2      (from backend/, with DATABASE_URL set)
+    python -m tools.mutate heartbeat-clock
 
 For each mutation: copy backend/ to a temporary directory, replace one exact snippet in one file
 (the snippet must occur exactly once, so a stale mutation fails loudly instead of testing nothing),
@@ -43,6 +44,18 @@ class Mutation:
 
 
 SUITES: dict[str, tuple[str, list[Mutation]]] = {
+    "heartbeat-clock": (
+        "tests/test_task_heartbeat.py",
+        [
+            Mutation(
+                "heartbeat held at the maximum (GREATEST)",
+                "app/tasks/runs.py",
+                ".values(heartbeat_at=now)",
+                ".values(heartbeat_at=func.greatest(TaskRun.heartbeat_at, now))",
+                "test_a_clock_step_backwards",
+            ),
+        ],
+    ),
     "m2-slice6-step2": (
         "tests/test_price_tables.py",
         [

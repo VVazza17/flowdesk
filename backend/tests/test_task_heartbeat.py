@@ -5,7 +5,7 @@ variable. Real Postgres (a scratch database per test); intervals are shortened s
 import asyncio
 import threading
 from collections.abc import Awaitable, Callable
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 import pytest
@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from app.tasks import runs
 from app.tasks.runs import current_task_run_id, run_recorded, utcnow
 from app.tasks.sweep import sweep
+from tests.clocks import stepless_clock
 
 INTERVAL = 0.1
 
@@ -48,13 +49,51 @@ def test_a_task_longer_than_three_intervals_keeps_its_heartbeat_advancing(scratc
                 await asyncio.sleep(INTERVAL)
                 seen.append((await rows(engine, "SELECT heartbeat_at FROM task_runs"))[0])
 
-        await run_recorded(engine, "t.long", work, heartbeat_interval=INTERVAL)
+        # The clock is injected: what this test pins is the CODE's order (each beat is written from
+        # the clock at write time, by one sequential thread), not the OS wall clock's, which steps
+        # backwards on this machine (tests/clocks.py). With utcnow it failed 5 of 150 runs, each one
+        # straddling a measured step (docs/evidence/heartbeat-repeat-before.txt).
+        await run_recorded(
+            engine, "t.long", work, heartbeat_interval=INTERVAL, clock=stepless_clock()
+        )
         return [r["heartbeat_at"] for r in seen]
 
     beats = go(scratch_url, fn)
     assert beats == sorted(beats)
     assert len(set(beats)) >= 4  # written by the thread, while the body was not doing it
     assert heartbeat_threads() == []
+
+
+def test_a_clock_step_backwards_is_written_as_is_never_held_at_the_maximum(
+    scratch_url: str,
+) -> None:
+    # DECISION (2026-11-18): heartbeat_at follows the clock; no GREATEST(heartbeat_at, new). A
+    # backward step makes the row look up to ~2.5 s older than it is, against a 120 s freshness
+    # threshold judged on the same clock: harmless. GREATEST would turn a FORWARD step into a
+    # sticky one: a clock that jumps an hour ahead and is corrected would keep a dead task looking
+    # alive for that hour. This pins the choice: beats after a scripted 5 s step back are stored.
+    real = stepless_clock()
+    stepped = threading.Event()
+
+    def clock() -> datetime:
+        return real() - (timedelta(seconds=5) if stepped.is_set() else timedelta(0))
+
+    async def fn(engine: AsyncEngine) -> tuple[Any, Any]:
+        async def work() -> None:
+            await asyncio.sleep(INTERVAL * 3)
+            before = (await rows(engine, "SELECT heartbeat_at FROM task_runs"))[0]["heartbeat_at"]
+            stepped.set()
+            await asyncio.sleep(INTERVAL * 5)  # room for several beats after the step, under load
+            after = (await rows(engine, "SELECT heartbeat_at FROM task_runs"))[0]["heartbeat_at"]
+            seen.extend([before, after])
+
+        seen: list[Any] = []
+        await run_recorded(engine, "t.step", work, heartbeat_interval=INTERVAL, clock=clock)
+        return seen[0], seen[1]
+
+    before, after = go(scratch_url, fn)
+    assert after < before  # the stepped clock's value was written, not held at the old maximum
+    assert before - after < timedelta(seconds=5)
 
 
 @pytest.mark.parametrize(

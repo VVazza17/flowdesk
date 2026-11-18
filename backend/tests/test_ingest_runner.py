@@ -9,7 +9,7 @@ import asyncio
 import json
 import os
 import uuid
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -26,6 +26,7 @@ from app.ingest.fake import FakeProvider, InMemoryFakeStore, fake_body
 from app.ingest.runner import FeedContext, FeedResult, RetryPolicy, register_feeds, run_feed
 from app.services.health import assemble_providers
 from app.services.health_probes import SqlRedisProbes
+from tests.clocks import stepless_clock
 from tests.recorded import recorded
 
 ADMIN_URL = os.environ.get("DATABASE_URL", "")
@@ -89,6 +90,7 @@ async def _run(
     sleeps: Sleeps | None = None,
     provider: FakeProvider | None = None,
     secrets: Sequence[str] = (),
+    clock: Callable[[], datetime] | None = None,
 ) -> FeedResult:
     fake = provider or FakeProvider(script)
     async with recorded(engine):
@@ -101,6 +103,7 @@ async def _run(
             retry=POLICY,
             sleep=sleeps or Sleeps(),
             secrets=secrets,
+            **({"clock": clock} if clock else {}),
         )
 
 
@@ -230,9 +233,13 @@ def test_a_later_failure_does_not_erase_the_last_success(scratch_url: str) -> No
     async def go() -> dict[str, Any]:
         engine = create_async_engine(scratch_url)
         try:
-            await _run(engine, ["ok"])
+            # One stepless clock for both runs: the assertion below orders two instants written
+            # milliseconds apart, and this machine's wall clock steps back ~2.3 s every 30 s
+            # (tests/clocks.py). The ordering is the code's to guarantee, not the OS clock's.
+            clock = stepless_clock()
+            await _run(engine, ["ok"], clock=clock)
             with pytest.raises(Exception):  # noqa: B017, PT011
-                await _run(engine, ["permanent"])
+                await _run(engine, ["permanent"], clock=clock)
             return (await _all(engine, "SELECT * FROM providers_health"))[0]
         finally:
             await engine.dispose()

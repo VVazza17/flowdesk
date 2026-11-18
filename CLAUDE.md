@@ -353,7 +353,7 @@ bash infra/mutation-check.sh m2-slice6-step2   # rule 9 mutations in a copy of b
 bash infra/ci-checks.sh lint      # also: test | audit | license | arm64. Same code ci.yml runs
                                   # LINT COVERAGE (pinned by backend/tests/test_lint_coverage.py): the gate runs INSIDE backend/ as
                                   #   `ruff check .`, `ruff format --check .`, `mypy` (config: backend/pyproject.toml; mypy `files` =
-                                  #   app, tests, alembic, tools = every directory of Python we own; 119 files). NEVER check a list of
+                                  #   app, tests, alembic, tools = every directory of Python we own; 120 files). NEVER check a list of
                                   #   paths (`ruff check app tests` let alembic/ through). The repo-root ruff.toml is only a guard for a
                                   #   run from the repo root (it keeps the FROZEN spec and spikes/ out of `ruff format .`, which rewrites
                                   #   Markdown code blocks); it does not change what backend/ lints (the nearest config wins). Not
@@ -372,6 +372,9 @@ docker compose down               # add -v to wipe the pgdata volume; inactive p
 # emulation is not the arm64 gate: CI's arm64 job installs its own QEMU and is. Re-run 2026-11-08:
 # smoke-slice2.sh builds both architectures here and `ci-checks.sh arm64` passes (via smoke-slice8.sh), so
 # the old claims that either skips or fails with `exec format error` no longer hold.
+# NOTE: this machine's wall clock is NOT monotonic. Docker Desktop's WSL2 VM steps it back ~2.3 s every 30 s and runs it ~8% fast
+# (MEASURED 2026-11-18, docs/BUILD-LOG.md). A test that orders two datetime.now() readings is flaky here: inject tests/clocks.py's
+# stepless_clock(). Durations by wall clock (and Redis TTL spacing) run ~8% long/short. `bash infra/mutation-check.sh heartbeat-clock`.
 # Migration tests (skipped without DATABASE_URL), from backend/:
 #   DATABASE_URL=postgresql+asyncpg://flowdesk:<pw>@127.0.0.1:5432/flowdesk pytest
 ```

@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Repeat one test N times in the gate's container while the clock-step probe runs, and record each
+# iteration's wall-clock window, so failures can be matched to clock steps. Measurement script, not
+# repo code (named .txt). Run from the repo root:
+#   bash docs/evidence/heartbeat-repeat.sh.txt <test node id> <N> <label>
+# Writes docs/evidence/heartbeat-repeat-<label>.txt (pytest summary + per-iteration windows + probe).
+set -euo pipefail
+NODE="$1"; N="$2"; LABEL="$3"
+cd "$(dirname "$0")/../.."
+. infra/base-image.sh
+set -a; . ./.env; set +a
+. infra/lib.sh
+docker compose up -d postgres >/dev/null 2>&1; wait_ready postgres
+id=$(docker compose ps -q postgres)
+network=$(docker inspect -f '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{end}}' "$id")
+ROOT="$(pwd -W 2>/dev/null || pwd)"
+OUT="docs/evidence/heartbeat-repeat-$LABEL.txt"
+MOD="${NODE%%::*}"; MOD="${MOD%.py}"; MOD="${MOD//\//.}"; FN="${NODE##*::}"
+MSYS_NO_PATHCONV=1 docker run --rm --network "$network" -v "$ROOT:/repo:ro" -w /tmp \
+  -v flowdesk-pip-cache:/pipcache -e PIP_CACHE_DIR=/pipcache -e PIP_ROOT_USER_ACTION=ignore \
+  -e PIP_DISABLE_PIP_VERSION_CHECK=1 -e PYTHONDONTWRITEBYTECODE=1 \
+  -e "DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}" \
+  "$BASE_IMAGE" sh -ec "
+    pip install --quiet --require-hashes -r /repo/backend/requirements-dev.lock
+    cp -r /repo/backend /tmp/backend && cd /tmp/backend
+    cat > tests/test_zz_repeat.py <<PY
+import time
+from datetime import UTC, datetime
+import pytest
+from $MOD import $FN as target
+
+@pytest.mark.parametrize('i', range($N))
+def test_repeat(scratch_url, i):
+    t0 = datetime.now(UTC).isoformat()
+    try:
+        target(scratch_url)
+        ok = 'pass'
+    except BaseException:
+        ok = 'FAIL'
+        raise
+    finally:
+        with open('/tmp/windows.txt', 'a') as f:
+            f.write(f'{i} {ok} {t0} {datetime.now(UTC).isoformat()}\n')
+PY
+    python -u /repo/docs/evidence/clock-step-probe.py.txt 100000 > /tmp/probe.txt 2>&1 &
+    PROBE=\$!
+    python -m pytest -p no:cacheprovider -q tests/test_zz_repeat.py 2>&1 | grep -E 'passed|failed' | tail -1 > /tmp/summary.txt || true
+    kill \$PROBE 2>/dev/null || true
+    echo '== pytest'; cat /tmp/summary.txt
+    echo '== failing iterations (index, start, end)'; grep FAIL /tmp/windows.txt || echo none
+    echo '== clock steps seen by the probe during the run'; grep BACKWARDS /tmp/probe.txt || echo none
+    echo '== first and last iteration'; head -1 /tmp/windows.txt; tail -1 /tmp/windows.txt
+  " > "$OUT" 2>&1
+cat "$OUT"

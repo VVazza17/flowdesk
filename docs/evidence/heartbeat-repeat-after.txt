@@ -1,0 +1,15 @@
+== pytest
+150 passed in 197.07s (0:03:17)
+== failing iterations (index, start, end)
+none
+== clock steps seen by the probe during the run
+2026-11-18T21:11:34.955911+00:00 realtime went BACKWARDS by 2.478778 s
+2026-11-18T21:11:50.263851+00:00 realtime went BACKWARDS by 2.355303 s
+2026-11-18T21:12:19.966100+00:00 realtime went BACKWARDS by 2.470880 s
+2026-11-18T21:12:49.731695+00:00 realtime went BACKWARDS by 2.474684 s
+2026-11-18T21:13:19.501698+00:00 realtime went BACKWARDS by 2.476607 s
+2026-11-18T21:13:49.281136+00:00 realtime went BACKWARDS by 2.478859 s
+2026-11-18T21:14:19.038272+00:00 realtime went BACKWARDS by 2.477848 s
+== first and last iteration
+0 pass 2026-11-18T21:11:23.620700+00:00 2026-11-18T21:11:24.477319+00:00
+149 pass 2026-11-18T21:14:22.919195+00:00 2026-11-18T21:14:23.790141+00:00

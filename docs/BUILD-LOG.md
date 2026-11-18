@@ -3278,3 +3278,52 @@ The dev database was rebuilt and migrated to 0012 (`docker compose up -d`; `/hea
 
 **Not done here, by design:** no ingest writes these tables yet (steps 3–4), the 24 yfinance `provider_mappings` (step 3, through the seed), the
 periodic history re-fetch job (step 3 or 4), the operator command that sets `close_reason`.
+
+### 2026-11-18 — the heartbeat flake: the cause is this machine's wall clock, and the fix is in the tests
+
+`test_task_heartbeat.py::test_a_task_longer_than_three_intervals_keeps_its_heartbeat_advancing` failed once in the step 2 gate (a `heartbeat_at` read
+went from 17:30:37.302 to 17:30:36.848). Kyle: diagnosis first; a flaky test in the gate is a bug, never a re-run.
+
+**Diagnosis (each of Kyle's three questions):**
+- **Where the timestamp is computed:** in Python, `datetime.now(UTC)` (`app.tasks.runs.utcnow`), through the injected `clock`, for the insert, every beat and
+  the final write. Postgres's `now()` is never used; it would not help, because Postgres runs in the same VM on the same kernel clock.
+- **Two writers racing:** no. The backward read happened during the body, before any final write; the heartbeat thread is the only writer and is
+  sequential; the scratch database held one row.
+- **A timestamp computed before a slow UPDATE landing after a later one:** impossible with one sequential writer. And the bad value (36.848) is EARLIER
+  than the fixture's own first log line (36.900), written by the same process before the row existed. No ordering of writes can produce that; only a
+  clock that went backwards can.
+
+**Cause, MEASURED 2026-11-18 (`docs/evidence/clock-step-probe.py.txt`, CLOCK_REALTIME against CLOCK_MONOTONIC every 2 ms in a container):**
+**Docker Desktop's WSL2 VM steps the wall clock back about 2.2 to 2.5 s every 30 s**, idle (3 steps in 95 s) and under the full suite (11 in 330 s,
+worst 2.48 s). Kernel `5.15.167.4-microsoft-standard-WSL2`, clocksource `tsc`. Compared with the Windows clock (coarse: each reading bracketed within
+about ±0.8 s) the VM clock runs about 8% fast between steps and stays within roughly 0 to −2.5 s of it. ASSUMED explanation, not verified: a
+mis-calibrated TSC in the VM, corrected by the host's periodic time sync.
+
+**Reproduced before the fix:** the unchanged test run 150 times with the probe alongside (`docs/evidence/heartbeat-repeat.sh.txt`):
+**5 failed, 145 passed. Every failing iteration's end timestamp is earlier than its start, and each straddles a step the probe recorded**; the 2 steps
+that caused no failure fell outside a test body (`docs/evidence/heartbeat-repeat-before.txt`).
+
+**Fix: the test, because the false assumption lived there.** It asserted `beats == sorted(beats)` over real `datetime.now()` readings, i.e. that the OS
+wall clock is monotonic, which on this machine it is not. It now injects `tests/clocks.py`'s `stepless_clock()` (anchored once to the real clock, then
+advanced by `time.monotonic()`), so it pins what the code guarantees: each beat written from the clock, in order, by the one thread. **After:
+150 of 150 passed across 7 measured steps** (`heartbeat-repeat-after.txt`).
+
+**`GREATEST(heartbeat_at, new)` rejected, and pinned by a new test** (`test_a_clock_step_backwards_is_written_as_is_never_held_at_the_maximum`, 50 of
+50 passed, `heartbeat-repeat-after-step-test.txt`): it would mask the step and turn a FORWARD clock error into a sticky one (a clock an hour ahead,
+corrected, would keep a dead task looking alive for that hour). A backward step costs at most ~2.5 s of apparent age against a 120 s freshness
+threshold, judged on the same clock. Mutation-checked: `bash infra/mutation-check.sh heartbeat-clock` applies GREATEST to the beat and the new test
+catches it (1/1).
+
+**Same class, found by grepping the tests:** `test_ingest_runner.py::test_a_later_failure_does_not_erase_the_last_success` asserts
+`last_error_at >= last_success_at` for two runs milliseconds apart: the same latent flake (never observed). It now uses one `stepless_clock()` for
+both runs; `run_feed` already takes a `clock`. Gate after both: **808 passed**, lint clean (120 files).
+
+**Flagged for Kyle, NOT changed (a design change, not a flake fix):** `/health/providers` derives `last_attempt_failed` from
+`last_error_at > last_success_at` (`app/services/health.py`). On this clock, two attempts less than ~2.5 s apart can be ordered wrongly. Attempts on
+one feed are normally minutes apart, so the practical risk is small, but the inference orders events by wall clock, which this machine does not
+support. The robust form records the last attempt's outcome directly instead of inferring it.
+
+**Environment finding, for every later slice:** on this machine two wall-clock instants less than ~2.5 s apart cannot be ordered, and a duration
+measured by the wall clock runs ~8% long. Nothing in the design today depends on that precision (heartbeat 120 s, settle points hours, FRED 72 h).
+**But the rate limiter's spacing is a Redis key TTL on the same VM clock, so a configured spacing is about 8% shorter in real time** (step 3's yfinance
+budget must allow for it). Whether to fix the VM clock (Docker Desktop / WSL settings) is Kyle's; it is not changed.
