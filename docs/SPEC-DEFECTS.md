@@ -1373,3 +1373,43 @@ In session, a just-completed 15m bar's volume was seen jumping about 20x within 
 (2026-11-16: 22 bars over SPY/QQQ/XLK, −50% to −99%). **Provisional intraday volume is unreliable by up to an order of
 magnitude; any intraday computation that uses volume must treat it that way.** Prices showed no such problem (no price
 revision of a completed bar seen). Evidence: `docs/evidence/settle/`, BUILD-LOG addendum 2026-11-18 (second).
+
+---
+
+## IDEA-046: §8 `bars` is one table; the settled bars are built as two (`bars_daily`, `bars_intraday`)
+
+**Status:** Decided for the build (Kyle, 2026-11-18). Needs a spec correction release. **Flagged for the next one.** Blocks nothing.
+**Raised:** 2026-11-18 (M2 slice 6, step 2)
+
+### The proposal
+§8 gives one `bars(symbol_id, interval, ts, o_raw…, c_split_adj, c_total_return, v_split_adj, adjustment_factor, dollar_volume,
+PRIMARY KEY(symbol_id, interval, ts))` hypertable for every interval. Slice 6 builds two settled tables instead:
+**`bars_daily` (365-day chunks) and `bars_intraday` (28-day chunks; `interval` limited to `15m` for now).**
+
+### Why (MEASURED 2026-11-18, `docs/evidence/2026-11-18-bars-step2-benchmark.txt`, `SCENARIO=step2 bash infra/bench-bars.sh`)
+- A hypertable has one chunk interval. Daily bars on 365-day chunks: 253 B/row, every read under 1 ms; on 7-day chunks (what a mixed table with
+  15m bars would use): 756 B/row and 2 to 5 ms. 15m bars do best on 28-day chunks (250 B/row against 287 at 7 days).
+- The mixed one-table cross-section read was measured and is **not** the reason: 0.05 to 0.24 ms at 24 and 500 symbols.
+- The two have different settle points (daily 09:00 ET on D+2, 15m 09:00 ET on D+1), different write paths, and total return exists for daily only.
+
+### Related departures from §8 `bars`, same correction release
+- **The time column is `effective_at`, not `ts`**: the provenance vocabulary (IDEA-034) binds names on every observation table. A terminology
+  correction: slice 6's D5 wrote `ts` as shorthand.
+- **No `c_total_return`**: total return lives only in `bar_total_return`, with revisions (Kyle, 2026-11-18, superseding D2's
+  `bars.c_total_return`). "Current total return" is the latest revision there.
+- **No `c_split_adj`, `v_split_adj`, `adjustment_factor`**: under D3 (b) adjusted values are derived on read from `splits`.
+- **No `dollar_volume`**: derived from `c_raw × v_raw`; no M2 consumer.
+- **Added**: `raw_basis`, `source`, `feed`, `venue_scope`, `available_at`, `ingested_at`, `ingestion_run_id` (D1, IDEA-034).
+
+### Why it is parked
+The frozen spec cannot be edited in place.
+
+### The version that would be legitimate
+A correction release that replaces §8 `bars` with the two settled tables as built (migration 0010), names the time column `effective_at`, moves total
+return to `bar_total_return`, and records that adjusted prices are derived on read from `splits`.
+
+### Drift class
+Not a row on the canonical list: the trigger is a measurement and a design decision, not a spec revision.
+
+### Unfreeze triggers
+The next spec correction release.

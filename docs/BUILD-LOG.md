@@ -3195,3 +3195,35 @@ mutation; `bars_intraday` cannot yet have a second interval value, so the second
    cannot be measured; the client reconstructs from `splits` either way.
 
 **State: S set. Step 2 PROPOSED, not built. No migration until Kyle approves.**
+
+### Addendum 2026-11-18 (third) — Kyle's decisions on the step 2 proposal
+
+Written the turn they were given.
+
+- **Two tables: APPROVED.** `bars_daily` (365-day chunks) and `bars_intraday` (28-day chunks, `interval` limited to `15m` for now).
+  The departure from §8's single `bars` is **IDEA-046** (`docs/SPEC-DEFECTS.md`), citing the step 2 benchmark, for the next correction release.
+- **The time column is `effective_at`**, per the settled vocabulary. **Terminology correction: D5's `ts` was shorthand.** Every D5 rule reads
+  with `effective_at` for `ts` (the bar's open instant; a daily bar's is its session's `opens_at`).
+- **No total-return column on `bars_daily`.** Total return lives only in `bar_total_return`, with revisions. **This supersedes D2's
+  `bars.c_total_return`** and resolves its contradiction with "first settled value, never overwritten". **"Current total return" is the latest
+  revision there.**
+- **Backfill `available_at` = the settle point, a RECORDED EXCEPTION to the unifying rule** (`available_at` = when the value became knowable).
+  - Rationale (Kyle): market bars are not published later like macro figures; the trades were public at the session close. Only provider corrections
+    are uncertain, and those are measured (prices: none observed after night 1; volume: up to about 2% so far, bounded further by the two-week tail).
+  - **Limitation: backfilled values may include corrections made after the settle point.**
+  - **Every backfilled row carries a backfill `feed`, so a strict replay can exclude them.**
+  - Rejected: the fetch instant, because no replay before 2026 could see any history.
+- **`splits.available_at` = the open of the effective day: APPROVED. First-seen is `ingested_at`.**
+- **Dividends and late corrections: one periodic history re-fetch job, planned for step 3 or 4.** It re-fetches trailing daily history and compares
+  against the stored first-settled values. It feeds the revision policy (late volume corrections), `bar_total_return` (dividend rewrites) and `splits`
+  (new splits). Frequency and window are decided when it is built. (This answers the proposal's question 8.)
+- **The other open questions: Claude takes its own recommendation unless one changes a recorded decision.** Checked; none does:
+  - Q5, database-enforced immutability on `bars_daily`/`bars_intraday`: **yes**, the `macro_metrics` triggers. It is the DDL form of "never overwritten".
+  - Q6, volume reconstruction exactness: **ASSUMED exact; step 4 checks it on the five 2025-12-05 splits; a non-integer fails the symbol, never rounds.**
+    Consistent with D3 ("volume is divided by the same ratios").
+  - Q7, prices as the float's shortest repr, never rounded: **yes.** Consistent with D3 ("the rebuilt values inherit the provider's rounding").
+  - Q8: answered by Kyle (the re-fetch job above).
+  - Q9, 15m across a split: **ASSUMED split-adjusted like daily; the client reconstructs from `splits` either way.** Not measurable now (no split
+    inside the 60-day window).
+
+**Then: build step 2** (migrations, triggers, comments, rule 9 tests, mutation checks, container gate).
