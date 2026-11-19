@@ -3785,3 +3785,39 @@ otherwise unobservable), strict mode refusing a backfill-only distribution, a mi
 **Mutation: `m2-slice6-step5b` 23/23**; the total-return mutations of steps 2, 4 and 5 removed with the table (step 2 35/35, step 3 34/34,
 step 4 13/13, step 5 13/13). One survivor on the way, fixed: the strict-mode test's window started on a backfill BAR, so it was refused before
 the distribution check was reached; the test now uses two poll bars with a backfill-only distribution between them.
+
+### Step 6 plan (2026-11-18) — the settled poll. PLAN, NOT BUILT; waiting on Kyle (and IDEA-029)
+
+The 2026-11-14 plan's step 6 ("Beat: 16:30 daily and every 15 minutes in session") predates the settle points and is replaced by this.
+Numbers are MEASURED or ASSUMED (rule 10).
+
+**Blocker, recorded, not new: IDEA-029.** Slice 2's restore drill from the real desktop has not run; `docs/SPEC-DEFECTS.md` says it must close
+"before slice 6 persists its first scheduled bar", and the slice 6 plan says Beat cannot be enabled until it does. Proposed: build and test the
+poll fully, with its Beat entries behind `BARS_POLL_ENABLED` (default false), and switch it on only after the drill. A manual run on the dev stack
+would write `feed = 'poll'` rows, the live captures strict mode treats as the record; whether that is acceptable before the drill is Kyle's (Q1).
+
+**Shape.** Two self-contained Celery tasks on the ingest queue, through `run_recorded` and `run_feed`, gap-driven (decided 2026-11-15), never
+fetching deep history (`not_backfilled`, decided 2026-11-15):
+- **`ingest.bars_daily_poll`**, feed `bars_daily`. Per symbol, `start` = its last stored daily session (inclusive, so the D3 price/volume
+  comparison re-checks it); a symbol with no stored bar fails as `NotBackfilled` (a `Permanent`, named). One batch of the 24 (`actions=True`), parse
+  with stored splits and distributions, write bars, splits, distributions with `feed = 'poll'`; D4's `likely_gone` as in the backfill.
+- **`ingest.bars_15m_poll`**, feed `bars_15m`. **Self-contained (decided 2026-11-18): it first fetches its own daily `actions=True` batch for the
+  same symbols over its window plus the next session, and stores and checks any new split under the existing rules BEFORE parsing a 15m bar.**
+  Then the 15m batch from each symbol's last stored 15m bar. **Beyond 59 calendar days, the missing range is recorded in `bar_gaps`** and the
+  fetch starts at today - 59 (decided 2026-11-15 and 2026-11-16).
+- **When:** both at **09:05 America/New_York, Monday to Friday** (ASSUMED): the 15m settle point (09:00 on D+1) and the daily one (09:00 on D+2)
+  have passed for the newest settleable sessions; a holiday run finds nothing new and writes 0. Three batches per morning, 60 s apart (the budget).
+- **Health:** `FEED_STALE_AFTER` for (`yfinance`, `bars_daily`) and (`yfinance`, `bars_15m`): **4 calendar days** (ASSUMED: three missed runs
+  plus a weekend or holiday). Poll health only; per-symbol data age stays slice 7's.
+- **Tests:** fake download with the recorded fixtures; rule 9 on every keyed start (a second symbol with an older last bar must not set the
+  first's start); `not_backfilled`; the 15m run refusing a 15m bar until its split check stored the split; the 59-day gap record; mutation; a
+  smoke through the real worker; HEALTH.md for the two feeds.
+
+**Questions for Kyle (each blocks part of the build; recommendations, not decisions):**
+1. **A manual poll on the dev stack before IDEA-029 closes** (it writes `feed = 'poll'` rows). Recommended: allowed, because the dev stack is not
+   the deployed instance and its rows can be wiped; the Beat entries stay off until the drill.
+2. **15m history has no backfill.** Step 4 was daily only, and the poll never fetches deep history, so the first 15m poll of every symbol would
+   be `not_backfilled`. Recommended: `python -m app.bars_backfill --interval 15m` (59 days, the same command, `feed = 'backfill'`).
+3. **The schedule (09:05 ET weekdays) and the 4-day stale threshold**, both ASSUMED above.
+4. **Whether the daily poll's `start` is inclusive of the last stored session** (re-checking it every morning, cheap; recommended) or the next one.
+"""
