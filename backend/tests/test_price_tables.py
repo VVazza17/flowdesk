@@ -28,7 +28,7 @@ INTRADAY_SETTLE = datetime(2026, 11, 17, 14, 0, tzinfo=UTC)  # 09:00 ET on D+1
 LATER = OPEN + timedelta(days=1)
 
 BAR_TABLES = ["bars_daily", "bars_intraday"]
-INSERT_ONLY = ["bars_daily", "bars_intraday", "bar_total_return", "splits"]
+INSERT_ONLY = ["bars_daily", "bars_intraday", "splits", "distributions"]
 
 TZ = "timestamp with time zone"
 BAR_TAIL = [
@@ -53,11 +53,13 @@ COLUMNS: dict[str, list[tuple[str, str, str]]] = {
         ("effective_at", TZ, "NO"),
         *BAR_TAIL,
     ],
-    "bar_total_return": [
+    "distributions": [
         ("symbol_id", "bigint", "NO"),
-        ("effective_at", TZ, "NO"),
-        ("revision", "integer", "NO"),
-        ("value", "numeric", "NO"),
+        ("effective_at", "date", "NO"),
+        ("kind", "text", "NO"),
+        ("amount", "numeric", "NO"),
+        ("raw_basis", "text", "NO"),
+        ("feed", "text", "NO"),
         ("available_at", TZ, "NO"),
         ("ingested_at", TZ, "NO"),
         ("source", "text", "NO"),
@@ -86,14 +88,14 @@ COLUMNS: dict[str, list[tuple[str, str, str]]] = {
 PRIMARY_KEYS = {
     "bars_daily": ["symbol_id", "effective_at"],
     "bars_intraday": ["symbol_id", "interval", "effective_at"],
-    "bar_total_return": ["symbol_id", "effective_at", "revision"],
+    "distributions": ["symbol_id", "effective_at", "kind"],
     "splits": ["symbol_id", "effective_at"],
     "bar_gaps": ["id"],
 }
 TIME_COLUMNS = {
     "bars_daily": ["effective_at", "available_at", "ingested_at"],
     "bars_intraday": ["effective_at", "available_at", "ingested_at"],
-    "bar_total_return": ["effective_at", "available_at", "ingested_at"],
+    "distributions": ["effective_at", "available_at", "ingested_at"],
     "splits": ["effective_at", "available_at", "ingested_at"],
     "bar_gaps": ["missing_from", "missing_to", "recorded_at", "resolved_at"],
 }
@@ -162,13 +164,18 @@ def insert(url: str, table: str, row: dict[str, Any], on_conflict_nothing: bool 
     return int(run(url, sql + "SELECT count(*) FROM i", **row)[0][0])
 
 
-def total_return(symbol_id: int, revision: int, value: str, **over: Any) -> dict[str, Any]:
+def distribution(
+    symbol_id: int, effective_at: date, kind: str = "dividend", amount: str = "0.386", **over: Any
+) -> dict[str, Any]:
     row: dict[str, Any] = {
         "symbol_id": symbol_id,
-        "effective_at": OPEN,
-        "revision": revision,
-        "value": Decimal(value),
-        "available_at": DAILY_SETTLE + timedelta(days=revision),
+        "effective_at": effective_at,
+        "kind": kind,
+        "amount": Decimal(amount),
+        "raw_basis": "live",
+        "feed": "backfill",
+        "available_at": datetime.combine(effective_at, datetime.min.time(), UTC)
+        + timedelta(hours=14, minutes=30),
         "source": "yfinance",
         "ingestion_run_id": None,
     }
@@ -215,8 +222,8 @@ def sample_row(url: str, table: str) -> tuple[int, dict[str, Any]]:
     row = {
         "bars_daily": lambda: bar("bars_daily", s),
         "bars_intraday": lambda: bar("bars_intraday", s),
-        "bar_total_return": lambda: total_return(s, 0, "741.20"),
         "splits": lambda: split(s, date(2025, 12, 5), "2"),
+        "distributions": lambda: distribution(s, date(2025, 12, 22)),
         "bar_gaps": lambda: gap(s),
     }[table]()
     assert insert(url, table, row) == 1
@@ -348,28 +355,47 @@ def test_bar_key_is_per_symbol_and_a_rerun_writes_zero(scratch_url: str, table: 
         insert(scratch_url, table, bar(table, a, OPEN))
 
 
-def test_total_return_key_is_per_symbol_and_per_revision(scratch_url: str) -> None:
-    a, b = symbol(scratch_url, "SPY"), symbol(scratch_url, "QQQ")
-    # B has higher revisions and larger values for the same bar: it would win "latest revision".
-    for rev in (0, 1, 2):
-        assert insert(scratch_url, "bar_total_return", total_return(b, rev, f"{900 + rev}")) == 1
-    before_b = snapshot(scratch_url, "bar_total_return", b)
+def test_bar_total_return_is_gone(scratch_url: str) -> None:
+    # Step 5b (Kyle, 2026-11-18): it held Yahoo's Adj Close on the fetch's basis, a hindsight leak.
+    assert run(scratch_url, "SELECT to_regclass('bar_total_return')")[0][0] is None
 
-    assert insert(scratch_url, "bar_total_return", total_return(a, 0, "741.20")) == 1
-    assert insert(scratch_url, "bar_total_return", total_return(a, 1, "741.55")) == 1
+
+def test_distribution_key_is_per_symbol_per_ex_date_per_kind(scratch_url: str) -> None:
+    a, b = symbol(scratch_url, "XLK"), symbol(scratch_url, "XLE")
+    day = date(2025, 12, 22)
+    # B: the same ex-date and kind, a larger amount, and a later ex-date.
+    assert insert(scratch_url, "distributions", distribution(b, day, amount="9.99")) == 1
+    assert (
+        insert(scratch_url, "distributions", distribution(b, date(2026, 3, 23), amount="9.99")) == 1
+    )
+    before_b = snapshot(scratch_url, "distributions", b)
+
+    assert insert(scratch_url, "distributions", distribution(a, day)) == 1
+    # A capital gain on the same ex-date is its own row (kind is in the key).
+    assert insert(scratch_url, "distributions", distribution(a, day, "capital_gain", "1.5")) == 1
     with pytest.raises(IntegrityError):
-        insert(scratch_url, "bar_total_return", total_return(a, 1, "1"))
+        insert(scratch_url, "distributions", distribution(a, day, amount="0.5"))
+    assert [(r[1], r[2], r[3]) for r in snapshot(scratch_url, "distributions", a)] == [
+        (day, "capital_gain", Decimal("1.5")),
+        (day, "dividend", Decimal("0.386")),
+    ]
+    assert snapshot(scratch_url, "distributions", b) == before_b
 
-    # "Current total return" is the latest revision, per symbol and bar (Kyle, 2026-11-18).
-    current = run(
-        scratch_url,
-        "SELECT value FROM bar_total_return WHERE symbol_id = :s AND effective_at = :e "
-        "ORDER BY revision DESC LIMIT 1",
-        s=a,
-        e=OPEN,
-    )[0][0]
-    assert current == Decimal("741.55")
-    assert snapshot(scratch_url, "bar_total_return", b) == before_b
+
+@pytest.mark.parametrize(
+    ("over", "constraint"),
+    [
+        ({"kind": "interest"}, "ck_distributions_kind"),
+        ({"amount": Decimal("0")}, "ck_distributions_amount_positive"),
+        ({"amount": Decimal("-0.1")}, "ck_distributions_amount_positive"),
+        ({"raw_basis": "unreconstructed"}, "ck_distributions_raw_basis"),
+        ({"feed": "Backfill"}, "ck_distributions_feed"),
+    ],
+)
+def test_distribution_checks(scratch_url: str, over: dict[str, Any], constraint: str) -> None:
+    s = symbol(scratch_url, "XLK")
+    with pytest.raises(IntegrityError, match=constraint):
+        insert(scratch_url, "distributions", distribution(s, date(2025, 12, 22), **over))
 
 
 def test_splits_key_is_per_symbol(scratch_url: str) -> None:
@@ -471,12 +497,6 @@ def test_intraday_interval_is_15m_only(scratch_url: str) -> None:
         insert(scratch_url, "bars_intraday", bar("bars_intraday", s, interval="1d"))
 
 
-def test_total_return_is_settled_after_its_bar_opened(scratch_url: str) -> None:
-    s = symbol(scratch_url, "SPY")
-    with pytest.raises(IntegrityError, match="ck_bar_total_return_settled_after_open"):
-        insert(scratch_url, "bar_total_return", total_return(s, 0, "741.2", available_at=OPEN))
-
-
 @pytest.mark.parametrize("ratio", ["0", "-2"])
 def test_split_ratio_must_be_positive(scratch_url: str, ratio: str) -> None:
     s = symbol(scratch_url, "XLK")
@@ -520,10 +540,12 @@ UPDATES: dict[str, list[tuple[str, str]]] = {
         ("available_at", "available_at + interval '1 day'"),
         ("ingested_at", "ingested_at + interval '1 second'"),
     ],
-    "bar_total_return": [
-        ("effective_at", "effective_at + interval '1 day'"),
-        ("revision", "revision + 1"),
-        ("value", "value + 1"),
+    "distributions": [
+        ("effective_at", "effective_at + 1"),
+        ("kind", "'capital_gain'"),
+        ("amount", "amount + 1"),
+        ("raw_basis", "'reconstructed'"),
+        ("feed", "'poll'"),
         ("available_at", "available_at + interval '1 day'"),
         ("ingested_at", "ingested_at + interval '1 second'"),
         ("source", "'stooq'"),
@@ -603,8 +625,8 @@ def make_row(table: str, s: int, **over: Any) -> dict[str, Any]:
     builders = {
         "bars_daily": lambda: bar("bars_daily", s, **over),
         "bars_intraday": lambda: bar("bars_intraday", s, **over),
-        "bar_total_return": lambda: total_return(s, 0, "741.20", **over),
         "splits": lambda: split(s, date(2025, 12, 5), "2", **over),
+        "distributions": lambda: distribution(s, date(2025, 12, 22), **over),
         "bar_gaps": lambda: gap(s, **over),
     }
     return builders[table]()

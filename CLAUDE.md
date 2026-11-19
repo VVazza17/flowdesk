@@ -172,9 +172,12 @@ below).
   **Step 5 built (2026-11-18): `app/services/bars_read.py`**, the point-in-time read: `as_of` AND `include_backfill` are required
   keywords (strict mode = `include_backfill=False`), visible iff `available_at <= as_of`, adjusted on read by splits knowable at T, total
   return = latest revision knowable at T, seven absence reasons. 2-year read of one symbol 23.5 ms on the real 12k rows; no index added.
-  **OPEN, BLOCKS STEP 6 (2026-11-18): `bar_total_return` leaks hindsight** (MEASURED: it stores Yahoo's Adj Close on today's basis, so a
-  2025 replay reads later dividends and splits). Proposal (not built): dividends as dated events like splits, total return computed on
-  read; drop `bar_total_return`; D2 superseded. Do not build the poll, and do not read `total_return`, until Kyle decides.
+  **DECIDED 2026-11-18 (step 5b): total return is computed on read, never stored.** `bar_total_return` leaked hindsight (MEASURED: Yahoo's
+  Adj Close on today's basis, dated at old settle points) and is DROPPED; D2 is superseded. Distributions (dividends, capital gains) are
+  dated events in `distributions` like splits: as paid, `available_at` = ex-date open, Yahoo's convention `1 - D/Close_prev`. This amends
+  D3 (distribution events pulled forward from slice 8). Slice 7 checks computed returns against Yahoo's ratios with a measured tolerance.
+  **Step 5b built (2026-11-18):** migration 0013, `bars_read.total_return_between(..., as_of=, include_backfill=)` (a ratio, never a level);
+  dev stack: 119 distributions; computed 2-year returns match Yahoo's Adj Close ratio to <= 9.6e-8 relative on all 24 symbols.
 - **The base image is pinned by digest** (M2 slice 0, 2026-11-08). The `FROM` line in `backend/Dockerfile` is
   the one definition. The CI tooling container, `lock-deps.sh` and the smokes read it through
   `infra/base-image.sh`, and lint fails on a second definition. The base no longer updates itself: the daily
@@ -379,7 +382,7 @@ bash infra/backup.sh              # dump + manifest into dumps/. Restoring and t
 bash infra/restore.sh dumps/<name>.dump --db <new-or-empty-db>   # refuses a non-empty target
 bash infra/restore-backup.sh <name>.tar.age --identity <age key> --db <new-or-empty-db>   # a scheduled backup, on the desktop
 bash infra/mutation-check.sh m2-slice6-step2   # rule 9 mutations in a copy of backend/ (backend/tools/mutate.py); each must be caught
-bash infra/mutation-check.sh m2-slice6-step3   # the yfinance client and parser (also: heartbeat-clock, m2-slice6-step4, -step5)
+bash infra/mutation-check.sh m2-slice6-step3   # the yfinance client and parser (also: heartbeat-clock, m2-slice6-step4, -step5, -step5b)
 bash infra/ci-checks.sh lint      # also: test | audit | license | arm64. Same code ci.yml runs
                                   # LINT COVERAGE (pinned by backend/tests/test_lint_coverage.py): the gate runs INSIDE backend/ as
                                   #   `ruff check .`, `ruff format --check .`, `mypy` (config: backend/pyproject.toml; mypy `files` =

@@ -1,0 +1,39 @@
+== 1a. SPY 2025-03-03 -> 2025-03-04, as of 2025-03-06 12:00 ET (seven dividends came LATER)
+   as of 2025-03-06: ratio 0.9881630882907689360894174367, distributions applied 0
+   as of now:        ratio 0.9881630882907689360894174367, distributions applied 0
+   identical: True (no event lies in the window; later dividends cannot touch it)
+   bar_as_of carries no stored level: has total_return = False
+
+== 1b. XLK 2025-06-02 -> 2025-06-27 (settled 07-01 09:00), as of 2025-07-01 12:00 (the 2:1 split came 2025-12-05)
+   split_factor on 2025-06-02 as of then: 1 (the December split is not applied)
+   price ratio 1.076497134825797243538434768; ratio 1.078281270344111891703670390
+   applied: ex 2025-06-23 dividend as paid 0.3980, on the basis at T 0.3980, close before 240.53999328613280, factor 0.9983453894940183121107264566
+   distributions applied: ['2025-06-23'] (only 2025-06-23 was knowable)
+   the same window as of now (split knowable): ratio 1.078281270344111891703670390; relative difference from as-of-then 0.00e+2 (a ratio is split-invariant)
+
+== 2. our computed total return against Yahoo's Adj Close ratio, one fresh fetch
+   ARKK  2024-11-19..2026-11-16: ours 1.279506534 yahoo 1.279506534 rel diff 0.00e+00 (0 distributions)
+   CPER  2024-11-19..2026-11-16: ours 1.377820241 yahoo 1.377820241 rel diff 0.00e+00 (0 distributions)
+   DBA   2024-11-19..2026-11-16: ours 1.085411913 yahoo 1.085411954 rel diff 3.79e-08 (2 distributions)
+   GLD   2024-11-19..2026-11-16: ours 1.450894112 yahoo 1.450894112 rel diff 0.00e+00 (0 distributions)
+   IGV   2024-11-19..2026-11-16: ours 0.965846297 yahoo 0.965846326 rel diff 2.94e-08 (1 distributions)
+   IWM   2024-11-19..2026-11-16: ours 1.208458792 yahoo 1.208458903 rel diff 9.26e-08 (8 distributions)
+   QQQ   2024-11-19..2026-11-16: ours 1.327707204 yahoo 1.327707188 rel diff 1.19e-08 (8 distributions)
+   RSP   2024-11-19..2026-11-16: ours 1.248374528 yahoo 1.248374558 rel diff 2.44e-08 (8 distributions)
+   SLV   2024-11-19..2026-11-16: ours 1.487368400 yahoo 1.487368400 rel diff 2.22e-16 (0 distributions)
+   SMH   2024-11-19..2026-11-16: ours 1.905933593 yahoo 1.905933595 rel diff 1.41e-09 (2 distributions)
+   SPY   2024-11-19..2026-11-16: ours 1.282443010 yahoo 1.282443083 rel diff 5.75e-08 (8 distributions)  <-
+   UNG   2024-11-19..2026-11-16: ours 0.708002868 yahoo 0.708002868 rel diff 0.00e+00 (0 distributions)
+   URA   2024-11-19..2026-11-16: ours 1.007595056 yahoo 1.007595036 rel diff 1.92e-08 (2 distributions)
+   USO   2024-11-19..2026-11-16: ours 1.936523351 yahoo 1.936523351 rel diff 2.22e-16 (0 distributions)
+   XLB   2024-11-19..2026-11-16: ours 1.165808767 yahoo 1.165808777 rel diff 8.31e-09 (8 distributions)
+   XLE   2024-11-19..2026-11-16: ours 1.419268205 yahoo 1.419268135 rel diff 4.96e-08 (8 distributions)
+   XLF   2024-11-19..2026-11-16: ours 1.206800822 yahoo 1.206800828 rel diff 4.70e-09 (8 distributions)
+   XLI   2024-11-19..2026-11-16: ours 1.225707316 yahoo 1.225707319 rel diff 2.24e-09 (8 distributions)
+   XLK   2024-11-19..2026-11-16: ours 1.440859312 yahoo 1.440859206 rel diff 7.32e-08 (8 distributions)  <-
+   XLP   2024-11-19..2026-11-16: ours 1.211681685 yahoo 1.211681745 rel diff 4.90e-08 (8 distributions)
+   XLRE  2024-11-19..2026-11-16: ours 1.088212585 yahoo 1.088212511 rel diff 6.72e-08 (8 distributions)
+   XLU   2024-11-19..2026-11-16: ours 1.161250873 yahoo 1.161250780 rel diff 8.06e-08 (8 distributions)
+   XLV   2024-11-19..2026-11-16: ours 1.376896132 yahoo 1.376896056 rel diff 5.49e-08 (8 distributions)
+   XLY   2024-11-19..2026-11-16: ours 1.114629582 yahoo 1.114629475 rel diff 9.58e-08 (8 distributions)
+   max relative difference over 24 symbols: 9.58e-08

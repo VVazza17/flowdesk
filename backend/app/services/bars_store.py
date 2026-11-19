@@ -1,18 +1,17 @@
 """Storing settled daily bars (M2 slice 6, step 4): what the backfill (and later the poll) writes.
 
 Every write is INSERT ... ON CONFLICT DO NOTHING into insert-only tables (migration 0010), so a
-re-run writes 0 rows. One transaction per batch: a bar, its total return (revision 0) and the splits
-it was rebuilt with land together or not at all (D2).
+re-run writes 0 rows. One transaction per batch: a symbol's bars, the splits they were rebuilt with,
+and its distributions (step 5b) land together or not at all. Total return is not stored (step 5b, D2
+superseded): it is computed on read (app.services.bars_read).
 
 **A re-fetch never overwrites (D3), and prices and volume are judged apart (Kyle, 2026-11-18).**
 Before inserting, each symbol's re-fetched bars are compared with the stored ones on the same
 instants. If a raw PRICE differs (most likely a missed split), NONE of that symbol's rows are
 written and the symbol fails (`RefetchMismatch`). If only the VOLUME differs, that is a post-settle
 revision: counted per symbol, the stored value kept, the symbol's new rows written. Either way the
-stored first settled value stands. A
-total return that differs from the stored revision 0 is NOT a failure (a dividend rewrites `Adj
-Close` by design, measured 2026-11-16) and is only counted: later revisions are the periodic history
-re-fetch's (decided 2026-11-18, built later).
+stored first settled value stands. A distribution that disagrees with a stored one is caught by the
+parser (`DistributionConflict`) and fails the symbol, as a disagreeing split does.
 
 Session dates are found by a join to `trading_sessions` (`opens_at = effective_at`), never by
 casting an instant to a date."""
@@ -25,9 +24,16 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from app.ingest.bars import Calendar, Session, SettledBar, SplitEvent, SymbolFailure
+from app.ingest.bars import (
+    Calendar,
+    DistributionEvent,
+    Session,
+    SettledBar,
+    SplitEvent,
+    SymbolFailure,
+)
 from app.ingest.errors import SchemaMismatch
-from app.models.prices import BarDaily, BarTotalReturn, Split
+from app.models.prices import BarDaily, Distribution, Split
 from app.models.reference import ProviderMapping, Symbol, TradingSession
 
 PROVIDER = "yfinance"
@@ -61,9 +67,8 @@ class MappedSymbol:
 @dataclass
 class WriteCounts:
     bars: int = 0
-    total_returns: int = 0
     splits: int = 0
-    total_return_differs: int = 0  # stored revision 0 differs from today's Adj Close: counted only
+    distributions: int = 0
     # Per symbol: bars whose re-fetched volume differs from the stored one (prices equal). Counted,
     # never written: the stored first settled value stands.
     volume_revisions: dict[str, int] = field(default_factory=dict)
@@ -71,7 +76,7 @@ class WriteCounts:
 
     @property
     def rows_written(self) -> int:
-        return self.bars + self.total_returns + self.splits
+        return self.bars + self.splits + self.distributions
 
 
 async def load_calendar(engine: AsyncEngine, calendar_code: str = CALENDAR) -> Calendar:
@@ -130,10 +135,32 @@ async def load_splits(
     return out
 
 
+async def load_distributions(
+    engine: AsyncEngine, symbol_ids: Iterable[int]
+) -> dict[int, list[DistributionEvent]]:
+    ids = list(symbol_ids)
+    out: dict[int, list[DistributionEvent]] = {i: [] for i in ids}
+    async with engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                select(
+                    Distribution.symbol_id,
+                    Distribution.effective_at,
+                    Distribution.kind,
+                    Distribution.amount,
+                    Distribution.raw_basis,
+                ).where(Distribution.symbol_id.in_(ids))
+            )
+        ).all()
+    for r in rows:
+        out[r.symbol_id].append(DistributionEvent(r.effective_at, r.kind, r.amount, r.raw_basis))
+    return out
+
+
 async def _stored(
     conn: AsyncConnection, symbol_id: int, bars: Sequence[SettledBar]
-) -> tuple[dict[object, tuple[object, ...]], dict[object, object]]:
-    """The stored raw values and revision-0 total returns of this symbol at these instants."""
+) -> dict[object, tuple[object, ...]]:
+    """The stored raw values of this symbol at these instants."""
     instants = [b.effective_at for b in bars]
     raw = {
         r.effective_at: tuple(getattr(r, f) for f in RAW_FIELDS)
@@ -145,19 +172,7 @@ async def _stored(
             )
         ).all()
     }
-    tr = {
-        r.effective_at: r.value
-        for r in (
-            await conn.execute(
-                select(BarTotalReturn.effective_at, BarTotalReturn.value).where(
-                    BarTotalReturn.symbol_id == symbol_id,
-                    BarTotalReturn.revision == 0,
-                    BarTotalReturn.effective_at.in_(instants),
-                )
-            )
-        ).all()
-    }
-    return raw, tr
+    return raw
 
 
 async def write_daily(
@@ -165,6 +180,7 @@ async def write_daily(
     bars: Mapping[str, Sequence[SettledBar]],
     new_splits: Mapping[str, Sequence[SplitEvent]],
     symbols: Mapping[str, int],
+    new_distributions: Mapping[str, Sequence[DistributionEvent]],
     *,
     calendar: Calendar,
     feed: str,
@@ -176,7 +192,7 @@ async def write_daily(
     async with engine.begin() as conn:
         for provider_symbol, rows in bars.items():
             symbol_id = symbols[provider_symbol]
-            stored_raw, stored_tr = await _stored(conn, symbol_id, rows)
+            stored_raw = await _stored(conn, symbol_id, rows)
             n_price = len(PRICE_FIELDS)
             if any(
                 b.effective_at in stored_raw
@@ -200,11 +216,28 @@ async def write_daily(
             )
             if revised:
                 counts.volume_revisions[provider_symbol] = revised
-            counts.total_return_differs += sum(
-                1
-                for b in rows
-                if b.effective_at in stored_tr and stored_tr[b.effective_at] != b.total_return
-            )
+            for dist in new_distributions.get(provider_symbol, ()):
+                session = calendar.get(dist.effective_at)
+                if session is None:
+                    raise SchemaMismatch("an ex-date is not a session in trading_sessions")
+                done = await conn.execute(
+                    pg_insert(Distribution)
+                    .values(
+                        symbol_id=symbol_id,
+                        effective_at=dist.effective_at,
+                        kind=dist.kind,
+                        amount=dist.amount,
+                        raw_basis=dist.raw_basis,
+                        feed=feed,
+                        # Decided 2026-11-18: knowable at its ex-date's open (late, never early).
+                        available_at=session.opens_at,
+                        source=source,
+                        ingestion_run_id=ingestion_run_id,
+                    )
+                    .on_conflict_do_nothing()
+                    .returning(Distribution.symbol_id)
+                )
+                counts.distributions += len(done.all())
             for split in new_splits.get(provider_symbol, ()):
                 session = calendar.get(split.effective_at)
                 if session is None:
@@ -252,28 +285,6 @@ async def write_daily(
                 .returning(BarDaily.effective_at)
             )
             counts.bars += len(done.all())
-            done = await conn.execute(
-                pg_insert(BarTotalReturn)
-                .values(
-                    [
-                        {
-                            "symbol_id": symbol_id,
-                            "effective_at": b.effective_at,
-                            "revision": 0,
-                            "value": b.total_return,
-                            # Revision 0 is knowable at the bar's settle point (decided 2026-11-18).
-                            "available_at": b.available_at,
-                            "source": source,
-                            "ingestion_run_id": ingestion_run_id,
-                        }
-                        for b in rows
-                        if b.total_return is not None
-                    ]
-                )
-                .on_conflict_do_nothing()
-                .returning(BarTotalReturn.effective_at)
-            )
-            counts.total_returns += len(done.all())
     return counts
 
 

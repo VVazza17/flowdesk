@@ -1,0 +1,86 @@
+"""Step 5b verification, read-only, dev stack. Measurement script, not repo code.
+
+    MSYS_NO_PATHCONV=1 docker compose run --rm -v "$(pwd -W)/docs/evidence:/e:ro" -e PYTHONPATH=/srv \
+        worker python /e/tr-computed-probe.py.txt
+
+1. The two hindsight cases, through the new read (total_return_between): SPY as of 2025-03-06 and XLK as
+   of 2025-07-01 must reflect only what was knowable then.
+2. Against Yahoo: for every symbol, our total return from the first to the last stored session, as of
+   now, against Yahoo's Adj Close ratio over the same sessions from ONE fresh fetch. Relative difference.
+"""
+
+import asyncio
+from datetime import UTC, date, datetime
+from decimal import Decimal
+
+import pandas as pd
+from sqlalchemy.ext.asyncio import create_async_engine
+
+from app import settings
+from app.ingest.bars import DAILY, NEW_YORK
+from app.ingest.yfinance_client import YFinanceClient
+from app.services import bars_read, bars_store
+
+
+def et(*a):  # type: ignore[no-untyped-def]
+    return datetime(*a, tzinfo=NEW_YORK)
+
+
+async def main() -> None:
+    engine = create_async_engine(settings.database_url())
+    now = datetime.now(UTC)
+
+    print("== 1a. SPY 2025-03-03 -> 2025-03-04, as of 2025-03-06 12:00 ET (seven dividends came LATER)")
+    then = await bars_read.total_return_between(
+        engine, "SPY", date(2025, 3, 3), date(2025, 3, 4), as_of=et(2025, 3, 6, 12), include_backfill=True
+    )
+    today = await bars_read.total_return_between(
+        engine, "SPY", date(2025, 3, 3), date(2025, 3, 4), as_of=now, include_backfill=True
+    )
+    print(f"   as of 2025-03-06: ratio {then.ratio}, distributions applied {len(then.distributions)}")
+    print(f"   as of now:        ratio {today.ratio}, distributions applied {len(today.distributions)}")
+    print(f"   identical: {then.ratio == today.ratio} (no event lies in the window; later dividends cannot touch it)")
+    bar = await bars_read.bar_as_of(engine, "SPY", date(2025, 3, 3), as_of=et(2025, 3, 6, 12), include_backfill=True)
+    print(f"   bar_as_of carries no stored level: has total_return = {hasattr(bar, 'total_return')}")
+
+    print("\n== 1b. XLK 2025-06-02 -> 2025-06-27 (settled 07-01 09:00), as of 2025-07-01 12:00 (the 2:1 split came 2025-12-05)")
+    x = await bars_read.total_return_between(
+        engine, "XLK", date(2025, 6, 2), date(2025, 6, 27), as_of=et(2025, 7, 1, 12), include_backfill=True
+    )
+    b0 = await bars_read.bar_as_of(engine, "XLK", date(2025, 6, 2), as_of=et(2025, 7, 1, 12), include_backfill=True)
+    print(f"   split_factor on 2025-06-02 as of then: {b0.split_factor} (the December split is not applied)")
+    print(f"   price ratio {x.price_ratio}; ratio {x.ratio}")
+    for d in x.distributions:
+        print(f"   applied: ex {d.effective_at} {d.kind} as paid {d.amount}, on the basis at T {d.amount_adj}, "
+              f"close before {d.close_before_adj}, factor {d.factor}")
+    print(f"   distributions applied: {[str(d.effective_at) for d in x.distributions]} (only 2025-06-23 was knowable)")
+    x_now = await bars_read.total_return_between(
+        engine, "XLK", date(2025, 6, 2), date(2025, 6, 27), as_of=now, include_backfill=True
+    )
+    print(f"   the same window as of now (split knowable): ratio {x_now.ratio}; "
+          f"relative difference from as-of-then {abs(x_now.ratio / x.ratio - 1):.2e} (a ratio is split-invariant)")
+
+    print("\n== 2. our computed total return against Yahoo's Adj Close ratio, one fresh fetch")
+    symbols = await bars_store.load_symbols(engine)
+    batch = await YFinanceClient(max_batch=24).fetch(
+        [m.provider_symbol for m in symbols], DAILY, today=now.astimezone(NEW_YORK).date(), period="2y"
+    )
+    worst = 0.0
+    for m in symbols:
+        snap = await bars_read.bars_as_of(engine, m.ticker, as_of=now, include_backfill=True)
+        first, last = snap.bars[0].session_date, snap.bars[-1].session_date
+        ours = await bars_read.total_return_between(
+            engine, m.ticker, first, last, as_of=now, include_backfill=True
+        )
+        adj = batch.frame[(m.provider_symbol, "Adj Close")]
+        yahoo = float(adj.loc[pd.Timestamp(last)]) / float(adj.loc[pd.Timestamp(first)])
+        rel = abs(float(ours.ratio) / yahoo - 1)
+        worst = max(worst, rel)
+        mark = "  <-" if m.ticker in ("SPY", "XLK") else ""
+        print(f"   {m.ticker:5} {first}..{last}: ours {float(ours.ratio):.9f} yahoo {yahoo:.9f} rel diff {rel:.2e} "
+              f"({len(ours.distributions)} distributions){mark}")
+    print(f"   max relative difference over {len(symbols)} symbols: {worst:.2e}")
+    await engine.dispose()
+
+
+asyncio.run(main())

@@ -14,7 +14,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
-from decimal import Decimal
+from decimal import Decimal, Inexact, localcontext
 from zoneinfo import ZoneInfo
 
 import pandas as pd  # type: ignore[import-untyped]
@@ -67,6 +67,16 @@ class SplitConflict(SchemaMismatch):
     """The provider reports a ratio for a split date that differs from the stored one (D3)."""
 
 
+class DistributionConflict(SchemaMismatch):
+    """The provider reports an amount for a stored distribution that differs from it (step 5b):
+    a validation failure, never an overwrite."""
+
+
+class NonExactAmount(SchemaMismatch):
+    """A distribution's amount rebuilt as paid (x later split ratios) is not exact: fails the
+    symbol, never rounded (Kyle, 2026-11-18)."""
+
+
 class EmptyToday(EmptyResult):
     """D4: the symbol returned no rows in this batch. Not yet a reason to think it is gone."""
 
@@ -105,6 +115,20 @@ class SplitEvent:
     ratio: Decimal
 
 
+# The action columns that carry cash distributions, by `distributions.kind`.
+DISTRIBUTION_COLUMNS = {"Dividends": "dividend", "Capital Gains": "capital_gain"}
+
+
+@dataclass(frozen=True)
+class DistributionEvent:
+    """A cash distribution as a dated event (step 5b): its ex-date, kind, and amount AS PAID."""
+
+    effective_at: date  # the ex-date session
+    kind: str  # dividend | capital_gain
+    amount: Decimal
+    raw_basis: str = "live"  # live | reconstructed
+
+
 @dataclass(frozen=True)
 class SettledBar:
     ticker: str
@@ -118,7 +142,7 @@ class SettledBar:
     v_raw: int
     raw_basis: str  # live | reconstructed
     available_at: datetime  # the settle point
-    total_return: Decimal | None  # daily only: the provider's Adj Close, revision 0
+    # No total return: it is computed on read from distributions (step 5b; D2 superseded).
 
 
 @dataclass(frozen=True)
@@ -131,6 +155,7 @@ class SymbolFailure:
 class BatchResult:
     bars: dict[str, list[SettledBar]] = field(default_factory=dict)
     new_splits: dict[str, list[SplitEvent]] = field(default_factory=dict)
+    new_distributions: dict[str, list[DistributionEvent]] = field(default_factory=dict)
     failures: list[SymbolFailure] = field(default_factory=list)
     dead: list[str] = field(default_factory=list)  # empty groups, classified later (classify_dead)
     unsettled: int = 0  # rows dropped because their settle point is after `now`
@@ -270,6 +295,7 @@ def parse_batch(
     calendar: Calendar,
     now: datetime,
     known_splits: Mapping[str, Sequence[SplitEvent]],
+    known_distributions: Mapping[str, Sequence[DistributionEvent]],
 ) -> BatchResult:
     """The settled, as-traded bars in one batch, and what failed. Raises for the whole batch only
     when the batch itself is unusable (rate limit, network, a shape we do not know)."""
@@ -302,7 +328,7 @@ def parse_batch(
             continue
         try:
             _check_columns(group)
-            bars, splits = _parse_symbol(
+            bars, splits, distributions = _parse_symbol(
                 ticker,
                 group,
                 interval,
@@ -311,6 +337,7 @@ def parse_batch(
                 calendar,
                 now,
                 known_splits.get(ticker, ()),
+                known_distributions.get(ticker, ()),
                 result,
             )
         except ProviderError as exc:
@@ -319,6 +346,8 @@ def parse_batch(
         result.bars[ticker] = bars
         if splits:
             result.new_splits[ticker] = splits
+        if distributions:
+            result.new_distributions[ticker] = distributions
     return result
 
 
@@ -331,11 +360,15 @@ def _parse_symbol(
     calendar: Calendar,
     now: datetime,
     known: Sequence[SplitEvent],
+    known_distributions: Sequence[DistributionEvent],
     result: BatchResult,
-) -> tuple[list[SettledBar], list[SplitEvent]]:
+) -> tuple[list[SettledBar], list[SplitEvent], list[DistributionEvent]]:
     rows: dict[date | datetime, tuple[float, ...]] = {}
     order: list[date | datetime] = []
     frame_splits: dict[date, Decimal] = {}
+    frame_distributions: dict[
+        tuple[date, str], Decimal
+    ] = {}  # the provider's split-adjusted amount
 
     for pos, values in enumerate(group.itertuples(index=False, name=None)):
         record = dict(zip(group.columns, values, strict=True))
@@ -349,6 +382,12 @@ def _parse_symbol(
         ratio = record.get("Stock Splits")
         if ratio is not None and not pd.isna(ratio) and ratio != 0:
             frame_splits[day] = _decimal(ratio)
+        # Distributions too, from every row (step 5b): an ex-date is knowable at its open, whether
+        # or not that session's bar has settled.
+        for column, kind in DISTRIBUTION_COLUMNS.items():
+            amount = record.get(column)
+            if amount is not None and not pd.isna(amount) and amount != 0:
+                frame_distributions[(day, kind)] = _decimal(amount)
         # F-a: an unsettled row is excluded by the CLOCK, BEFORE anything in it is judged. Its
         # contents are provisional by definition: MEASURED 2026-11-18, the day's own daily bar had
         # Close and Adj Close blank at about 20:15 ET (complete at 18:37). Judged first, that blank
@@ -375,9 +414,29 @@ def _parse_symbol(
     new_splits = [SplitEvent(d, r) for d, r in sorted(frame_splits.items()) if d not in stored]
     all_splits = [*known, *new_splits]
 
+    # Distributions AS PAID (step 5b): yfinance reports them on the split-adjusted basis (MEASURED
+    # 2026-11-18), so the amount is multiplied back by the ratios of splits after the ex-date, as
+    # prices are. Exactly: a product that would have to round fails the symbol (Inexact trapped).
+    stored_distributions = {(x.effective_at, x.kind): x.amount for x in known_distributions}
+    new_distributions = []
+    for (ex_date, kind), provider_amount in sorted(frame_distributions.items()):
+        factor = _factor(all_splits, ex_date)
+        with localcontext() as exact:
+            exact.traps[Inexact] = True
+            try:
+                as_paid = provider_amount * factor
+            except Inexact:
+                raise NonExactAmount(f"{ticker}: a rebuilt distribution is not exact") from None
+        if (ex_date, kind) in stored_distributions:
+            if stored_distributions[(ex_date, kind)] != as_paid:
+                raise DistributionConflict(f"{ticker}: a distribution differs from the stored one")
+            continue
+        basis = "reconstructed" if factor != 1 else "live"
+        new_distributions.append(DistributionEvent(ex_date, kind, as_paid, basis))
+
     bars: list[SettledBar] = []
     for key in order:
-        o, h, lo, c, adj, v = rows[key]
+        o, h, lo, c, _adj, v = rows[key]
         if interval == DAILY and not isinstance(key, datetime):
             session = calendar.get(key)
             assert session is not None
@@ -421,10 +480,9 @@ def _parse_symbol(
                 v_raw=int(raw_volume),
                 raw_basis="reconstructed" if factor != 1 else "live",
                 available_at=settle,
-                total_return=_decimal(adj) if interval == DAILY else None,
             )
         )
-    return bars, new_splits
+    return bars, new_splits, new_distributions
 
 
 # --- D4: what an empty symbol means, and the run's failure ----------------------------------------

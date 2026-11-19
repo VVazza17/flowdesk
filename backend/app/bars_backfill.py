@@ -14,7 +14,8 @@ own `run_feed` and ingestion run; the 24 seeded symbols are one batch.
 What it writes, all ON CONFLICT DO NOTHING (a second run writes 0 rows): `bars_daily` with `feed =
 'backfill'` and `available_at` = the settle point (09:00 New York on D+2: the RECORDED EXCEPTION of
 2026-11-18; the values were fetched later and may include corrections made after it, and a strict
-replay excludes `feed = 'backfill'`), `bar_total_return` revision 0, and `splits`. A re-fetch that
+replay excludes `feed = 'backfill'`), `splits`, and `distributions` (step 5b; the same exception and
+`feed`). A re-fetch that
 differs from a stored bar fails that symbol and overwrites nothing (D3).
 
 It reports per-symbol coverage over the window: a symbol younger than the window is reported as such
@@ -72,9 +73,8 @@ def utcnow() -> datetime:
 class Report:
     rows_written: int = 0
     bars: int = 0
-    total_returns: int = 0
+    distributions: int = 0
     splits: int = 0
-    total_return_differs: int = 0
     volume_revisions: dict[str, int] = field(default_factory=dict)  # per symbol, kept stored
     unsettled: int = 0
     coverage: list[Coverage] = field(default_factory=list)
@@ -130,6 +130,8 @@ async def backfill(
         async def body(ctx: FeedContext) -> FeedResult:
             stored = await bars_store.load_splits(engine, by_provider.values())
             known = {p: stored[sid] for p, sid in by_provider.items()}
+            stored_d = await bars_store.load_distributions(engine, by_provider.values())
+            known_d = {p: stored_d[sid] for p, sid in by_provider.items()}
             now = clock()
             batch = await client.fetch(
                 list(by_provider), DAILY, today=now.astimezone(NEW_YORK).date(), period=period
@@ -142,12 +144,14 @@ async def backfill(
                 calendar=calendar,
                 now=now,
                 known_splits=known,
+                known_distributions=known_d,
             )
             counts = await bars_store.write_daily(
                 engine,
                 result.bars,
                 result.new_splits,
                 by_provider,
+                result.new_distributions,
                 calendar=calendar,
                 feed=BACKFILL_FEED_VALUE,
                 ingestion_run_id=ctx.run_id,
@@ -168,10 +172,9 @@ async def backfill(
             if parsed:
                 window.extend([min(parsed), max(parsed)])
             report.bars += counts.bars
-            report.total_returns += counts.total_returns
+            report.distributions += counts.distributions
             report.splits += counts.splits
             report.rows_written += counts.rows_written
-            report.total_return_differs += counts.total_return_differs
             for ticker, n in counts.volume_revisions.items():
                 report.volume_revisions[ticker] = report.volume_revisions.get(ticker, 0) + n
             if counts.volume_revisions:
@@ -277,10 +280,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def print_report(report: Report) -> None:
     print(
-        f"bars_daily +{report.bars}, bar_total_return +{report.total_returns}, "
+        f"bars_daily +{report.bars}, distributions +{report.distributions}, "
         f"splits +{report.splits} (rows written {report.rows_written}); "
-        f"unsettled rows skipped {report.unsettled}; "
-        f"stored total returns that differ from today's {report.total_return_differs}",
+        f"unsettled rows skipped {report.unsettled}",
         file=sys.stderr,
     )
     if report.volume_revisions:
@@ -330,7 +332,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "bars_backfill_done",
         rows_written=report.rows_written,
         bars=report.bars,
-        total_returns=report.total_returns,
+        distributions=report.distributions,
         splits=report.splits,
     )
     return 0

@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from app.ingest.bars import DAILY, INTRADAY_15M, NEW_YORK
 from app.services import bars_read
-from app.services.bars_read import Bar, Missing, Reason, Snapshot
+from app.services.bars_read import Bar, Missing, Reason
 from app.services.reference_seed import seed_reference
 from app.services.sessions import sync_sessions
 from tests.yfixtures import nyse
@@ -71,14 +71,22 @@ def put_bar(url: str, ticker: str, d: date, close: str, *, feed: str = "poll", v
     )  # fmt: skip
 
 
-def put_tr(
-    url: str, ticker: str, d: date, revision: int, value: str, available_at: datetime
+def put_dist(
+    url: str,
+    ticker: str,
+    d: date,
+    amount: str,
+    *,
+    kind: str = "dividend",
+    feed: str = "poll",
+    available_at: datetime | None = None,
 ) -> None:
     sql(
         url,
-        "INSERT INTO bar_total_return (symbol_id, effective_at, revision, value, available_at, "
-        "source) SELECT id, :e, :r, :v, :a, 'yfinance' FROM symbols WHERE ticker = :t",
-        t=ticker, e=opens(d), r=revision, v=Decimal(value), a=available_at,
+        "INSERT INTO distributions (symbol_id, effective_at, kind, amount, raw_basis, feed, "
+        "available_at, source) SELECT id, :d, :k, :a, 'live', :f, :t_at, 'yfinance' "
+        "FROM symbols WHERE ticker = :t",
+        t=ticker, d=d, k=kind, a=Decimal(amount), f=feed, t_at=available_at or opens(d),
     )  # fmt: skip
 
 
@@ -105,20 +113,21 @@ def db(scratch_url: str) -> str:
 def world(db: str) -> str:
     """XLK: backfill D1..D3, poll D4, D5, D9 (D8 a gap); a 2:1 split effective D5 (so D1..D4
     adjust);
-    total return revisions on D1. XLE (the second key): later sessions, its own 10:1 split effective
-    D2, a revision 5 on the same instant as XLK's D1, larger values everywhere."""
+    dividends ex D3 (2.04 as paid, backfill) and ex D5 (1.03, poll, on the split day). XLE (the
+    second key): later sessions, its own 10:1 split effective D2, dividends of 999 ex D2 and D3,
+    larger values everywhere."""
     for d, c in ((D1, "200"), (D2, "202"), (D3, "204")):
         put_bar(db, "XLK", d, c, feed="backfill")
     for d, c in ((D4, "206"), (D5, "104"), (D9, "105")):
         put_bar(db, "XLK", d, c)
     put_split(db, "XLK", D5, "2")
-    put_tr(db, "XLK", D1, 0, "190.5", settle(D1))
-    put_tr(db, "XLK", D1, 1, "190.7", settle(D1) + timedelta(days=20))
+    put_dist(db, "XLK", D3, "2.04", feed="backfill")
+    put_dist(db, "XLK", D5, "1.03")
     for d in (D1, D2, D3, D4, D5, GAP, D9, date(2025, 12, 10), date(2025, 12, 11)):
         put_bar(db, "XLE", d, "9999", vol=99_999_999)
     put_split(db, "XLE", D2, "10")
-    put_tr(db, "XLE", D1, 0, "9000", settle(D1))
-    put_tr(db, "XLE", D1, 5, "9999", settle(D1) + timedelta(days=1))
+    put_dist(db, "XLE", D2, "999")
+    put_dist(db, "XLE", D3, "999")
     return db
 
 
@@ -135,7 +144,9 @@ LATE = datetime(2026, 1, 31, 12, tzinfo=NEW_YORK)  # everything above has settle
 # --- the signature: both keywords required at every call site -------------------------------------
 
 
-@pytest.mark.parametrize("fn", ["bars_as_of", "latest_bar_as_of", "bar_as_of"])
+@pytest.mark.parametrize(
+    "fn", ["bars_as_of", "latest_bar_as_of", "bar_as_of", "total_return_between"]
+)
 def test_as_of_and_include_backfill_are_required_keywords(fn: str) -> None:
     params = inspect.signature(getattr(bars_read, fn)).parameters
     for name in ("as_of", "include_backfill"):
@@ -213,29 +224,10 @@ def test_a_split_does_not_adjust_its_own_session_or_later(world: str) -> None:
     assert isinstance(d5, Bar) and d5.split_factor == 1 and d5.c_adj == Decimal("104")
 
 
-# --- total return: the latest revision knowable at T ----------------------------------------------
-
-
-def test_total_return_is_the_latest_revision_knowable_at_t(world: str) -> None:
-    # XLE has revision 5 on the same instant, knowable earlier: it would win "highest revision" and
-    # "latest" if the symbol filter were lost.
-    between = settle(D1) + timedelta(days=10)
-    at_rev0 = read(world, "bar_as_of", "XLK", D1, as_of=between, include_backfill=True)
-    at_rev1 = read(world, "bar_as_of", "XLK", D1, as_of=LATE, include_backfill=True)
-    assert isinstance(at_rev0, Bar) and isinstance(at_rev1, Bar)
-    assert (at_rev0.total_return, at_rev0.total_return_revision) == (Decimal("190.5"), 0)
-    assert (at_rev1.total_return, at_rev1.total_return_revision) == (Decimal("190.7"), 1)
-    # A bar with no total return stored has None, never a borrowed value.
-    d4 = read(world, "bar_as_of", "XLK", D4, as_of=LATE, include_backfill=True)
-    assert isinstance(d4, Bar) and d4.total_return is None
-
-
-def test_the_snapshot_carries_the_same_total_returns(world: str) -> None:
-    between = settle(D1) + timedelta(days=10)
-    snap = read(world, "bars_as_of", "XLK", as_of=between, include_backfill=True)
-    assert isinstance(snap, Snapshot)
-    by_day = {b.session_date: b for b in snap.bars}
-    assert by_day[D1].total_return == Decimal("190.5")
+def test_a_bar_carries_no_stored_total_return() -> None:
+    # Step 5b: a stored level leaked hindsight; total return is total_return_between, a ratio.
+    assert "total_return" not in Bar.__dataclass_fields__
+    assert "total_return_revision" not in Bar.__dataclass_fields__
 
 
 # --- the reasons, in decision order ---------------------------------------------------------------
@@ -296,9 +288,7 @@ def test_the_intraday_read_reads_intraday_bars_only(world: str) -> None:
         e=opens(D4), a=settle(D4, k=1),
     )  # fmt: skip
     m15 = read(world, "bars_as_of", "XLK", as_of=LATE, include_backfill=True, interval=INTRADAY_15M)
-    assert [(b.session_date, b.c_raw, b.total_return) for b in m15.bars] == [
-        (D4, Decimal("1.5"), None)
-    ]
+    assert [(b.session_date, b.c_raw) for b in m15.bars] == [(D4, Decimal("1.5"))]
     assert m15.bars[0].split_factor == 2  # the D5 split applies to the D4 15m bar too
     daily = read(world, "bars_as_of", "XLK", as_of=LATE, include_backfill=True)
     assert Decimal("1.5") not in [b.c_raw for b in daily.bars]
@@ -314,3 +304,113 @@ def test_the_read_selects_an_explicit_column_list() -> None:
         "raw_basis", "feed", "available_at",
     ]  # fmt: skip
     assert "ingestion_run_id" not in names and "*" not in str(query)
+
+
+# --- total return between two sessions, computed on read (step 5b) --------------------------------
+
+
+def tr(url: str, ticker: str, start: date, end: date, **kw: Any) -> Any:
+    kw.setdefault("as_of", LATE)
+    kw.setdefault("include_backfill", True)
+    return read(url, "total_return_between", ticker, start, end, **kw)
+
+
+def yahoo(price_ratio: Decimal, *factors: Decimal) -> Decimal:
+    out = price_ratio
+    for f in factors:
+        out /= f
+    return out
+
+
+def test_the_total_return_is_a_ratio_by_yahoos_convention(world: str) -> None:
+    # XLK D1 -> D4 as of LATE: the D5 2:1 split is knowable, so every close and amount is on the
+    # post-split basis. The D3 dividend, paid 2.04 per pre-split share, is 1.02 on that basis, and
+    # the close before its ex-date (D2) is 202 / 2. Yahoo's factor: 1 - 1.02 / 101.
+    got = tr(world, "XLK", D1, D4)
+    price = (Decimal("206") / 2) / (Decimal("200") / 2)
+    expected = yahoo(price, 1 - (Decimal("2.04") / 2) / (Decimal("202") / 2))
+    assert got.ratio == expected and got.price_ratio == price
+    assert [(d.effective_at, d.amount, d.amount_adj) for d in got.distributions] == [
+        (D3, Decimal("2.04"), Decimal("1.02"))
+    ]
+
+
+def test_a_second_symbols_distributions_never_reach_the_first(world: str) -> None:
+    # XLE has distributions on D2 and D3 of 999 per share: lost symbol filter, wildly different
+    # ratio (or a negative factor).
+    got = tr(world, "XLK", D1, D4)
+    assert [d.effective_at for d in got.distributions] == [D3]
+
+
+def test_an_ex_date_on_the_split_day_uses_one_share_basis(world: str) -> None:
+    # The D5 dividend is paid on post-split shares; the D4 close is put on that basis by the split.
+    got = tr(world, "XLK", D4, D5)
+    expected = yahoo(
+        Decimal("104") / (Decimal("206") / 2), 1 - Decimal("1.03") / (Decimal("206") / 2)
+    )
+    assert got.ratio == expected
+
+
+def test_the_window_is_start_exclusive_end_inclusive(world: str) -> None:
+    assert [d.effective_at for d in tr(world, "XLK", D2, D3).distributions] == [D3]
+    assert tr(world, "XLK", D3, D4).distributions == ()  # an ex-date AT start belongs before it
+
+
+def test_a_split_inside_the_window_is_on_one_basis(world: str) -> None:
+    got = tr(world, "XLK", D1, D9)
+    assert got.price_ratio == Decimal("105") / (Decimal("200") / 2)  # 1.05, not 0.525
+    assert [d.effective_at for d in got.distributions] == [D3, D5]
+
+
+def test_a_split_not_knowable_at_t_is_not_applied(world: str) -> None:
+    # As of just before D5's open the split is not knowable: D1 -> D2 is as traded.
+    before_split = opens(D5) - timedelta(minutes=1)
+    got = tr(world, "XLK", D1, D2, as_of=before_split)
+    assert got.price_ratio == Decimal("202") / Decimal("200")
+
+
+def test_a_distribution_is_invisible_until_its_available_at(world: str) -> None:
+    # By the store's rule an in-window distribution is knowable at its ex-date's open, which is
+    # always before the end bar's settle point; so the filter is observable only with a LATER
+    # available_at. This pins the filter itself: a capital gain ex D4, recorded as knowable only on
+    # 2026-01-10, is not applied before then and is after.
+    put_dist(
+        world,
+        "XLK",
+        D4,
+        "0.5",
+        kind="capital_gain",
+        available_at=datetime(2026, 1, 10, tzinfo=NEW_YORK),
+    )
+    early = tr(world, "XLK", D3, D4, as_of=datetime(2026, 1, 9, tzinfo=NEW_YORK))
+    late = tr(world, "XLK", D3, D4, as_of=LATE)
+    assert early.distributions == ()
+    assert [(d.kind, d.amount) for d in late.distributions] == [("capital_gain", Decimal("0.5"))]
+
+
+def test_strict_mode_refuses_a_window_with_a_backfill_only_distribution(world: str) -> None:
+    got = tr(world, "XLK", D4, D5, include_backfill=False)
+    assert isinstance(got, Bar) is False and got.ratio == yahoo(
+        Decimal("104") / (Decimal("206") / 2), 1 - Decimal("1.03") / (Decimal("206") / 2)
+    )
+    # Both bars of D4 -> D5 are poll rows; a backfill-only distribution inside the window must still
+    # refuse the strict read, never be silently left out of the ratio.
+    put_dist(world, "XLK", D5, "0.25", kind="capital_gain", feed="backfill")
+    refused = tr(world, "XLK", D4, D5, include_backfill=False)
+    assert isinstance(refused, Missing) and refused.reason is Reason.BACKFILL_EXCLUDED
+    assert "distribution" in refused.detail
+
+
+def test_a_distribution_whose_previous_session_has_no_bar_is_not_stored(world: str) -> None:
+    put_dist(world, "XLK", D9, "0.4")  # the session before D9 is the gap D8
+    got = tr(world, "XLK", D5, D9)
+    assert isinstance(got, Missing) and got.reason is Reason.NOT_STORED
+
+
+def test_a_missing_end_bar_says_why(world: str) -> None:
+    got = tr(world, "XLK", D1, date(2025, 12, 6))
+    assert isinstance(got, Missing) and got.reason is Reason.NOT_A_SESSION
+
+
+def test_the_same_session_is_a_ratio_of_one(world: str) -> None:
+    assert tr(world, "XLK", D4, D4).ratio == 1

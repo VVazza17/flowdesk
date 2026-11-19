@@ -24,8 +24,9 @@ computed here: the raw price divided by, and the raw volume multiplied by, the r
 that takes effect AFTER the bar's session AND whose `available_at <= T`. A split not yet knowable at
 T is not applied, so a replay at T sees the adjustment that was knowable at T and nothing later.
 
-TOTAL RETURN is the latest `bar_total_return` revision with `available_at <= T` (daily only), or
-None. "Current total return" is the same rule with T = now.
+TOTAL RETURN is computed, never stored (step 5b; D2 superseded): `total_return_between` returns the
+ratio between two sessions' closes from what was knowable at T (as-traded closes, splits and
+distributions with `available_at <= T`), by Yahoo's convention. A RATIO, never a level.
 
 THE WAYS TO HAVE NO ANSWER are different answers (`Missing.reason`), decided in this order:
 
@@ -58,7 +59,7 @@ from sqlalchemy import Row, Select, and_, func, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from app.ingest.bars import DAILY, INTRADAY_15M
-from app.models.prices import BarDaily, BarIntraday, BarTotalReturn, Split
+from app.models.prices import BarDaily, BarIntraday, Distribution, Split
 from app.models.reference import Symbol, TradingSession
 
 CALENDAR = "XNYS"
@@ -98,8 +99,7 @@ class Bar:
     l_adj: Decimal
     c_adj: Decimal
     v_adj: Decimal
-    total_return: Decimal | None  # daily: the latest revision knowable at as_of; intraday: None
-    total_return_revision: int | None
+    # No total return here: a stored level leaked hindsight (step 5b). See total_return_between.
 
 
 @dataclass(frozen=True)
@@ -187,36 +187,16 @@ async def _splits(
     return [(r.effective_at, r.ratio) for r in rows]
 
 
-async def _total_returns(
-    conn: AsyncConnection, symbol_id: int, instants: Sequence[datetime], as_of: datetime
-) -> dict[datetime, tuple[Decimal, int]]:
-    if not instants:
-        return {}
-    rows = await conn.execute(
-        select(BarTotalReturn.effective_at, BarTotalReturn.value, BarTotalReturn.revision)
-        .where(
-            BarTotalReturn.symbol_id == symbol_id,
-            BarTotalReturn.available_at <= as_of,
-            BarTotalReturn.effective_at.in_(list(instants)),
-        )
-        .distinct(BarTotalReturn.effective_at)
-        .order_by(BarTotalReturn.effective_at, BarTotalReturn.revision.desc())
-    )
-    return {r.effective_at: (r.value, r.revision) for r in rows}
-
-
 def _bar(
     ticker: str,
     interval: str,
     row: Row[Any],
     splits: Sequence[tuple[date, Decimal]],
-    total_returns: dict[datetime, tuple[Decimal, int]],
 ) -> Bar:
     factor = Decimal(1)
     for effective, ratio in splits:
         if effective > row.session_date:
             factor *= ratio
-    tr = total_returns.get(row.effective_at)
     return Bar(
         ticker=ticker,
         interval=interval,
@@ -236,8 +216,6 @@ def _bar(
         l_adj=row.l_raw / factor,
         c_adj=row.c_raw / factor,
         v_adj=Decimal(row.v_raw) * factor,
-        total_return=tr[0] if tr else None,
-        total_return_revision=tr[1] if tr else None,
     )
 
 
@@ -267,12 +245,7 @@ async def bars_as_of(
             query = query.where(TradingSession.session_date <= end)
         rows = (await conn.execute(query.order_by(t.effective_at))).all()
         splits = await _splits(conn, symbol_id, as_of)
-        trs = (
-            await _total_returns(conn, symbol_id, [r.effective_at for r in rows], as_of)
-            if interval == DAILY
-            else {}
-        )
-    bars = tuple(_bar(ticker, interval, r, splits, trs) for r in rows)
+    bars = tuple(_bar(ticker, interval, r, splits) for r in rows)
     return Snapshot(ticker, interval, as_of, include_backfill, bars)
 
 
@@ -301,12 +274,7 @@ async def latest_bar_as_of(
         if row is None:
             return await _why_nothing(conn, t, ticker, symbol_id, as_of, include_backfill)
         splits = await _splits(conn, symbol_id, as_of)
-        trs = (
-            await _total_returns(conn, symbol_id, [row.effective_at], as_of)
-            if interval == DAILY
-            else {}
-        )
-    return _bar(ticker, interval, row, splits, trs)
+    return _bar(ticker, interval, row, splits)
 
 
 async def bar_as_of(
@@ -334,8 +302,7 @@ async def bar_as_of(
         ).first()
         if row is not None:
             splits = await _splits(conn, symbol_id, as_of)
-            trs = await _total_returns(conn, symbol_id, [row.effective_at], as_of)
-            return _bar(ticker, DAILY, row, splits, trs)
+            return _bar(ticker, DAILY, row, splits)
         session = (
             await conn.execute(
                 select(TradingSession.opens_at).where(
@@ -421,4 +388,133 @@ async def _why_nothing(
         return Missing(Reason.NOT_STORED, f"{ticker}: no bar is stored")
     return Missing(
         Reason.BEFORE_RECORD, f"{ticker}: nothing about it was knowable at {as_of.isoformat()}"
+    )
+
+
+@dataclass(frozen=True)
+class AppliedDistribution:
+    effective_at: date  # the ex-date
+    kind: str
+    amount: Decimal  # as paid
+    amount_adj: Decimal  # on the split basis knowable at as_of
+    close_before_adj: Decimal  # the close of the session before the ex-date, same basis
+    factor: Decimal  # 1 - amount_adj / close_before_adj (Yahoo's convention)
+
+
+@dataclass(frozen=True)
+class TotalReturn:
+    """The total return of `ticker` from the close of `start` to the close of `end`, as knowable
+    at `as_of`: a RATIO (1.05 is +5%), never a level. A level needs a base date, and the base is
+    what leaked (step 5b)."""
+
+    ticker: str
+    start: date
+    end: date
+    as_of: datetime
+    include_backfill: bool
+    ratio: Decimal
+    price_ratio: Decimal  # c_adj(end) / c_adj(start): the return without distributions
+    distributions: tuple[AppliedDistribution, ...]
+
+
+async def total_return_between(
+    engine: AsyncEngine,
+    ticker: str,
+    start: date,
+    end: date,
+    *,
+    as_of: datetime,
+    include_backfill: bool,
+) -> TotalReturn | Missing:
+    """Total return from the close of session `start` to the close of session `end`, as of T.
+
+    Computed from what was knowable at T and nothing else (Kyle, 2026-11-18, step 5b): the two
+    bars' as-traded closes, the splits with `available_at <= T` (which put every close and amount on
+    one share basis), and the distributions with `available_at <= T` whose ex-date lies in
+    (start, end]. Yahoo's own convention, MEASURED 2026-11-18: across an ex-date E the factor is
+    `1 - D_E / Close_{E-1}`, so the ratio is (C_end / C_start) / product of those factors.
+
+    Either bar missing at T is that bar's `Missing`. A distribution in the window whose previous
+    session has no visible bar is `NOT_STORED`. In strict mode a distribution in the window that
+    exists only as a backfill row is `BACKFILL_EXCLUDED`: a return that silently left a dividend out
+    would be a wrong number, not a stricter one.
+    """
+    _require_aware(as_of)
+    if end < start:
+        raise ValueError("end must not be before start")
+    first = await bar_as_of(engine, ticker, start, as_of=as_of, include_backfill=include_backfill)
+    if isinstance(first, Missing):
+        return first
+    last = await bar_as_of(engine, ticker, end, as_of=as_of, include_backfill=include_backfill)
+    if isinstance(last, Missing):
+        return last
+    async with engine.connect() as conn:
+        symbol_id = await _symbol_id(conn, ticker)
+        assert symbol_id is not None
+        splits = await _splits(conn, symbol_id, as_of)
+        rows = (
+            await conn.execute(
+                select(
+                    Distribution.effective_at,
+                    Distribution.kind,
+                    Distribution.amount,
+                    Distribution.feed,
+                )
+                .where(
+                    Distribution.symbol_id == symbol_id,
+                    Distribution.available_at <= as_of,
+                    Distribution.effective_at > start,
+                    Distribution.effective_at <= end,
+                )
+                .order_by(Distribution.effective_at, Distribution.kind)
+            )
+        ).all()
+        if not include_backfill and any(r.feed == BACKFILL for r in rows):
+            return Missing(
+                Reason.BACKFILL_EXCLUDED,
+                f"{ticker}: a distribution in ({start}, {end}] exists only as a backfill row "
+                "(strict mode excludes it)",
+            )
+        sessions = [
+            r.session_date
+            for r in await conn.execute(
+                select(TradingSession.session_date)
+                .where(
+                    TradingSession.calendar_code == CALENDAR,
+                    TradingSession.session_date >= start,
+                    TradingSession.session_date <= end,
+                )
+                .order_by(TradingSession.session_date)
+            )
+        ]
+    applied = []
+    for r in rows:
+        before = max((d for d in sessions if d < r.effective_at), default=None)
+        prev = (
+            None
+            if before is None
+            else await bar_as_of(
+                engine, ticker, before, as_of=as_of, include_backfill=include_backfill
+            )
+        )
+        if not isinstance(prev, Bar):
+            return Missing(
+                Reason.NOT_STORED,
+                f"{ticker}: no visible bar for the session before the ex-date {r.effective_at}",
+            )
+        ratio_after = Decimal(1)
+        for effective, split_ratio in splits:
+            if effective > r.effective_at:
+                ratio_after *= split_ratio
+        amount_adj = r.amount / ratio_after
+        factor = 1 - amount_adj / prev.c_adj
+        applied.append(
+            AppliedDistribution(r.effective_at, r.kind, r.amount, amount_adj, prev.c_adj, factor)
+        )
+    price_ratio = last.c_adj / first.c_adj
+    ratio = price_ratio
+    for a in applied:
+        ratio /= a.factor
+    return TotalReturn(
+        ticker, start, end, as_of, include_backfill, ratio, price_ratio, tuple(applied)
     )

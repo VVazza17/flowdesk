@@ -3716,3 +3716,72 @@ already pushed, and one reason the commit was not stopped.
    exit code explicitly, and commits and pushes only when both pass. Rule 11 in CLAUDE.md now says so.
 
 `e17288a` itself changed documentation and a settings comment only; it is left as it is, and this commit fixes what made its gate red.
+
+### Addendum 2026-11-18 (seventh) — Kyle adopts the proposal: distributions as dated events, total return on read (step 5b, before the poll)
+
+Written the turn it was given.
+
+- **Distributions are dated events, and total return is computed on read** (D3 b applied to dividends). **D2 is SUPERSEDED**: total return is no
+  longer stored anywhere.
+- **Reinvestment convention: Yahoo's own, as measured** (2026-11-18): across an ex-date E the adjustment factor is `1 - D_E / Close_{E-1}`, on one
+  share basis. **Slice 7 requirement:** check computed returns against Yahoo's Adj Close ratios within ONE fetch, with a tolerance MEASURED, not
+  assumed.
+- **`bar_total_return` is DROPPED by migration.** An unread table of values stamped before they were knowable is a trap for the first direct query,
+  and its contents can be re-fetched. **The 16-ULP requirement is moot.** **The periodic re-fetch job shrinks** to new distributions, new splits
+  and late volume revisions.
+- **Slice 8 is partly pulled forward, as with splits: distribution events only. THIS AMENDS D3's "dividends ... stay in slice 8"** (addendum
+  2026-11-16 second). The confirmation workflow and everything else about corporate actions stay in slice 8.
+- **`available_at` = the ex-date's session open** (late, never early; ASSUMED adequate). **Backfilled distributions fall under the same recorded
+  backfill exception as bars, and carry `feed = 'backfill'`.**
+- **Amounts are stored AS PAID**, rebuilt from yfinance's split-adjusted amounts x the ratios of later splits, as prices are. **A non-exact result
+  fails the symbol and is never rounded.**
+- **Capital gains: the same table, the same rule.** Unmeasured, because none occurred in the window. **The first real one is checked against
+  Yahoo's ratio in slice 7 before it is trusted.**
+
+Build (step 5b): the migration (`distributions` with the insert-only triggers, `bar_total_return` dropped), the backfill writing distributions,
+`bars_read` without a stored-level total return and with a read of the total return between two sessions as of T (a ratio, never a level), the
+tests, the re-run hindsight probe, a check against Yahoo, mutation, commit through `commit-gated.sh`.
+
+### 2026-11-18 — M2 slice 6 step 5b built: distributions as dated events, total return on read, `bar_total_return` dropped
+
+- **Migration 0013** adds `distributions` (PK `symbol_id, effective_at, kind`; `kind` dividend | capital_gain; `amount > 0`; `raw_basis`; `feed`
+  poll | backfill; `available_at` = the ex-date session's open; the 0010 insert-only trigger function; comments on every column) and **drops
+  `bar_total_return`** (the downgrade recreates it exactly as 0010 made it). Models: `Distribution` in, `BarTotalReturn` out.
+- **Parser (`app/ingest/bars.py`):** distributions are read from the `Dividends` and `Capital Gains` columns of EVERY row, settled or not (an
+  ex-date is knowable at its open); amounts rebuilt AS PAID x the ratios of later splits, inside a Decimal context that traps `Inexact` (a product
+  that would round fails the symbol, `NonExactAmount`); a disagreement with a stored distribution fails the symbol (`DistributionConflict`).
+  `SettledBar` has no total return.
+- **Store and backfill:** distributions written in the symbol's transaction, ON CONFLICT DO NOTHING, `feed` as the run's, `available_at` the
+  ex-date open. The backfill report counts distributions.
+- **Read (`app/services/bars_read.py`):** `Bar` has no total return. **`total_return_between(engine, ticker, start, end, *, as_of,
+  include_backfill)`** returns a RATIO (never a level) from the two bars' closes, the splits and the distributions with `available_at <= as_of`,
+  ex-dates in (start, end], by Yahoo's convention `(C_end / C_start) / product(1 - D_E / C_{E-1})` with every close and amount on the share basis
+  knowable at T. Strict mode refuses (`BACKFILL_EXCLUDED`) a window holding a backfill-only distribution rather than silently leaving it out; a
+  distribution whose previous session has no visible bar is `NOT_STORED`.
+
+**Dev stack (MEASURED 2026-11-18, about 21:51 ET):** migrated to 0013 (`bar_total_return` gone); the backfill re-run wrote **bars 0** (all 11,976
+present) and **distributions 119** across 18 of the 24 symbols (the six without are USO, UNG, GLD, SLV, CPER, ARKK: no distributions in the
+window), ex-dates 2024-12-17 to 2026-09-21, **20 reconstructed** (the 20 pre-split ex-dates of XLK, XLE, XLY, XLU, XLB), 0 capital gains, all
+`feed = backfill`.
+
+**Verification (MEASURED 2026-11-18; `docs/evidence/tr-computed-probe.py.txt`, output `docs/evidence/2026-11-18-total-return-computed.txt`):**
+- **The hindsight probe, re-run through the new read.** SPY 2025-03-03 to 03-04 as of 2025-03-06 12:00 ET: **0 distributions applied**, and the
+  ratio is identical as of now (no event in the window; the seven later dividends cannot touch it); `bar_as_of` carries no stored level. XLK
+  2025-06-02 to 06-27 as of 2025-07-01 12:00 ET: `split_factor` 1 (**the December split is not applied**), **only the 2025-06-23 dividend
+  applied** (0.398 as paid), and the same window as of now gives an identical ratio (a ratio is split-invariant).
+- **Against Yahoo: our computed total return from the first to the last stored session (2024-11-19 to 2026-11-16), as of now, against Yahoo's
+  Adj Close ratio over the same sessions from ONE fresh fetch: max relative difference 9.58e-8 over the 24 symbols. SPY 5.75e-8 (8
+  dividends); XLK across its split 7.32e-8 (8 dividends, 4 of them before the split).** Symbols with no distributions match exactly (0 or 2e-16).
+  That is the float32 rounding of Yahoo's Adj Close (the 4-ULP jitter measured earlier), not a convention gap. **Slice 7's tolerance is to be
+  measured there, as decided; this is the first measurement it can start from.**
+
+**Tests:** distribution shape, key (rule 9: a second symbol's same ex-date and kind, a later one, larger amounts), checks and triggers
+(`test_price_tables.py`); parse (as paid across a split, read from an unsettled row, capital gains, agree / disagree with stored, non-exact)
+(`test_yfinance_bars.py`); backfill writes as paid with backfill provenance, a re-run writes 0 (`test_bars_backfill.py`); the read
+(`test_bars_read.py`): Yahoo's convention by hand, rule 9 (a second symbol's 999 dividends never reach the first), the ex-date on the split day,
+start-exclusive end-inclusive, a split inside the window, a split not knowable at T, a distribution invisible until its `available_at` (with a
+deliberately later `available_at`: by the store's rule an in-window ex-date's open always precedes the end bar's settle point, so the filter is
+otherwise unobservable), strict mode refusing a backfill-only distribution, a missing previous bar, ratio 1 for one session.
+**Mutation: `m2-slice6-step5b` 23/23**; the total-return mutations of steps 2, 4 and 5 removed with the table (step 2 35/35, step 3 34/34,
+step 4 13/13, step 5 13/13). One survivor on the way, fixed: the strict-mode test's window started on a backfill BAR, so it was refused before
+the distribution check was reached; the test now uses two poll bars with a backfill-only distribution between them.

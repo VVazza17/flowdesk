@@ -1407,8 +1407,9 @@ PRIMARY KEY(symbol_id, interval, ts))` hypertable for every interval. Slice 6 bu
 ### Related departures from §8 `bars`, same correction release
 - **The time column is `effective_at`, not `ts`**: the provenance vocabulary (IDEA-034) binds names on every observation table. A terminology
   correction: slice 6's D5 wrote `ts` as shorthand.
-- **No `c_total_return`**: total return lives only in `bar_total_return`, with revisions (Kyle, 2026-11-18, superseding D2's
-  `bars.c_total_return`). "Current total return" is the latest revision there.
+- **No `c_total_return`, and no stored total return at all** (Kyle, 2026-11-18, step 5b, superseding D2): total return is computed on read
+  from as-traded prices, `splits` and `distributions` knowable at T. A `bar_total_return` table existed briefly (migration 0010) and was
+  dropped (0013): it held Yahoo's Adj Close on the fetch's basis, a hindsight leak (BUILD-LOG 2026-11-18).
 - **No `c_split_adj`, `v_split_adj`, `adjustment_factor`**: under D3 (b) adjusted values are derived on read from `splits`.
 - **No `dollar_volume`**: derived from `c_raw × v_raw`; no M2 consumer.
 - **Added**: `raw_basis`, `source`, `feed`, `venue_scope`, `available_at`, `ingested_at`, `ingestion_run_id` (D1, IDEA-034).

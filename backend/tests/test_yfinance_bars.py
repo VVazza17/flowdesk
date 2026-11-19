@@ -19,11 +19,14 @@ from app.ingest.bars import (
     NEW_YORK,
     Calendar,
     DeadSymbols,
+    DistributionConflict,
+    DistributionEvent,
     DuplicateBar,
     EmptyToday,
     IncompleteBar,
     LikelyGone,
     LikelyGoneSymbols,
+    NonExactAmount,
     NonIntegerVolume,
     Session,
     SplitConflict,
@@ -59,6 +62,7 @@ def daily(now: datetime | None = None, **kw: Any) -> Any:
         calendar=nyse(),
         now=now or fetched,
         known_splits=kw.pop("known_splits", {}),
+        known_distributions=kw.pop("known_distributions", {}),
     )
 
 
@@ -72,6 +76,7 @@ def split_batch(**kw: Any) -> Any:
         calendar=nyse(),
         now=fetched,
         known_splits=kw.pop("known_splits", {}),
+        known_distributions=kw.pop("known_distributions", {}),
     )
 
 
@@ -105,6 +110,7 @@ def test_capital_gains_is_accepted_and_a_stock_without_it_is_too() -> None:
         calendar=nyse(),
         now=fetched,
         known_splits={},
+        known_distributions={},
     )
     assert result.failures == [] and sorted(result.bars) == ["NVDA", "SPY"]
 
@@ -165,6 +171,7 @@ def test_a_naive_intraday_index_is_rejected() -> None:
             calendar=nyse(),
             now=fetched,
             known_splits={},
+            known_distributions={},
         )
 
 
@@ -210,6 +217,7 @@ def test_intraday_bars_settle_at_0900_on_the_next_session() -> None:
         calendar=nyse(),
         now=fetched,
         known_splits={},
+        known_distributions={},
     )
     days = sorted({b.session_date for b in result.bars["SPY"]})
     assert days[-1] == date(2026, 11, 17)  # Tue settled at Wed 09:00; Wed's bars wait for Thu
@@ -217,7 +225,6 @@ def test_intraday_bars_settle_at_0900_on_the_next_session() -> None:
     assert result.dead == [DEAD]
     first = min(result.bars["SPY"], key=lambda b: b.effective_at)
     assert first.effective_at.astimezone(NEW_YORK).time().isoformat() == "09:30:00"
-    assert all(b.total_return is None for b in result.bars["SPY"])
 
 
 def test_intraday_bars_outside_the_session_window_are_dropped_and_counted() -> None:
@@ -239,6 +246,7 @@ def test_intraday_bars_outside_the_session_window_are_dropped_and_counted() -> N
         calendar=Calendar(sessions),
         now=fetched,
         known_splits={},
+        known_distributions={},
     )
     monday = [b for b in result.bars["SPY"] if b.session_date == date(2026, 11, 16)]
     assert len(monday) == 14
@@ -271,12 +279,11 @@ def test_nvda_rebuilds_to_the_d3_reference_value() -> None:
         calendar=nyse(),
         now=fetched,
         known_splits={},
+        known_distributions={},
     )
     b = bar_on(result, "NVDA", date(2024, 6, 7))
     assert b.c_raw == Decimal("1208.8800048828125")  # "about 1,208.88" (D3 reference check)
     assert b.v_raw == 412_386_000 // 10
-    adj = frame[("NVDA", "Adj Close")].loc[pd.Timestamp("2024-06-07")]
-    assert b.total_return == Decimal(repr(float(adj)))
     assert bar_on(result, "SPY", date(2024, 6, 7)).raw_basis == "live"
 
 
@@ -305,6 +312,7 @@ def test_a_split_on_an_unsettled_session_still_rebuilds_the_settled_bars() -> No
         calendar=nyse(),
         now=et(2025, 12, 8, 9, 0),
         known_splits={},
+        known_distributions={},
     )
     assert max(b.session_date for b in result.bars["XLK"]) == date(2025, 12, 4)
     assert bar_on(result, "XLK", date(2025, 12, 4)).c_raw == Decimal("291.07000732421876")
@@ -490,3 +498,93 @@ def test_the_run_names_every_failed_symbol_in_our_own_words() -> None:
     assert isinstance(run_failure(failures[:1]), DeadSymbols)
     assert run_failure([]) is None
     assert "never automatic" in str(run_failure(failures[1:2]))
+
+
+# --- distributions as dated events (step 5b) ------------------------------------------------------
+
+
+def _with_dividends(frame: Any, rows: dict[tuple[str, str], float]) -> Any:
+    frame = frame.copy()
+    for (ticker, day), amount in rows.items():
+        frame.loc[pd.Timestamp(day), (ticker, "Dividends")] = amount
+    return frame
+
+
+def test_a_dividend_before_a_split_is_stored_as_paid_and_one_after_as_given() -> None:
+    # MEASURED 2026-11-18: yfinance's dividends are on the split-adjusted basis, so one before XLK's
+    # 2025-12-05 2:1 split is multiplied back by 2 (as paid), one after is as given.
+    frame, _, _ = load("daily_split_2025_12_05")
+    frame = _with_dividends(frame, {("XLK", "2025-12-04"): 0.193, ("XLK", "2025-12-12"): 0.2})
+    result = split_batch(frame=frame)
+    assert result.new_distributions["XLK"] == [
+        DistributionEvent(date(2025, 12, 4), "dividend", Decimal("0.386"), "reconstructed"),
+        DistributionEvent(date(2025, 12, 12), "dividend", Decimal("0.2"), "live"),
+    ]
+    assert "XLE" not in result.new_distributions  # a second symbol's are its own
+
+
+def test_a_dividend_on_an_unsettled_session_is_still_read() -> None:
+    # Read from every row, settled or not, as splits are: at Tue 2025-12-09 09:00 the Mon 12-08 bar
+    # has not settled (D+2 is Wed), but its ex-date's open has passed, so the dividend is knowable.
+    frame, errors, _ = load("daily_split_2025_12_05")
+    frame = _with_dividends(frame, {("XLK", "2025-12-08"): 0.2})
+    result = parse_batch(
+        frame,
+        errors,
+        tickers=["XLK", "XLE", "XLY", "XLU", "XLB"],
+        interval=DAILY,
+        calendar=nyse(),
+        now=et(2025, 12, 9, 9),
+        known_splits={},
+        known_distributions={},
+    )
+    assert date(2025, 12, 8) not in [b.session_date for b in result.bars["XLK"]]  # unsettled
+    assert result.new_distributions["XLK"] == [
+        DistributionEvent(date(2025, 12, 8), "dividend", Decimal("0.2"), "live")
+    ]
+
+
+def test_a_capital_gain_is_a_distribution_of_its_own_kind() -> None:
+    frame, _, _ = load("daily_split_2025_12_05")
+    frame = frame.copy()
+    frame.loc[pd.Timestamp("2025-12-08"), ("XLK", "Capital Gains")] = 0.5
+    frame.loc[pd.Timestamp("2025-12-08"), ("XLK", "Dividends")] = 0.2
+    result = split_batch(frame=frame)
+    assert {(d.kind, d.amount) for d in result.new_distributions["XLK"]} == {
+        ("capital_gain", Decimal("0.5")),
+        ("dividend", Decimal("0.2")),
+    }
+
+
+def test_a_stored_distribution_that_agrees_is_not_new_and_one_that_disagrees_fails_the_symbol() -> (
+    None
+):
+    frame, _, _ = load("daily_split_2025_12_05")
+    frame = _with_dividends(frame, {("XLK", "2025-12-04"): 0.193, ("XLE", "2025-12-04"): 0.35})
+    same = split_batch(
+        frame=frame,
+        known_distributions={
+            "XLK": [DistributionEvent(date(2025, 12, 4), "dividend", Decimal("0.386"))]
+        },
+    )
+    assert "XLK" not in same.new_distributions and same.failures == []
+    differs = split_batch(
+        frame=frame,
+        known_distributions={
+            "XLK": [DistributionEvent(date(2025, 12, 4), "dividend", Decimal("0.4"))]
+        },
+    )
+    assert [f.ticker for f in differs.failures] == ["XLK"]
+    assert isinstance(differs.failures[0].error, DistributionConflict)
+    # Rule 9: XLE's distribution is unaffected by XLK's stored one.
+    assert differs.new_distributions["XLE"][0].amount == Decimal("0.70")
+
+
+def test_a_rebuilt_amount_that_would_have_to_round_fails_the_symbol_never_rounds() -> None:
+    frame, _, _ = load("daily_split_2025_12_05")
+    frame = _with_dividends(frame, {("XLK", "2025-12-04"): 0.193})
+    # A stored split with a ratio whose product with 0.193 needs more than 28 significant digits.
+    odd = SplitEvent(date(2026, 1, 15), Decimal("1.234567890123456789012345678"))
+    result = split_batch(frame=frame, known_splits={"XLK": [odd]})
+    assert [f.ticker for f in result.failures] == ["XLK"]
+    assert isinstance(result.failures[0].error, NonExactAmount)

@@ -33,6 +33,7 @@ CLIENT = "app/ingest/yfinance_client.py"
 STORE = "app/services/bars_store.py"
 BACKFILL = "app/bars_backfill.py"
 READ = "app/services/bars_read.py"
+M13 = "alembic/versions/0013_distributions_drop_total_return.py"
 # The trigger-creating loop in 0010 and 0011 (each file has it once).
 TRIGGER_LOOP = (
     'for event, scope in (("UPDATE", "ROW"), ("DELETE", "ROW"), ("TRUNCATE", "STATEMENT")):'
@@ -50,6 +51,199 @@ class Mutation:
 
 
 SUITES: dict[str, tuple[str, list[Mutation]]] = {
+    "m2-slice6-step5b": (
+        "tests/test_bars_read.py",
+        [
+            # --- the distributions table (0013) ---
+            Mutation(
+                "the distributions key loses kind",
+                M13,
+                'sa.PrimaryKeyConstraint("symbol_id", "effective_at", "kind"),',
+                'sa.PrimaryKeyConstraint("symbol_id", "effective_at"),',
+                "test_distribution_key",
+                "tests/test_price_tables.py",
+            ),
+            Mutation(
+                "the distributions key loses symbol_id",
+                M13,
+                'sa.PrimaryKeyConstraint("symbol_id", "effective_at", "kind"),',
+                'sa.PrimaryKeyConstraint("effective_at", "kind"),',
+                "test_distribution_key",
+                "tests/test_price_tables.py",
+            ),
+            Mutation(
+                "any distribution kind is accepted",
+                M13,
+                "\"kind IN ('dividend', 'capital_gain')\"",
+                '"true"',
+                "test_distribution_checks",
+                "tests/test_price_tables.py",
+            ),
+            Mutation(
+                "a zero distribution is accepted",
+                M13,
+                '"amount > 0"',
+                '"amount >= 0"',
+                "test_distribution_checks",
+                "tests/test_price_tables.py",
+            ),
+            Mutation(
+                "distributions have no insert-only triggers",
+                M13,
+                '            f"CREATE TRIGGER distributions_no_{event.lower()} BEFORE {event} ON '
+                'distributions "\n'
+                '            f"FOR EACH {scope} EXECUTE FUNCTION insert_only_observation()"\n',
+                '            "SELECT 1"\n',
+                "test_no_stored_column_can_be_updated and distributions",
+                "tests/test_price_tables.py",
+            ),
+            Mutation(
+                "bar_total_return is not dropped",
+                M13,
+                '    op.drop_table("bar_total_return")\n',
+                "",
+                "test_bar_total_return_is_gone",
+                "tests/test_price_tables.py",
+            ),
+            # --- the parser ---
+            Mutation(
+                "distributions are not read",
+                BARS,
+                "            if amount is not None and not pd.isna(amount) and amount != 0:",
+                "            if amount is not None and not pd.isna(amount) and amount != 0 and "
+                "False:",
+                "test_a_dividend_before_a_split_is_stored_as_paid",
+                "tests/test_yfinance_bars.py",
+            ),
+            Mutation(
+                "distributions are read only from settled rows",
+                BARS,
+                "                frame_distributions[(day, kind)] = _decimal(amount)\n",
+                "                if (sp := calendar.settle_point(day, interval)) is not None and "
+                "sp <= now:\n"
+                "                    frame_distributions[(day, kind)] = _decimal(amount)\n",
+                "test_a_dividend_on_an_unsettled_session_is_still_read",
+                "tests/test_yfinance_bars.py",
+            ),
+            Mutation(
+                "an amount is not multiplied back by later splits",
+                BARS,
+                "                as_paid = provider_amount * factor",
+                "                as_paid = provider_amount",
+                "test_a_dividend_before_a_split_is_stored_as_paid",
+                "tests/test_yfinance_bars.py",
+            ),
+            Mutation(
+                "a disagreeing stored distribution is ignored",
+                BARS,
+                "            if stored_distributions[(ex_date, kind)] != as_paid:",
+                "            if False:",
+                "test_a_stored_distribution_that_agrees",
+                "tests/test_yfinance_bars.py",
+            ),
+            Mutation(
+                "an inexact amount is rounded",
+                BARS,
+                "            exact.traps[Inexact] = True",
+                "            exact.traps[Inexact] = False",
+                "test_a_rebuilt_amount_that_would_have_to_round",
+                "tests/test_yfinance_bars.py",
+            ),
+            Mutation(
+                "capital gains are not read",
+                BARS,
+                'DISTRIBUTION_COLUMNS = {"Dividends": "dividend", "Capital Gains": "capital_gain"}',
+                'DISTRIBUTION_COLUMNS = {"Dividends": "dividend"}',
+                "test_a_capital_gain_is_a_distribution",
+                "tests/test_yfinance_bars.py",
+            ),
+            # --- the store ---
+            Mutation(
+                "a distribution is knowable at its ex-date's close",
+                STORE,
+                "                        # Decided 2026-11-18: knowable at its ex-date's open "
+                "(late, never early).\n"
+                "                        available_at=session.opens_at,",
+                "                        available_at=session.closes_at,",
+                "test_distributions_are_written_as_paid",
+                "tests/test_bars_backfill.py",
+            ),
+            Mutation(
+                "backfilled distributions are labelled poll",
+                STORE,
+                "                        feed=feed,\n"
+                "                        # Decided 2026-11-18: knowable at its ex-date's open",
+                '                        feed="poll",\n'
+                "                        # Decided 2026-11-18: knowable at its ex-date's open",
+                "test_distributions_are_written_as_paid",
+                "tests/test_bars_backfill.py",
+            ),
+            # --- the read ---
+            Mutation(
+                "the distributions read loses its symbol filter",
+                READ,
+                "                    Distribution.symbol_id == symbol_id,\n",
+                "",
+                "test_a_second_symbols_distributions_never_reach_the_first",
+            ),
+            Mutation(
+                "a distribution is applied before it was knowable",
+                READ,
+                "                    Distribution.available_at <= as_of,\n",
+                "",
+                "test_a_distribution_is_invisible_until_its_available_at",
+            ),
+            Mutation(
+                "an ex-date at start is applied",
+                READ,
+                "                    Distribution.effective_at > start,",
+                "                    Distribution.effective_at >= start,",
+                "test_the_window_is_start_exclusive_end_inclusive",
+            ),
+            Mutation(
+                "an ex-date at end is not applied",
+                READ,
+                "                    Distribution.effective_at <= end,",
+                "                    Distribution.effective_at < end,",
+                "test_the_window_is_start_exclusive_end_inclusive",
+            ),
+            Mutation(
+                "strict mode silently drops a backfill-only distribution",
+                READ,
+                "        if not include_backfill and any(r.feed == BACKFILL for r in rows):",
+                "        if False:",
+                "test_strict_mode_refuses_a_window_with_a_backfill_only_distribution",
+            ),
+            Mutation(
+                "an amount is not put on the basis at T",
+                READ,
+                "        amount_adj = r.amount / ratio_after",
+                "        amount_adj = r.amount",
+                "test_the_total_return_is_a_ratio_by_yahoos_convention",
+            ),
+            Mutation(
+                "a split on the ex-date itself adjusts the amount",
+                READ,
+                "            if effective > r.effective_at:",
+                "            if effective >= r.effective_at:",
+                "test_an_ex_date_on_the_split_day",
+            ),
+            Mutation(
+                "CRSP's convention instead of Yahoo's",
+                READ,
+                "        ratio /= a.factor",
+                "        ratio *= 2 - a.factor",
+                "test_the_total_return_is_a_ratio_by_yahoos_convention",
+            ),
+            Mutation(
+                "a distribution with no bar before it is applied anyway",
+                READ,
+                "        if not isinstance(prev, Bar):",
+                "        if prev is None:",
+                "test_a_distribution_whose_previous_session_has_no_bar",
+            ),
+        ],
+    ),
     "m2-slice6-step5": (
         "tests/test_bars_read.py",
         [
@@ -68,13 +262,6 @@ SUITES: dict[str, tuple[str, list[Mutation]]] = {
                 "            Split.available_at <= as_of",
                 "test_adjustment_applies_only_splits_knowable_at_t",
             ),
-            Mutation(
-                "the total-return read loses its symbol filter",
-                READ,
-                "            BarTotalReturn.symbol_id == symbol_id,\n",
-                "",
-                "test_total_return_is_the_latest_revision",
-            ),
             # --- the point-in-time rule ---
             Mutation(
                 "bars are filtered on effective_at, not available_at",
@@ -89,20 +276,6 @@ SUITES: dict[str, tuple[str, list[Mutation]]] = {
                 "            Split.symbol_id == symbol_id, Split.available_at <= as_of",
                 "            Split.symbol_id == symbol_id",
                 "test_adjustment_applies_only_splits_knowable_at_t",
-            ),
-            Mutation(
-                "a total-return revision is visible before it was knowable",
-                READ,
-                "            BarTotalReturn.available_at <= as_of,\n",
-                "",
-                "test_total_return_is_the_latest_revision",
-            ),
-            Mutation(
-                "the earliest total-return revision wins",
-                READ,
-                "BarTotalReturn.revision.desc()",
-                "BarTotalReturn.revision",
-                "test_total_return_is_the_latest_revision",
             ),
             Mutation(
                 "latest_bar_as_of returns the oldest bar",
@@ -234,23 +407,16 @@ SUITES: dict[str, tuple[str, list[Mutation]]] = {
                 BACKFILL,
                 'BACKFILL_FEED_VALUE = "backfill"',
                 'BACKFILL_FEED_VALUE = "poll"',
-                "test_bars_total_returns_and_splits_are_written",
+                "test_bars_and_splits_are_written",
             ),
             Mutation(
                 "a split is knowable at its effective close",
                 STORE,
+                "                        # Approved 2026-11-18: knowable at the open of its "
+                "effective session.\n"
                 "                        available_at=session.opens_at,",
                 "                        available_at=session.closes_at,",
-                "test_bars_total_returns_and_splits_are_written",
-            ),
-            Mutation(
-                "every total return takes the first bar's settle point",
-                STORE,
-                "                            # Revision 0 is knowable at the bar's settle point ("
-                "decided 2026-11-18).\n"
-                '                            "available_at": b.available_at,',
-                '                            "available_at": rows[-1].available_at,',
-                "test_bars_total_returns_and_splits_are_written",
+                "test_bars_and_splits_are_written",
             ),
             # --- coverage ---
             Mutation(
@@ -612,20 +778,6 @@ SUITES: dict[str, tuple[str, list[Mutation]]] = {
                 "test_bar_key_is_per_symbol and bars_intraday",
             ),
             Mutation(
-                "bar_total_return key loses revision",
-                M10,
-                'sa.PrimaryKeyConstraint("symbol_id", "effective_at", "revision"),',
-                'sa.PrimaryKeyConstraint("symbol_id", "effective_at"),',
-                "test_total_return_key",
-            ),
-            Mutation(
-                "bar_total_return key loses symbol_id",
-                M10,
-                'sa.PrimaryKeyConstraint("symbol_id", "effective_at", "revision"),',
-                'sa.PrimaryKeyConstraint("effective_at", "revision"),',
-                "test_total_return_key",
-            ),
-            Mutation(
                 "splits key loses symbol_id",
                 M10,
                 'sa.PrimaryKeyConstraint("symbol_id", "effective_at"),\n'
@@ -703,14 +855,6 @@ SUITES: dict[str, tuple[str, list[Mutation]]] = {
                 'sa.CheckConstraint("interval IN (\'15m\')", name="interval"),',
                 'sa.CheckConstraint("true", name="interval"),',
                 "test_intraday_interval",
-            ),
-            Mutation(
-                "total return has no settle check",
-                M10,
-                'sa.CheckConstraint("available_at > effective_at", name="settled_after_open"),\n'
-                '        comment=TABLE_COMMENTS["bar_total_return"],',
-                'comment=TABLE_COMMENTS["bar_total_return"],',
-                "test_total_return_is_settled",
             ),
             Mutation(
                 "split ratio may be zero",

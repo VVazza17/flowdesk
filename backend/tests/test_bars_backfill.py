@@ -137,7 +137,7 @@ def bar(url: str, ticker: str, day: date) -> Any:
 # --- what is written ---------------------------------------------------------------------------
 
 
-def test_bars_total_returns_and_splits_are_written_with_backfill_provenance(db: str) -> None:
+def test_bars_and_splits_are_written_with_backfill_provenance(db: str) -> None:
     report, error = backfill(
         db, tickers=SPLIT5, download=fixture_download("daily_split_2025_12_05"), now=RECORDED
     )
@@ -161,29 +161,19 @@ def test_bars_total_returns_and_splits_are_written_with_backfill_provenance(db: 
     ]
     assert all(r.available_at == et(2025, 12, 5, 9, 30) for r in splits)  # the effective open
 
-    # Every rebuilt row has a whole volume that is the provider's divided by 2, and every bar has
-    # its revision-0 total return.
+    # Every rebuilt row has a whole volume that is the provider's divided by 2.
     counts = rows(
         db,
         "SELECT count(*) AS bars, "
         "count(*) FILTER (WHERE b.raw_basis = 'reconstructed') AS rebuilt, "
-        "count(*) FILTER (WHERE t.session_date < DATE '2025-12-05') AS before_split, "
-        "(SELECT count(*) FROM bar_total_return WHERE revision = 0) AS tr "
+        "count(*) FILTER (WHERE t.session_date < DATE '2025-12-05') AS before_split "
         "FROM bars_daily b JOIN trading_sessions t "
         "ON t.opens_at = b.effective_at AND t.calendar_code = 'XNYS'",
     )[0]
-    assert counts.bars == counts.tr == report.bars
+    assert counts.bars == report.bars
     # Exactly the bars before the split are rebuilt (the window holds Thanksgiving, so the count is
     # read from the calendar join, not assumed).
     assert counts.rebuilt == counts.before_split > 0
-    # Revision 0 of total return is knowable at its bar's settle point (decided 2026-11-18).
-    tr_off = rows(
-        db,
-        "SELECT count(*) FROM bar_total_return r JOIN bars_daily b "
-        "ON b.symbol_id = r.symbol_id AND b.effective_at = r.effective_at "
-        "WHERE r.revision = 0 AND r.available_at <> b.available_at",
-    )[0][0]
-    assert tr_off == 0
     run_ids = rows(db, "SELECT DISTINCT ingestion_run_id FROM bars_daily")
     assert len(run_ids) == 1 and run_ids[0][0] is not None
 
@@ -207,7 +197,7 @@ def test_a_second_run_writes_zero_rows(db: str) -> None:
     second, error = backfill(db, tickers=SPLIT5, download=download, now=RECORDED)
     assert first.rows_written > 0
     assert error is None and second.rows_written == 0
-    assert (second.bars, second.total_returns, second.splits) == (0, 0, 0)
+    assert (second.bars, second.distributions, second.splits) == (0, 0, 0)
     written = rows(db, "SELECT rows_written FROM ingestion_runs ORDER BY id")
     assert [r.rows_written for r in written] == [first.rows_written, 0]
 
@@ -327,6 +317,64 @@ def test_a_volume_revision_alone_does_not_fail_the_run(db: str) -> None:
     assert bar(db, "XLK", date(2025, 12, 5)).v_raw == 6_628_000  # the stored first settled value
     status = rows(db, "SELECT status FROM ingestion_runs ORDER BY id")
     assert [r.status for r in status] == ["succeeded", "succeeded"]
+
+
+# --- distributions (step 5b) -------------------------------------------------------------------
+
+
+def test_distributions_are_written_as_paid_with_backfill_provenance_and_a_rerun_writes_zero(
+    db: str,
+) -> None:
+    # The recorded 3-month batch holds the ETFs' September 2026 ex-dates. Each is stored as paid (no
+    # split after it), feed backfill, knowable at its ex-date's open; a second run writes 0.
+    frame, _, _ = load("daily_3mo_universe_plus_dead")
+    expected = {
+        (t, ts.date(), Decimal(repr(float(v))))
+        for (t, field), col in frame.items()
+        if field == "Dividends" and t in ("SPY", "XLK", "XLE")
+        for ts, v in col.items()
+        if v and v == v
+    }
+    assert expected  # the fixture has some
+    report, error = backfill(
+        db,
+        tickers=["SPY", "XLE", "XLK"],
+        download=fixture_download("daily_3mo_universe_plus_dead"),
+        now=RECORDED,
+    )
+    assert error is None and report.distributions == len(expected)
+    stored = rows(
+        db,
+        "SELECT s.ticker, d.effective_at, d.amount, d.kind, d.feed, d.raw_basis, d.available_at, "
+        "t.opens_at FROM distributions d JOIN symbols s ON s.id = d.symbol_id "
+        "JOIN trading_sessions t ON t.session_date = d.effective_at AND t.calendar_code = 'XNYS'",
+    )
+    assert {(r.ticker, r.effective_at, r.amount) for r in stored} == expected
+    assert all(
+        r.kind == "dividend" and r.feed == "backfill" and r.raw_basis == "live" for r in stored
+    )
+    assert all(r.available_at == r.opens_at for r in stored)  # the ex-date's open, never earlier
+    again, error = backfill(
+        db,
+        tickers=["SPY", "XLE", "XLK"],
+        download=fixture_download("daily_3mo_universe_plus_dead"),
+        now=RECORDED,
+    )
+    assert error is None and again.rows_written == 0
+
+
+def test_a_distribution_before_a_split_is_stored_as_paid(db: str) -> None:
+    def tamper(frame: Any) -> None:
+        frame.loc[pd.Timestamp("2025-12-04"), ("XLK", "Dividends")] = 0.193
+
+    backfill(
+        db,
+        tickers=["XLK"],
+        download=fixture_download("daily_split_2025_12_05", tamper),
+        now=RECORDED,
+    )
+    (row,) = rows(db, "SELECT amount, raw_basis FROM distributions")
+    assert (row.amount, row.raw_basis) == (Decimal("0.386"), "reconstructed")
 
 
 # --- D4: dead symbols, coverage -------------------------------------------------------------------

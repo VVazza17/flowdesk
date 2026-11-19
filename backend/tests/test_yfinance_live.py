@@ -58,6 +58,7 @@ def test_the_download_context_captures_a_dead_tickers_error_live(dev_stack: None
         calendar=nyse(),
         now=now,
         known_splits={},
+        known_distributions={},
     )
     assert result.dead == [DEAD]
     assert result.failures == []

@@ -1,5 +1,5 @@
-"""Price tables (M2 slice 6, step 2; IDEA-046): bars_daily, bars_intraday, bar_total_return,
-splits, bar_gaps.
+"""Price tables (M2 slice 6, steps 2 and 5b; IDEA-046): bars_daily, bars_intraday, splits,
+distributions, bar_gaps. (bar_total_return was dropped by 0013.)
 
 Migrations 0010 and 0011 are the schema and carry the reasoning; this module mirrors them for
 queries and for `alembic check`. The comment literals are copied from the migrations, so
@@ -20,7 +20,6 @@ from sqlalchemy import (
     ForeignKey,
     Identity,
     Index,
-    Integer,
     Numeric,
     PrimaryKeyConstraint,
     Text,
@@ -87,19 +86,25 @@ BARS_INTRADAY = {
         "corrections made after it."
     ),
 }
-TOTAL_RETURN = {
+DISTRIBUTIONS = {
     "symbol_id": "The symbol (symbols.id).",
-    "effective_at": "TIME COLUMN. The daily bar this total return belongs to: its "
-    "session's open instant, as bars_daily.effective_at.",
-    "revision": "0 for the first value seen, +1 per detected change, per (symbol_id, "
-    "effective_at). Each is a row; the current total return is the highest "
-    "revision.",
-    "value": "The provider's total-return close (yfinance Adj Close, auto_adjust=False).",
-    "available_at": "TIME COLUMN. When this revision became knowable. Revision 0: the "
-    "bar's settle point. A later revision: the fetch that saw it (no "
-    "provider vintage date exists).",
-    "ingested_at": "TIME COLUMN. When this row was written. Never used for point-in-time "
-    "filtering.",
+    "effective_at": "TIME COLUMN. The ex-date: the exchange-local session date from which "
+    "a buyer no longer receives the distribution. Bars before it are the "
+    "ones its adjustment applies to.",
+    "kind": "dividend or capital_gain (both cash distributions; the same rule applies).",
+    "amount": "Per share, AS PAID at the time: yfinance's split-adjusted amount "
+    "multiplied by the ratios of splits effective after the ex-date. Never "
+    "rounded.",
+    "raw_basis": "live (no split after the ex-date when fetched) or reconstructed "
+    "(multiplied back by later split ratios).",
+    "feed": "poll or backfill. A strict replay excludes backfill rows (fetched after the "
+    "ex-date, under the recorded backfill exception).",
+    "available_at": "TIME COLUMN. When the distribution became knowable: the open of its "
+    "ex-date session (the declaration date is unknown; late, never "
+    "early). The total return as of T applies only distributions with "
+    "available_at <= T.",
+    "ingested_at": "TIME COLUMN. When this row was written: when FlowDesk first saw the "
+    "distribution. Never used for point-in-time filtering.",
     "source": "The provider id ('yfinance').",
     "ingestion_run_id": "The ingestion_runs row that wrote this row; cleared if that run "
     "is purged.",
@@ -138,10 +143,12 @@ TABLE_COMMENTS = {
     "bars_intraday": "Settled intraday bars, as traded, insert-only: the first settled "
     "value, never overwritten. Stored only after the settle point "
     "(available_at). Not the provisional in-session table (IDEA-045).",
-    "bar_total_return": "Total return per daily bar, one row per revision, insert-only. "
-    "The only home of total return; the current value is the highest "
-    "revision.",
     "splits": "Stock splits, insert-only. Adjusted prices are derived from these on read (D3 b).",
+    "distributions": (
+        "Cash distributions (dividends, capital gains) as dated events, insert-only. Total return "
+        "is computed on read from these, splits and as-traded prices knowable at T; it is never "
+        "stored."
+    ),
     "bar_gaps": "Unrecoverable gaps in the stored bars: ranges beyond the provider's "
     "look-back. Never deleted; a filled gap gets resolved_at.",
 }
@@ -222,31 +229,38 @@ class BarIntraday(_BarColumns, Base):
     available_at: Mapped[datetime] = mapped_column(TZ, comment=BARS_INTRADAY["available_at"])
 
 
-class BarTotalReturn(Base):
-    __tablename__ = "bar_total_return"
+class Distribution(Base):
+    """A cash distribution (dividend or capital gain) as a dated event (migration 0013). Total
+    return is computed on read from these; it is never stored."""
+
+    __tablename__ = "distributions"
     __table_args__ = (
-        PrimaryKeyConstraint("symbol_id", "effective_at", "revision"),
-        CheckConstraint("available_at > effective_at", name="settled_after_open"),
-        {"comment": TABLE_COMMENTS["bar_total_return"]},
+        PrimaryKeyConstraint("symbol_id", "effective_at", "kind"),
+        CheckConstraint("kind IN ('dividend', 'capital_gain')", name="kind"),
+        CheckConstraint("amount > 0", name="amount_positive"),
+        CheckConstraint("raw_basis IN ('live', 'reconstructed')", name="raw_basis"),
+        CheckConstraint("feed IN ('poll', 'backfill')", name="feed"),
+        {"comment": TABLE_COMMENTS["distributions"]},
     )
 
     symbol_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("symbols.id"), comment=TOTAL_RETURN["symbol_id"]
+        BigInteger, ForeignKey("symbols.id"), comment=DISTRIBUTIONS["symbol_id"]
     )
-    effective_at: Mapped[datetime] = mapped_column(TZ, comment=TOTAL_RETURN["effective_at"])
-    revision: Mapped[int] = mapped_column(
-        Integer, server_default=text("0"), comment=TOTAL_RETURN["revision"]
-    )
-    value: Mapped[Decimal] = mapped_column(Numeric, comment=TOTAL_RETURN["value"])
-    available_at: Mapped[datetime] = mapped_column(TZ, comment=TOTAL_RETURN["available_at"])
+    # The ex-date, a session DATE.
+    effective_at: Mapped[date] = mapped_column(Date, comment=DISTRIBUTIONS["effective_at"])
+    kind: Mapped[str] = mapped_column(Text, comment=DISTRIBUTIONS["kind"])
+    amount: Mapped[Decimal] = mapped_column(Numeric, comment=DISTRIBUTIONS["amount"])
+    raw_basis: Mapped[str] = mapped_column(Text, comment=DISTRIBUTIONS["raw_basis"])
+    feed: Mapped[str] = mapped_column(Text, comment=DISTRIBUTIONS["feed"])
+    available_at: Mapped[datetime] = mapped_column(TZ, comment=DISTRIBUTIONS["available_at"])
     ingested_at: Mapped[datetime] = mapped_column(
-        TZ, server_default=text("now()"), comment=TOTAL_RETURN["ingested_at"]
+        TZ, server_default=text("now()"), comment=DISTRIBUTIONS["ingested_at"]
     )
-    source: Mapped[str] = mapped_column(Text, comment=TOTAL_RETURN["source"])
+    source: Mapped[str] = mapped_column(Text, comment=DISTRIBUTIONS["source"])
     ingestion_run_id: Mapped[int | None] = mapped_column(
         BigInteger,
         ForeignKey("ingestion_runs.id", ondelete="SET NULL"),
-        comment=TOTAL_RETURN["ingestion_run_id"],
+        comment=DISTRIBUTIONS["ingestion_run_id"],
     )
 
 
