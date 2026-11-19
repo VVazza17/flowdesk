@@ -32,6 +32,7 @@ BARS = "app/ingest/bars.py"
 CLIENT = "app/ingest/yfinance_client.py"
 STORE = "app/services/bars_store.py"
 BACKFILL = "app/bars_backfill.py"
+READ = "app/services/bars_read.py"
 # The trigger-creating loop in 0010 and 0011 (each file has it once).
 TRIGGER_LOOP = (
     'for event, scope in (("UPDATE", "ROW"), ("DELETE", "ROW"), ("TRUNCATE", "STATEMENT")):'
@@ -49,6 +50,133 @@ class Mutation:
 
 
 SUITES: dict[str, tuple[str, list[Mutation]]] = {
+    "m2-slice6-step5": (
+        "tests/test_bars_read.py",
+        [
+            # --- rule 9: every keyed read keeps to its symbol ---
+            Mutation(
+                "the bars read loses its symbol filter",
+                READ,
+                "        .where(t.symbol_id == symbol_id, t.available_at <= as_of)",
+                "        .where(t.available_at <= as_of)",
+                "test_latest_bar_is_this_symbols_newest",
+            ),
+            Mutation(
+                "the splits read loses its symbol filter",
+                READ,
+                "            Split.symbol_id == symbol_id, Split.available_at <= as_of",
+                "            Split.available_at <= as_of",
+                "test_adjustment_applies_only_splits_knowable_at_t",
+            ),
+            Mutation(
+                "the total-return read loses its symbol filter",
+                READ,
+                "            BarTotalReturn.symbol_id == symbol_id,\n",
+                "",
+                "test_total_return_is_the_latest_revision",
+            ),
+            # --- the point-in-time rule ---
+            Mutation(
+                "bars are filtered on effective_at, not available_at",
+                READ,
+                "        .where(t.symbol_id == symbol_id, t.available_at <= as_of)",
+                "        .where(t.symbol_id == symbol_id, t.effective_at <= as_of)",
+                "test_a_bar_is_invisible_until_its_settle_point",
+            ),
+            Mutation(
+                "a split is applied before it was knowable",
+                READ,
+                "            Split.symbol_id == symbol_id, Split.available_at <= as_of",
+                "            Split.symbol_id == symbol_id",
+                "test_adjustment_applies_only_splits_knowable_at_t",
+            ),
+            Mutation(
+                "a total-return revision is visible before it was knowable",
+                READ,
+                "            BarTotalReturn.available_at <= as_of,\n",
+                "",
+                "test_total_return_is_the_latest_revision",
+            ),
+            Mutation(
+                "the earliest total-return revision wins",
+                READ,
+                "BarTotalReturn.revision.desc()",
+                "BarTotalReturn.revision",
+                "test_total_return_is_the_latest_revision",
+            ),
+            Mutation(
+                "latest_bar_as_of returns the oldest bar",
+                READ,
+                "                .order_by(t.effective_at.desc())",
+                "                .order_by(t.effective_at)",
+                "test_latest_bar_is_this_symbols_newest",
+            ),
+            # --- strict mode ---
+            Mutation(
+                "strict mode is ignored",
+                READ,
+                "        query = query.where(BarIntraday.interval == INTRADAY_15M)\n"
+                "    if not include_backfill:\n"
+                "        query = query.where(t.feed != BACKFILL)\n",
+                "        query = query.where(BarIntraday.interval == INTRADAY_15M)\n",
+                "test_strict_mode_sees_only_poll_rows",
+            ),
+            Mutation(
+                "strict mode's record starts at backfill rows",
+                READ,
+                "        .where(t.symbol_id == symbol_id)\n"
+                "    )\n"
+                "    if not include_backfill:\n"
+                "        query = query.where(t.feed != BACKFILL)\n",
+                "        .where(t.symbol_id == symbol_id)\n    )\n",
+                "test_each_way_to_have_no_answer and BEFORE_RECORD",
+            ),
+            # --- adjusted on read (D3 b) ---
+            Mutation(
+                "a split adjusts its own session",
+                READ,
+                "        if effective > row.session_date:",
+                "        if effective >= row.session_date:",
+                "test_a_split_does_not_adjust_its_own_session",
+            ),
+            Mutation(
+                "adjusted price multiplies instead of divides",
+                READ,
+                "        c_adj=row.c_raw / factor,",
+                "        c_adj=row.c_raw * factor,",
+                "test_adjustment_applies_only_splits_knowable_at_t",
+            ),
+            Mutation(
+                "adjusted volume divides instead of multiplies",
+                READ,
+                "        v_adj=Decimal(row.v_raw) * factor,",
+                "        v_adj=Decimal(row.v_raw) / factor,",
+                "test_adjustment_applies_only_splits_knowable_at_t",
+            ),
+            # --- the reasons ---
+            Mutation(
+                "BEFORE_RECORD is never given",
+                READ,
+                "    if first is not None and as_of < first[1]:",
+                "    if False:",
+                "test_each_way_to_have_no_answer and BEFORE_RECORD",
+            ),
+            Mutation(
+                "BACKFILL_EXCLUDED is decided after PREDATES_RECORD",
+                READ,
+                "    if stored is not None and not include_backfill and stored.feed == BACKFILL:",
+                "    if False:",
+                "test_each_way_to_have_no_answer and BACKFILL_EXCLUDED",
+            ),
+            Mutation(
+                "PREDATES_RECORD is never given",
+                READ,
+                "    if first is not None and session_date < first[0]:",
+                "    if False:",
+                "test_each_way_to_have_no_answer and PREDATES_RECORD",
+            ),
+        ],
+    ),
     "m2-slice6-step4": (
         "tests/test_bars_backfill.py",
         [

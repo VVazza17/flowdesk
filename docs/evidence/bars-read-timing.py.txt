@@ -1,0 +1,75 @@
+"""Time the point-in-time bar reads on the dev stack's real rows. Measurement script, not repo code.
+
+    MSYS_NO_PATHCONV=1 docker compose run --rm -v "$(pwd -W)/docs/evidence:/e:ro" -e PYTHONPATH=/srv \
+        worker python /e/bars-read-timing.py.txt
+
+Each read runs 30 times through its own engine connection (as a caller would); the median and the
+max are printed, with the row counts of the tables it reads, and EXPLAIN ANALYZE of the main query.
+"""
+
+import asyncio
+import statistics
+import time
+from datetime import UTC, date, datetime
+
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+
+from app import settings
+from app.models.prices import BarDaily
+from app.services import bars_read
+
+N = 30
+
+
+async def timed(label: str, make) -> None:  # type: ignore[no-untyped-def]
+    ms = []
+    out = None
+    for _ in range(N):
+        t0 = time.perf_counter()
+        out = await make()
+        ms.append((time.perf_counter() - t0) * 1000)
+    size = len(out.bars) if hasattr(out, "bars") else type(out).__name__
+    print(f"{label:58} median {statistics.median(ms):7.2f} ms  max {max(ms):7.2f} ms  -> {size}")
+
+
+async def main() -> None:
+    engine = create_async_engine(settings.database_url())
+    async with engine.connect() as conn:
+        for table in ("bars_daily", "bar_total_return", "splits", "bars_intraday", "trading_sessions"):
+            n = (await conn.execute(text(f"SELECT count(*) FROM {table}"))).scalar()
+            print(f"rows in {table}: {n}")
+    now = datetime.now(UTC)
+    past = datetime(2025, 12, 10, 12, tzinfo=UTC)
+    await timed("bars_as_of SPY, all 2 years, include_backfill=True, now", lambda: bars_read.bars_as_of(
+        engine, "SPY", as_of=now, include_backfill=True))
+    await timed("bars_as_of XLK (split), all 2 years, include_backfill=True", lambda: bars_read.bars_as_of(
+        engine, "XLK", as_of=now, include_backfill=True))
+    await timed("bars_as_of SPY, as of 2025-12-10 (about 1 year)", lambda: bars_read.bars_as_of(
+        engine, "SPY", as_of=past, include_backfill=True))
+    await timed("bars_as_of SPY, strict (include_backfill=False)", lambda: bars_read.bars_as_of(
+        engine, "SPY", as_of=now, include_backfill=False))
+    await timed("bars_as_of SPY, one month window", lambda: bars_read.bars_as_of(
+        engine, "SPY", as_of=now, include_backfill=True, start=date(2026, 10, 1), end=date(2026, 10, 31)))
+    await timed("latest_bar_as_of SPY, now", lambda: bars_read.latest_bar_as_of(
+        engine, "SPY", as_of=now, include_backfill=True))
+    await timed("latest_bar_as_of SPY, strict (a Missing)", lambda: bars_read.latest_bar_as_of(
+        engine, "SPY", as_of=now, include_backfill=False))
+    await timed("bar_as_of XLK 2025-12-04, now", lambda: bars_read.bar_as_of(
+        engine, "XLK", date(2025, 12, 4), as_of=now, include_backfill=True))
+    await timed("bar_as_of XLK 2025-12-06 (NOT_A_SESSION)", lambda: bars_read.bar_as_of(
+        engine, "XLK", date(2025, 12, 6), as_of=now, include_backfill=True))
+    await timed("bar_as_of XLK 2025-12-09, strict (BACKFILL_EXCLUDED)", lambda: bars_read.bar_as_of(
+        engine, "XLK", date(2025, 12, 9), as_of=now, include_backfill=False))
+    async with engine.connect() as conn:
+        sid = (await conn.execute(text("SELECT id FROM symbols WHERE ticker = 'SPY'"))).scalar()
+        q = bars_read._bars_query(BarDaily, sid, now, include_backfill=True).order_by(BarDaily.effective_at)
+        compiled = q.compile(compile_kwargs={"literal_binds": True})
+        plan = (await conn.execute(text(f"EXPLAIN (ANALYZE, BUFFERS OFF) {compiled}"))).all()
+        print("EXPLAIN ANALYZE of the bars query (SPY, all, now):")
+        for row in plan:
+            print("   ", row[0])
+    await engine.dispose()
+
+
+asyncio.run(main())

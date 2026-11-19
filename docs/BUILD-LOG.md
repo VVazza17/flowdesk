@@ -3557,3 +3557,50 @@ Written the turn they were given.
      last, so `a && b && c` with a failing `a` lets the NEXT line run. Gates are judged by their exit code, never by piped output.
    - The rule is CLAUDE.md "How to work on this repo", rule 11.
 6. **`RefetchMismatch` is `schema_mismatch` until slice 7, and MOVES to the validation kind then** (recorded on the class and here).
+
+### 2026-11-18 — M2 slice 6 step 5 built: the point-in-time read of bars (`app/services/bars_read.py`)
+
+Mirrors `app.services.macro_read`. Three functions, no route, no clock: `bars_as_of` (a snapshot, `start`/`end` bounding session dates),
+`latest_bar_as_of`, `bar_as_of` (one daily session). `interval` is `1d` (bars_daily) or `15m` (bars_intraday).
+
+- **`as_of` and `include_backfill` are REQUIRED keywords with no default**, on every function (a test pins the signatures).
+  `include_backfill=False` is the STRICT mode: only rows a live poll stored; backfill rows carry the settle point by the recorded exception and
+  may include later corrections. The choice is written out at every call site, for the same reason as `revisions_of(..., as_of=None)`.
+- **Visible iff `available_at <= as_of`**, never by `effective_at` (a test: a bar that traded and closed is still absent until 09:00 ET on D+2).
+  Explicit column lists (a test pins the bars query's columns; no `SELECT *`).
+- **Adjusted on read (D3 b):** `split_factor` = the product of the ratios of splits effective AFTER the bar's session AND with
+  `available_at <= as_of`; `*_adj = raw / factor`, `v_adj = raw volume x factor`. Raw values are never rewritten.
+- **Total return:** the latest `bar_total_return` revision with `available_at <= as_of` (daily only); None when none, never a borrowed value.
+- **Absence reasons**, in decision order: `UNKNOWN_SYMBOL`, `NOT_A_SESSION`, `BEFORE_RECORD`, `BACKFILL_EXCLUDED`, `PREDATES_RECORD`,
+  `NOT_SETTLED_AS_OF`, `NOT_STORED`. DECISION: `BACKFILL_EXCLUDED` is decided before `PREDATES_RECORD`, because in strict mode the record starts at
+  the first POLL row, and a session older than that may still be stored as backfill ("never stored" would be false). In strict mode a symbol with
+  only backfill rows is `BACKFILL_EXCLUDED`, not `BEFORE_RECORD`.
+
+**Tests: `tests/test_bars_read.py`, 26.** Rule 9: a second symbol (XLE) carries rows that would WIN every ordering the read applies (later
+sessions, a higher total-return revision on the same instant, its own 10:1 split, larger values); every test reads XLK and asserts none of it
+arrived. **Mutation check: 16/16 caught** (`bash infra/mutation-check.sh m2-slice6-step5`; `docs/evidence/2026-11-18-step5-mutation-check.txt`):
+each keyed read losing its symbol filter (bars, splits, total return), `effective_at` for `available_at`, splits and revisions visible before
+knowable, the revision order, the newest-bar order, strict mode ignored, strict mode's record start, a split adjusting its own session, the
+adjustment's direction (price and volume), and each reason's branch. **One gap, as for step 2:** the intraday read's `interval = '15m'` filter
+cannot be mutation-tested while only `15m` exists; whoever widens `ck_bars_intraday_interval` adds that test too.
+
+**Timings on the real rows (MEASURED 2026-11-18, dev stack: bars_daily 11,976, bar_total_return 11,976, splits 5, trading_sessions 6,403;
+`docs/evidence/bars-read-timing.py.txt`, 30 runs each, median / max, each call opening its own connection):**
+
+| Read | Median | Max | Rows |
+|---|---|---|---|
+| `bars_as_of` SPY, all 2 years, now | 23.5 ms | 54.3 ms | 499 |
+| `bars_as_of` XLK (with a split), all 2 years | 23.6 ms | 28.1 ms | 499 |
+| `bars_as_of` SPY, as of 2025-12-10 | 13.8 ms | 15.7 ms | 262 |
+| `bars_as_of` SPY, strict (no poll rows yet) | 2.5 ms | 5.7 ms | 0 |
+| `bars_as_of` SPY, one month | 3.8 ms | 6.5 ms | 22 |
+| `latest_bar_as_of` SPY | 4.4 ms | 6.0 ms | 1 |
+| `latest_bar_as_of` SPY, strict (a Missing) | 4.9 ms | 11.1 ms | Missing |
+| `bar_as_of` XLK 2025-12-04 | 3.0 ms | 4.9 ms | 1 |
+| `bar_as_of` a Saturday (NOT_A_SESSION) | 2.2 ms | 3.5 ms | Missing |
+| `bar_as_of` strict (BACKFILL_EXCLUDED) | 4.2 ms | 6.6 ms | Missing |
+
+`EXPLAIN ANALYZE` of the bars query (SPY, all): **1.4 ms**, the primary key's index per chunk (ChunkAppend in `effective_at` order, 3 chunks)
+and a hash join to `trading_sessions`. The rest of the 2-year read is the total-return lookup for 499 instants, the splits query and building 499
+objects in Python. **No index added; none is needed at this size.** Not re-measured: a cross-section across symbols (not part of this API) and
+any size beyond the 24 symbols.

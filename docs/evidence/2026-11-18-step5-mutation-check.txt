@@ -1,0 +1,18 @@
+baseline: tests/test_bars_read.py pass unmutated
+   1. caught                   the bars read loses its symbol filter  [-k test_latest_bar_is_this_symbols_newest]  1 failed, 25 deselected, 8 warnings in 2.12s
+   2. caught                   the splits read loses its symbol filter  [-k test_adjustment_applies_only_splits_knowable_at_t]  1 failed, 25 deselected, 8 warnings in 2.14s
+   3. caught                   the total-return read loses its symbol filter  [-k test_total_return_is_the_latest_revision]  1 failed, 25 deselected, 8 warnings in 2.16s
+   4. caught                   bars are filtered on effective_at, not available_at  [-k test_a_bar_is_invisible_until_its_settle_point]  1 failed, 25 deselected, 8 warnings in 2.22s
+   5. caught                   a split is applied before it was knowable  [-k test_adjustment_applies_only_splits_knowable_at_t]  1 failed, 25 deselected, 8 warnings in 2.19s
+   6. caught                   a total-return revision is visible before it was knowable  [-k test_total_return_is_the_latest_revision]  1 failed, 25 deselected, 8 warnings in 2.18s
+   7. caught                   the earliest total-return revision wins  [-k test_total_return_is_the_latest_revision]  1 failed, 25 deselected, 8 warnings in 2.24s
+   8. caught                   latest_bar_as_of returns the oldest bar  [-k test_latest_bar_is_this_symbols_newest]  1 failed, 25 deselected, 8 warnings in 2.28s
+   9. caught                   strict mode is ignored  [-k test_strict_mode_sees_only_poll_rows]  1 failed, 25 deselected, 8 warnings in 2.27s
+  10. caught                   strict mode's record starts at backfill rows  [-k test_each_way_to_have_no_answer and BEFORE_RECORD]  1 failed, 1 passed, 24 deselected, 12 warnings in 3.28s
+  11. caught                   a split adjusts its own session  [-k test_a_split_does_not_adjust_its_own_session]  1 failed, 25 deselected, 8 warnings in 2.06s
+  12. caught                   adjusted price multiplies instead of divides  [-k test_adjustment_applies_only_splits_knowable_at_t]  1 failed, 25 deselected, 8 warnings in 2.20s
+  13. caught                   adjusted volume divides instead of multiplies  [-k test_adjustment_applies_only_splits_knowable_at_t]  1 failed, 25 deselected, 8 warnings in 2.13s
+  14. caught                   BEFORE_RECORD is never given  [-k test_each_way_to_have_no_answer and BEFORE_RECORD]  1 failed, 24 deselected, 8 warnings in 2.07s
+  15. caught                   BACKFILL_EXCLUDED is decided after PREDATES_RECORD  [-k test_each_way_to_have_no_answer and BACKFILL_EXCLUDED]  1 failed, 25 deselected, 8 warnings in 2.13s
+  16. caught                   PREDATES_RECORD is never given  [-k test_each_way_to_have_no_answer and PREDATES_RECORD]  1 failed, 25 deselected, 8 warnings in 2.06s
+16/16 mutations caught

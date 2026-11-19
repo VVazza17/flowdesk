@@ -1,0 +1,38 @@
+rows in bars_daily: 11976
+rows in bar_total_return: 11976
+rows in splits: 5
+rows in bars_intraday: 0
+rows in trading_sessions: 6403
+bars_as_of SPY, all 2 years, include_backfill=True, now    median   23.54 ms  max   54.27 ms  -> 499
+bars_as_of XLK (split), all 2 years, include_backfill=True median   23.58 ms  max   28.11 ms  -> 499
+bars_as_of SPY, as of 2025-12-10 (about 1 year)            median   13.82 ms  max   15.70 ms  -> 262
+bars_as_of SPY, strict (include_backfill=False)            median    2.51 ms  max    5.74 ms  -> 0
+bars_as_of SPY, one month window                           median    3.79 ms  max    6.48 ms  -> 22
+latest_bar_as_of SPY, now                                  median    4.40 ms  max    6.00 ms  -> Bar
+latest_bar_as_of SPY, strict (a Missing)                   median    4.90 ms  max   11.07 ms  -> Missing
+bar_as_of XLK 2025-12-04, now                              median    3.00 ms  max    4.90 ms  -> Bar
+bar_as_of XLK 2025-12-06 (NOT_A_SESSION)                   median    2.16 ms  max    3.45 ms  -> Missing
+bar_as_of XLK 2025-12-09, strict (BACKFILL_EXCLUDED)       median    4.15 ms  max    6.64 ms  -> Missing
+EXPLAIN ANALYZE of the bars query (SPY, all, now):
+    Sort  (cost=394.89..395.52 rows=252 width=91) (actual time=1.301..1.319 rows=499 loops=1)
+      Sort Key: bars_daily.effective_at
+      Sort Method: quicksort  Memory: 86kB
+      ->  Hash Join  (cost=262.55..384.84 rows=252 width=91) (actual time=0.907..1.156 rows=499 loops=1)
+            Hash Cond: (trading_sessions.opens_at = bars_daily.effective_at)
+            ->  Index Scan using pk_trading_sessions on trading_sessions  (cost=0.28..114.07 rows=3234 width=12) (actual time=0.021..0.432 rows=3239 loops=1)
+                  Index Cond: (calendar_code = 'XNYS'::text)
+            ->  Hash  (cost=256.03..256.03 rows=499 width=87) (actual time=0.335..0.336 rows=499 loops=1)
+                  Buckets: 1024  Batches: 1  Memory Usage: 70kB
+                  ->  Custom Scan (ChunkAppend) on bars_daily  (cost=0.27..256.03 rows=499 width=87) (actual time=0.036..0.209 rows=499 loops=1)
+                        Order: bars_daily.effective_at
+                        ->  Index Scan using "1_pk_bars_daily" on _hyper_1_1_chunk  (cost=0.27..12.20 rows=20 width=87) (actual time=0.036..0.041 rows=20 loops=1)
+                              Index Cond: (symbol_id = 15)
+                              Filter: (available_at <= '2026-11-19 00:33:21.3152+00'::timestamp with time zone)
+                        ->  Index Scan using "2_pk_bars_daily" on _hyper_1_2_chunk  (cost=0.28..127.80 rows=250 width=87) (actual time=0.014..0.071 rows=250 loops=1)
+                              Index Cond: (symbol_id = 15)
+                              Filter: (available_at <= '2026-11-19 00:33:21.3152+00'::timestamp with time zone)
+                        ->  Index Scan using "3_pk_bars_daily" on _hyper_1_3_chunk  (cost=0.28..116.03 rows=229 width=86) (actual time=0.014..0.070 rows=229 loops=1)
+                              Index Cond: (symbol_id = 15)
+                              Filter: (available_at <= '2026-11-19 00:33:21.3152+00'::timestamp with time zone)
+    Planning Time: 0.588 ms
+    Execution Time: 1.425 ms

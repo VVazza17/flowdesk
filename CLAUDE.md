@@ -169,6 +169,9 @@ below).
   2026-11-16), 5 splits, verified in SQL. **A re-fetched PRICE that differs fails the symbol; a VOLUME-only difference is a post-settle
   revision, counted and never written** (Kyle, 2026-11-18). **Re-fetch job requirement: total return differing by more than 16 float32 ULP
   is a revision** (measured jitter at most 4 ULP; margin ASSUMED). yfinance caches live in `/var/cache/yfinance` (made in the image).
+  **Step 5 built (2026-11-18): `app/services/bars_read.py`**, the point-in-time read: `as_of` AND `include_backfill` are required
+  keywords (strict mode = `include_backfill=False`), visible iff `available_at <= as_of`, adjusted on read by splits knowable at T, total
+  return = latest revision knowable at T, seven absence reasons. 2-year read of one symbol 23.5 ms on the real 12k rows; no index added.
 - **The base image is pinned by digest** (M2 slice 0, 2026-11-08). The `FROM` line in `backend/Dockerfile` is
   the one definition. The CI tooling container, `lock-deps.sh` and the smokes read it through
   `infra/base-image.sh`, and lint fails on a second definition. The base no longer updates itself: the daily
@@ -371,7 +374,7 @@ bash infra/backup.sh              # dump + manifest into dumps/. Restoring and t
 bash infra/restore.sh dumps/<name>.dump --db <new-or-empty-db>   # refuses a non-empty target
 bash infra/restore-backup.sh <name>.tar.age --identity <age key> --db <new-or-empty-db>   # a scheduled backup, on the desktop
 bash infra/mutation-check.sh m2-slice6-step2   # rule 9 mutations in a copy of backend/ (backend/tools/mutate.py); each must be caught
-bash infra/mutation-check.sh m2-slice6-step3   # the yfinance client and parser (also: heartbeat-clock, m2-slice6-step4)
+bash infra/mutation-check.sh m2-slice6-step3   # the yfinance client and parser (also: heartbeat-clock, m2-slice6-step4, -step5)
 bash infra/ci-checks.sh lint      # also: test | audit | license | arm64. Same code ci.yml runs
                                   # LINT COVERAGE (pinned by backend/tests/test_lint_coverage.py): the gate runs INSIDE backend/ as
                                   #   `ruff check .`, `ruff format --check .`, `mypy` (config: backend/pyproject.toml; mypy `files` =
