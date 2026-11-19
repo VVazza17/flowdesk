@@ -75,6 +75,7 @@ class Report:
     total_returns: int = 0
     splits: int = 0
     total_return_differs: int = 0
+    volume_revisions: dict[str, int] = field(default_factory=dict)  # per symbol, kept stored
     unsettled: int = 0
     coverage: list[Coverage] = field(default_factory=list)
     failed: list[str] = field(default_factory=list)
@@ -171,6 +172,16 @@ async def backfill(
             report.splits += counts.splits
             report.rows_written += counts.rows_written
             report.total_return_differs += counts.total_return_differs
+            for ticker, n in counts.volume_revisions.items():
+                report.volume_revisions[ticker] = report.volume_revisions.get(ticker, 0) + n
+            if counts.volume_revisions:
+                # In the run's own record (its log line, keyed by its ingestion run): a
+                # post-settle volume revision, not a failure, the stored value kept.
+                log.warning(
+                    "bars_volume_revised_after_settle",
+                    ingestion_run_id=ctx.run_id,
+                    per_symbol=dict(sorted(counts.volume_revisions.items())),
+                )
             report.unsettled += result.unsettled
             failures = [*result.failures, *counts.mismatched, *dead]
             report.failed = sorted({*report.failed, *(f.ticker for f in failures)})
@@ -272,6 +283,12 @@ def print_report(report: Report) -> None:
         f"stored total returns that differ from today's {report.total_return_differs}",
         file=sys.stderr,
     )
+    if report.volume_revisions:
+        revised = ", ".join(f"{t} {n}" for t, n in sorted(report.volume_revisions.items()))
+        print(
+            "volume revised after settle (kept the stored value, not a failure): " + revised,
+            file=sys.stderr,
+        )
     for c in report.coverage:
         print("  " + c.describe(), file=sys.stderr)
     if report.failed:

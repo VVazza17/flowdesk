@@ -176,6 +176,13 @@ RATE_BUDGETS: dict[str, RateBudget] = {
 }
 
 
+def yfinance_cache_dir() -> str:
+    """Where yfinance keeps its timezone, cookie and ISIN caches: a writable directory the image
+    creates for the app user (backend/Dockerfile). Without one, yfinance runs uncached and makes
+    extra requests per batch (2026-11-18)."""
+    return os.environ.get("YFINANCE_CACHE_DIR", "/var/cache/yfinance")
+
+
 def ingest_retry_initial_seconds() -> float:
     # Overridable because the smoke test cannot wait out a real backoff, not for tuning.
     raw = os.environ.get("INGEST_RETRY_INITIAL_SECONDS", "").strip() or "1"

@@ -3516,3 +3516,44 @@ Written the turn they were given.
 
 **Gate (2026-11-18):** `ci-checks.sh lint` passes (mypy over 129 files); `ci-checks.sh test` **881 passed, 0 failed** (the live yfinance check ran on
 the dev stack and passed); `m2-slice6-step3` still 32/32 after the fixture correction.
+
+### Addendum 2026-11-18 (sixth) — Kyle's corrections to step 4, and six things done before step 5
+
+Written the turn they were given.
+
+1. **The re-fetch comparison separates prices from volume** (`app/services/bars_store.py`). As first built, any difference failed the symbol and
+   blocked its new rows; but daily volume is MEASURED to revise after its settle point (night 2, 2026-11-18), and the first such revision would have
+   frozen the symbol for good, because a stored value never changes: a permanently red signal again. Now:
+   - **a raw PRICE difference (o/h/l/c) is a symbol failure**, nothing written for that symbol, named in the run (`RefetchMismatch`): most likely a
+     missed split, an operator must look;
+   - **a VOLUME-only difference is a post-settle revision, not a failure**: counted per symbol in the report and in the run's log line
+     (`bars_volume_revised_after_settle`, with the ingestion run id), the stored value kept, the symbol's new rows written normally. Its handling
+     (dated versions or a validation flag) is still the two-week tail's.
+   Rule 9 test: one run, XLK volume-only (still writes its new rows, counted, stored volume kept) and XLE price (fails, rows untouched). Mutation-
+   checked on both branches (`m2-slice6-step4`).
+2. **REQUIREMENT for the periodic history re-fetch job: a total-return tolerance in float32 units.** MEASURED 2026-11-18 (`tr-ulp-probe.py.txt`,
+   three re-fetches a minute apart against the stored backfill, 11,976 bars each, 35,928 comparisons; `docs/evidence/2026-11-18-total-return-ulp.txt`):
+   **Adj Close differs by at most 4 float32 ULP** (histogram per fetch: 0 ULP about 9,400, 1 about 2,200, 2 about 330, 3 about 27, 4 at most 2). A
+   real dividend rewrite is 0.1 to 1 percent, about 8,000 to 80,000 ULP at these prices. **The tolerance: a difference of more than 16 float32 ULP is
+   a revision; 16 or fewer is jitter and is not stored.** The 4 ULP maximum is MEASURED; the 4x margin is ASSUMED. (The ULP: two positive float32
+   values are N ULP apart when their IEEE-754 bit patterns, read as integers, differ by N.) **Raw o/h/l/c and volume were identical in all three
+   re-fetches** (0 differing). If the tail ever shows Close jitter at that scale, the price comparison above needs the same treatment, with its own
+   decision.
+3. **The yfinance caches are fixed.** `backend/Dockerfile` creates `/var/cache/yfinance` owned by the app user (the `/var/lib/beat` pattern);
+   `settings.yfinance_cache_dir()` (env `YFINANCE_CACHE_DIR`); the client points yfinance there once per process before the first fetch
+   (`yf.set_tz_cache_location`, which in 1.8.0 sets the timezone, cookie and ISIN caches). **Verified, MEASURED 2026-11-18**
+   (`yf-cache-probe.py.txt`, curl_cffi requests counted, two consecutive 24-ticker batches in one process in the worker image;
+   `docs/evidence/2026-11-18-yfinance-cache.txt`): **cached, 50 requests then 24; uncached, 98 then 48.** Uncached, every batch made one extra request
+   per ticker. The cache files (`tkr-tz.db`, `cookies.db`) appear. The cache lives in the container (not a volume): a fresh `docker compose run --rm`
+   backfill starts cold (50 on its first batch), the long-lived worker stays warm. That matches step 1(b), which also ran in fresh containers with a
+   writable cache. The probe also caught my first version calling `yf.set_cache_location`, which the package does not export.
+4. **A test that the recorded fixture's universe, and the recorder's own list, equal `settings.UNIVERSES`** (`tests/test_fixture_universe.py`).
+5. **Scripts that write files stop on the first failure: the pattern, not the instance.** Twice in one day a step ran after the one before it failed
+   (the lint push; a doc script that applied half its edits, then the commit). Fixed:
+   - `backend/tools/edits.py`: edits are applied ALL OR NOTHING. Every file's new text is built in memory, every `old` must occur exactly once, every
+     miss is reported together, and nothing is written unless all apply (`tests/test_edits.py`). It refused a stale anchor in this very turn and wrote
+     nothing.
+   - Shell: `set -euo pipefail` with ONE COMMAND PER LINE. Found in this turn: bash suspends `set -e` for every command of an `&&` list except the
+     last, so `a && b && c` with a failing `a` lets the NEXT line run. Gates are judged by their exit code, never by piped output.
+   - The rule is CLAUDE.md "How to work on this repo", rule 11.
+6. **`RefetchMismatch` is `schema_mismatch` until slice 7, and MOVES to the validation kind then** (recorded on the class and here).

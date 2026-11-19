@@ -1,0 +1,14 @@
+mode=cached cache_dir=/var/cache/yfinance writable=True tickers=24
+batch 1: 50 requests {'': 1, 'chart': 48, 'v1': 1}; rows 5; errors 0
+batch 2: 24 requests {'chart': 24}; rows 5; errors 0
+cache file /var/cache/yfinance/cookies.db 8192 bytes
+cache file /var/cache/yfinance/tkr-tz.db 4096 bytes
+cache file /var/cache/yfinance/tkr-tz.db-wal 107152 bytes
+cache file /var/cache/yfinance/tkr-tz.db-shm 32768 bytes
+(configured default: /var/cache/yfinance)
+rc=0
+mode=uncached cache_dir=/proc/no-cache writable=False tickers=24
+batch 1: 98 requests {'': 49, 'chart': 48, 'v1': 1}; rows 5; errors 0
+batch 2: 48 requests {'': 24, 'chart': 24}; rows 5; errors 0
+(configured default: /proc/no-cache)
+rc=0

@@ -43,6 +43,13 @@ RUN useradd --system --uid 10001 --no-create-home flowdesk
 # Errno 13 (seen 2026-11-15). A compose-only fix does not work. infra/smoke-m2-beat-schedule.sh proves it.
 RUN mkdir /var/lib/beat && chown flowdesk /var/lib/beat
 
+# yfinance's timezone, cookie and ISIN caches (SQLite files). By default yfinance puts them under
+# the user's home, which this user does not have, so it ran WITHOUT them (2026-11-18: `Permission
+# denied: '/home/flowdesk'`) and made extra requests per batch: not the conditions step 1(b)
+# measured its throttling margin under. app.ingest.yfinance_client points yfinance here
+# (settings.yfinance_cache_dir). Owned by the app user in the image, as /var/lib/beat is.
+RUN mkdir /var/cache/yfinance && chown flowdesk /var/cache/yfinance
+
 USER flowdesk
 
 EXPOSE 8000

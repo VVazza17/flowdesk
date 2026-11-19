@@ -59,15 +59,37 @@ SUITES: dict[str, tuple[str, list[Mutation]]] = {
                 "                    BarDaily.symbol_id == symbol_id, BarDaily.effective_at.in_(i"
                 "nstants)",
                 "                    BarDaily.effective_at.in_(instants)",
-                "test_a_refetch_that_differs",
+                "test_a_price_difference_fails_its_symbol",
             ),
             Mutation(
-                "a re-fetch that differs is accepted (D3)",
+                "a re-fetched price that differs is accepted (D3)",
                 STORE,
-                "                and stored_raw[b.effective_at] != tuple(getattr(b, f) for f in R"
-                "AW_FIELDS)",
+                "                and stored_raw[b.effective_at][:n_price]\n"
+                "                != tuple(getattr(b, f) for f in PRICE_FIELDS)",
                 "                and False",
-                "test_a_refetch_that_differs",
+                "test_a_price_difference_fails_its_symbol",
+            ),
+            Mutation(
+                "a volume-only difference fails the symbol (the frozen-symbol bug)",
+                STORE,
+                'PRICE_FIELDS = ("o_raw", "h_raw", "l_raw", "c_raw")',
+                'PRICE_FIELDS = ("o_raw", "h_raw", "l_raw", "c_raw", "v_raw")',
+                "test_a_price_difference_fails_its_symbol or test_a_volume_revision_alone",
+            ),
+            Mutation(
+                "the seeded universe drifts from the recorded fixture",
+                "app/settings.py",
+                '    "ARKK",\n',
+                '    "XLC",\n',
+                "test_the_universe_fixture or test_the_recorders_universe",
+                "tests/test_fixture_universe.py",
+            ),
+            Mutation(
+                "a volume revision is not counted",
+                STORE,
+                "            if revised:\n",
+                "            if False:\n",
+                "test_a_volume_revision_alone",
             ),
             # --- idempotence ---
             Mutation(

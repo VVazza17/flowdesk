@@ -1,0 +1,90 @@
+"""Total return jitter in FLOAT32 UNITS, and raw prices, between the stored backfill and a re-fetch.
+
+Measurement script, not repo code (named .txt so no linter picks it up). Read-only. In the worker
+image on the dev stack (Git Bash, from the repo root):
+
+    MSYS_NO_PATHCONV=1 docker compose run --rm -v "$(pwd -W)/docs/evidence:/e:ro" -e PYTHONPATH=/srv \
+        worker python /e/tr-ulp-probe.py.txt
+
+Yahoo's prices are float32 values widened to float64 (MEASURED 2026-11-18, step 3 fixtures). So the
+natural unit of a rounding difference is the float32 ULP: two positive float32 values are N ULPs
+apart when their IEEE-754 bit patterns, read as integers, differ by N. For each bar of the 2-year
+batch: the ULP distance between today's Adj Close and the stored bar_total_return revision 0, and
+whether the rebuilt raw o/h/l/c (the D3 comparison) and volume equal the stored bar.
+"""
+
+import asyncio
+import struct
+from collections import Counter
+from datetime import UTC, datetime
+
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+
+from app import settings
+from app.ingest.bars import DAILY, NEW_YORK, parse_batch
+from app.ingest.yfinance_client import YFinanceClient
+from app.services import bars_store
+
+
+def f32_bits(x: float) -> int:
+    return struct.unpack("<i", struct.pack("<f", x))[0]
+
+
+def ulps(a: float, b: float) -> int:
+    return abs(f32_bits(a) - f32_bits(b))
+
+
+async def main() -> None:
+    engine = create_async_engine(settings.database_url())
+    calendar = await bars_store.load_calendar(engine)
+    symbols = await bars_store.load_symbols(engine)
+    by_id = {m.symbol_id: m.provider_symbol for m in symbols}
+    now = datetime.now(UTC)
+    batch = await YFinanceClient(max_batch=24).fetch(
+        list(by_id.values()), DAILY, today=now.astimezone(NEW_YORK).date(), period="2y"
+    )
+    stored_splits = await bars_store.load_splits(engine, by_id)
+    result = parse_batch(
+        batch.frame, batch.errors, tickers=list(by_id.values()), interval=DAILY, calendar=calendar,
+        now=now, known_splits={by_id[i]: s for i, s in stored_splits.items()},
+    )
+    async with engine.connect() as conn:
+        tr = {
+            (by_id[r.symbol_id], r.effective_at): float(r.value)
+            for r in await conn.execute(
+                text("SELECT symbol_id, effective_at, value FROM bar_total_return WHERE revision = 0")
+            )
+        }
+        raw = {
+            (by_id[r.symbol_id], r.effective_at): (r.o_raw, r.h_raw, r.l_raw, r.c_raw, r.v_raw)
+            for r in await conn.execute(
+                text("SELECT symbol_id, effective_at, o_raw, h_raw, l_raw, c_raw, v_raw FROM bars_daily")
+            )
+        }
+    dist: Counter[int] = Counter()
+    price_diff = volume_diff = compared = 0
+    worst = (0, None)
+    for t, bars in result.bars.items():
+        for b in bars:
+            key = (t, b.effective_at)
+            if key not in tr:
+                continue
+            compared += 1
+            n = ulps(float(b.total_return), tr[key])
+            dist[n] += 1
+            if n > worst[0]:
+                worst = (n, (t, b.session_date, tr[key], float(b.total_return)))
+            o, h, lo, c, v = raw[key]
+            if (o, h, lo, c) != (b.o_raw, b.h_raw, b.l_raw, b.c_raw):
+                price_diff += 1
+            if v != b.v_raw:
+                volume_diff += 1
+    print(f"fetched {now.isoformat()}; bars compared {compared}")
+    print(f"total return ULP distance histogram: {dict(sorted(dist.items()))}")
+    print(f"max {worst[0]} ULP at {worst[1]}")
+    print(f"raw price (o/h/l/c) differing: {price_diff}; volume differing: {volume_diff}")
+    await engine.dispose()
+
+
+asyncio.run(main())

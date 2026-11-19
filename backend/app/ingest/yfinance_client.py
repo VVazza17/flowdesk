@@ -25,6 +25,7 @@ from datetime import date, timedelta
 
 import pandas as pd  # type: ignore[import-untyped]
 
+from app import settings
 from app.ingest.bars import DAILY, INTRADAY_15M
 from app.ingest.errors import Permanent, ProviderError, RateLimited, Transient
 
@@ -43,6 +44,24 @@ class RawBatch:
 Download = Callable[..., tuple[pd.DataFrame | None, dict[str, str]]]
 
 
+_cache_dir_set: str | None = None
+
+
+def use_cache_dir(path: str | None = None) -> str:
+    """Point yfinance's caches (timezone, cookie, ISIN) at a writable directory, once per process
+    and before the first fetch, as yfinance requires. Uncached, every batch makes extra requests,
+    and the margin measured in step 1(b) (with caches working) would not describe what runs."""
+    global _cache_dir_set
+    target = path or settings.yfinance_cache_dir()
+    if _cache_dir_set != target:
+        import yfinance as yf  # type: ignore[import-untyped]
+
+        # The public name; in 1.8.0 it sets the timezone, cookie AND ISIN caches (yfinance.cache).
+        yf.set_tz_cache_location(target)
+        _cache_dir_set = target
+    return target
+
+
 def yf_download(
     tickers: Sequence[str],
     *,
@@ -53,6 +72,8 @@ def yf_download(
 ) -> tuple[pd.DataFrame | None, dict[str, str]]:
     """One `_download_impl` call with our own context (module docstring)."""
     from yfinance.multi import _download_impl, _DownloadCtx  # type: ignore[import-untyped]
+
+    use_cache_dir()
 
     ctx = _DownloadCtx()
     frame = _download_impl(

@@ -1,0 +1,12 @@
+fetched 2026-11-19T00:10:25.054254+00:00; bars compared 11976
+total return ULP distance histogram: {0: 9430, 1: 2221, 2: 294, 3: 31}
+max 3 ULP at ('IWM', datetime.date(2025, 1, 3), 220.43878173828125, 220.43873596191406)
+raw price (o/h/l/c) differing: 0; volume differing: 0
+fetched 2026-11-19T00:11:34.342108+00:00; bars compared 11976
+total return ULP distance histogram: {0: 9534, 1: 2082, 2: 335, 3: 24, 4: 1}
+max 4 ULP at ('XLI', datetime.date(2025, 3, 12), 127.33033752441406, 127.33036804199219)
+raw price (o/h/l/c) differing: 0; volume differing: 0
+fetched 2026-11-19T00:12:44.629792+00:00; bars compared 11976
+total return ULP distance histogram: {0: 9340, 1: 2247, 2: 360, 3: 27, 4: 2}
+max 4 ULP at ('XLI', datetime.date(2025, 3, 11), 127.34014129638672, 127.3401107788086)
+raw price (o/h/l/c) differing: 0; volume differing: 0

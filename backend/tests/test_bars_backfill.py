@@ -259,30 +259,74 @@ def test_only_settled_bars_are_stored_and_an_as_of_read_sees_only_what_had_settl
 # --- D3: a re-fetch never overwrites (rule 9) -----------------------------------------------------
 
 
-def test_a_refetch_that_differs_fails_that_symbol_and_overwrites_nothing(db: str) -> None:
-    first, _ = backfill(
+def _stored_rows(url: str, ticker: str) -> list[Any]:
+    return rows(
+        url,
+        "SELECT b.* FROM bars_daily b JOIN symbols s ON s.id = b.symbol_id "
+        "WHERE s.ticker = :t ORDER BY effective_at",
+        t=ticker,
+    )
+
+
+def test_a_price_difference_fails_its_symbol_a_volume_revision_does_not(db: str) -> None:
+    # Kyle, 2026-11-18. In ONE re-fetch: XLE's stored 2025-12-04 bar comes back with a different
+    # Close (a price: most likely a missed split, an operator must look), and XLK's comes back
+    # with a different Volume only (a post-settle revision, measured to happen). XLE must fail
+    # with its rows
+    # untouched and none of its new rows written; XLK must keep its stored volume, be counted, and
+    # write its new rows normally. Rule 9: each symbol's verdict must stay its own.
+    backfill(
         db,
         tickers=["XLE", "XLK"],
         download=fixture_download("daily_split_2025_12_05"),
         now=et(2025, 12, 9, 9),
     )
-    xle_before = rows(db, "SELECT b.* FROM bars_daily b JOIN symbols s ON s.id = b.symbol_id "
-                          "WHERE s.ticker = 'XLE' ORDER BY effective_at")  # fmt: skip
+    xle_before = _stored_rows(db, "XLE")
+    xlk_1204 = bar(db, "XLK", date(2025, 12, 4))
 
     def tamper(frame: Any) -> None:
         frame.loc[pd.Timestamp("2025-12-04"), ("XLE", "Close")] += 0.01
+        # +2 shares before the 2:1 split rebuilds to +1 as traded: still whole, so volume only.
+        frame.loc[pd.Timestamp("2025-12-04"), ("XLK", "Volume")] += 2.0
 
     second, error = backfill(
-        db, tickers=["XLE", "XLK"], download=fixture_download("daily_split_2025_12_05", tamper),
+        db,
+        tickers=["XLE", "XLK"],
+        download=fixture_download("daily_split_2025_12_05", tamper),
         now=RECORDED,
-    )  # fmt: skip
+    )
+    # XLE: a symbol failure, named; its stored first settled values stand; no new XLE rows.
     assert isinstance(error, SchemaMismatch) and "XLE" in str(error) and "XLK" not in str(error)
     assert second.failed == ["XLE"]
-    # XLE: the stored first settled values stand, and none of its newer rows were written.
-    assert rows(db, "SELECT b.* FROM bars_daily b JOIN symbols s ON s.id = b.symbol_id "
-                    "WHERE s.ticker = 'XLE' ORDER BY effective_at") == xle_before  # fmt: skip
-    # XLK (the second key) re-fetched cleanly: its newer sessions were written.
+    assert _stored_rows(db, "XLE") == xle_before
+    # XLK: not a failure; counted; the stored volume kept; its new sessions written.
+    assert second.volume_revisions == {"XLK": 1}
+    assert bar(db, "XLK", date(2025, 12, 4)) == xlk_1204
     assert bar(db, "XLK", date(2025, 12, 12)).feed == "backfill"
+
+
+def test_a_volume_revision_alone_does_not_fail_the_run(db: str) -> None:
+    backfill(
+        db,
+        tickers=["XLK"],
+        download=fixture_download("daily_split_2025_12_05"),
+        now=et(2025, 12, 9, 9),
+    )
+
+    def tamper(frame: Any) -> None:
+        frame.loc[pd.Timestamp("2025-12-05"), ("XLK", "Volume")] += 1.0
+
+    report, error = backfill(
+        db,
+        tickers=["XLK"],
+        download=fixture_download("daily_split_2025_12_05", tamper),
+        now=RECORDED,
+    )
+    assert error is None and report.failed == []
+    assert report.volume_revisions == {"XLK": 1}
+    assert bar(db, "XLK", date(2025, 12, 5)).v_raw == 6_628_000  # the stored first settled value
+    status = rows(db, "SELECT status FROM ingestion_runs ORDER BY id")
+    assert [r.status for r in status] == ["succeeded", "succeeded"]
 
 
 # --- D4: dead symbols, coverage -------------------------------------------------------------------

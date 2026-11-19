@@ -166,7 +166,9 @@ below).
   ones before accepting a 15m bar: an insert-only table cannot fix a 15m bar stored split-adjusted but labelled `live`. `mutation-check.sh m2-slice6-step3`.
   **Step 4 built and run (2026-11-18): `python -m app.bars_backfill`**, 2 years daily, `feed = 'backfill'`, ON CONFLICT DO NOTHING (a re-run writes
   0), a re-fetch that differs fails the symbol and overwrites nothing (D3), batches of at most 24. Dev stack: 24 x 499 bars (2024-11-19 to
-  2026-11-16), 5 splits, verified in SQL. **Yahoo's Adj Close differs at ~1e-7 between fetches minutes apart**: the re-fetch job needs a tolerance.
+  2026-11-16), 5 splits, verified in SQL. **A re-fetched PRICE that differs fails the symbol; a VOLUME-only difference is a post-settle
+  revision, counted and never written** (Kyle, 2026-11-18). **Re-fetch job requirement: total return differing by more than 16 float32 ULP
+  is a revision** (measured jitter at most 4 ULP; margin ASSUMED). yfinance caches live in `/var/cache/yfinance` (made in the image).
 - **The base image is pinned by digest** (M2 slice 0, 2026-11-08). The `FROM` line in `backend/Dockerfile` is
   the one definition. The CI tooling container, `lock-deps.sh` and the smokes read it through
   `infra/base-image.sh`, and lint fails on a second definition. The base no longer updates itself: the daily
@@ -330,6 +332,12 @@ elaboration is the most comfortable way to avoid execution.*
     say so in the plan entry (an addendum, for an ADR) and keep this count. **Count: five (2026-11-16).** Fourth: slice 6 step 1(a), "the cross-section needs an
     `(interval, ts)` index" (the primary key served it). Fifth: slice 6 step 1(b) F-a, the implicit premise that a completed yfinance bar is final (its volume was still
     changing 28 minutes after it ended; counted though it was never written as a number; Kyle ruled 2026-11-16 that it counts).
+
+11. **A script that writes files stops on the first failure, and writes nothing until every change is known to apply.** Twice on
+    2026-11-18 a step ran after the one before it had failed (a lint failure pushed; a doc script applied half its edits and the
+    commit went through). Edit files through `backend/tools/edits.py` (all or nothing; every miss named). In the shell: `set -euo
+    pipefail` and ONE COMMAND PER LINE, because bash ignores `set -e` for every command of an `&&` list except the last. Judge a
+    gate by its exit code, never by piped output, and commit only after every gate's exit code is 0.
 
 ## Commands
 

@@ -4,9 +4,12 @@ Every write is INSERT ... ON CONFLICT DO NOTHING into insert-only tables (migrat
 re-run writes 0 rows. One transaction per batch: a bar, its total return (revision 0) and the splits
 it was rebuilt with land together or not at all (D2).
 
-**A re-fetch never overwrites (D3).** Before inserting, each symbol's re-fetched bars are compared
-with the stored ones on the same instants. If any raw price or volume differs, NONE of that symbol's
-rows are written and the symbol fails (`RefetchMismatch`); the stored first settled value stands. A
+**A re-fetch never overwrites (D3), and prices and volume are judged apart (Kyle, 2026-11-18).**
+Before inserting, each symbol's re-fetched bars are compared with the stored ones on the same
+instants. If a raw PRICE differs (most likely a missed split), NONE of that symbol's rows are
+written and the symbol fails (`RefetchMismatch`). If only the VOLUME differs, that is a post-settle
+revision: counted per symbol, the stored value kept, the symbol's new rows written. Either way the
+stored first settled value stands. A
 total return that differs from the stored revision 0 is NOT a failure (a dividend rewrites `Adj
 Close` by design, measured 2026-11-16) and is only counted: later revisions are the periodic history
 re-fetch's (decided 2026-11-18, built later).
@@ -29,12 +32,23 @@ from app.models.reference import ProviderMapping, Symbol, TradingSession
 
 PROVIDER = "yfinance"
 CALENDAR = "XNYS"  # every seeded symbol is a US ETF (reference_seed); exchanges are not yet tagged
-RAW_FIELDS = ("o_raw", "h_raw", "l_raw", "c_raw", "v_raw")
+# A re-fetched PRICE that differs from a stored one fails the symbol (most likely a missed split:
+# an operator must look). A re-fetched VOLUME that differs is a post-settle revision, measured to
+# happen (daily volume revised on night 2, 2026-11-18) and expected under the pending revision
+# policy: counted per symbol, the stored value kept, the symbol's new rows written normally. Had
+# it failed the symbol, the first revision would freeze that symbol for good, because a stored
+# value never changes. Its handling (dated versions or a validation flag) is the two-week tail's.
+PRICE_FIELDS = ("o_raw", "h_raw", "l_raw", "c_raw")
+RAW_FIELDS = (*PRICE_FIELDS, "v_raw")
 
 
 class RefetchMismatch(SchemaMismatch):
-    """D3: a re-fetch rebuilt different raw values for a stored bar. A validation failure, never an
-    overwrite: none of the symbol's rows from this batch are written."""
+    """D3: a re-fetch rebuilt a different raw PRICE for a stored bar. A validation failure, never an
+    overwrite: none of the symbol's rows from this batch are written. (A volume-only difference is
+    not this: see PRICE_FIELDS.)
+
+    Kind `schema_mismatch` until slice 7 adds the validation kind; it MOVES to that kind then
+    (Kyle, 2026-11-18)."""
 
 
 @dataclass(frozen=True)
@@ -50,6 +64,9 @@ class WriteCounts:
     total_returns: int = 0
     splits: int = 0
     total_return_differs: int = 0  # stored revision 0 differs from today's Adj Close: counted only
+    # Per symbol: bars whose re-fetched volume differs from the stored one (prices equal). Counted,
+    # never written: the stored first settled value stands.
+    volume_revisions: dict[str, int] = field(default_factory=dict)
     mismatched: list[SymbolFailure] = field(default_factory=list)
 
     @property
@@ -160,18 +177,29 @@ async def write_daily(
         for provider_symbol, rows in bars.items():
             symbol_id = symbols[provider_symbol]
             stored_raw, stored_tr = await _stored(conn, symbol_id, rows)
+            n_price = len(PRICE_FIELDS)
             if any(
                 b.effective_at in stored_raw
-                and stored_raw[b.effective_at] != tuple(getattr(b, f) for f in RAW_FIELDS)
+                and stored_raw[b.effective_at][:n_price]
+                != tuple(getattr(b, f) for f in PRICE_FIELDS)
                 for b in rows
             ):
                 counts.mismatched.append(
                     SymbolFailure(
                         provider_symbol,
-                        RefetchMismatch(f"{provider_symbol}: a re-fetch differs from a stored bar"),
+                        RefetchMismatch(
+                            f"{provider_symbol}: a re-fetched price differs from a stored bar"
+                        ),
                     )
                 )
                 continue
+            revised = sum(
+                1
+                for b in rows
+                if b.effective_at in stored_raw and stored_raw[b.effective_at][n_price] != b.v_raw
+            )
+            if revised:
+                counts.volume_revisions[provider_symbol] = revised
             counts.total_return_differs += sum(
                 1
                 for b in rows

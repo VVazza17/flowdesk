@@ -1,0 +1,52 @@
+"""Does yfinance use its caches in the worker image? Count HTTP requests per batch, with and without.
+
+Measurement script, not repo code (named .txt so no linter picks it up). In the worker image, from
+the repo root (Git Bash):
+
+    MSYS_NO_PATHCONV=1 docker compose run --rm -v "$(pwd -W)/docs/evidence:/e:ro" -e PYTHONPATH=/srv \
+        worker python /e/yf-cache-probe.py.txt cached
+    ... -e YFINANCE_CACHE_DIR=/proc/no-cache worker python /e/yf-cache-probe.py.txt uncached
+
+Two consecutive 24-ticker daily batches (period 5d) in ONE process, through the real client's
+download. Every curl_cffi request is counted by URL path kind. The cache directory is listed after.
+Four batches in about a minute in total, far inside what step 1(b) measured (ten batches 2 s apart).
+"""
+
+import os
+import sys
+from collections import Counter
+from urllib.parse import urlparse
+
+import curl_cffi.requests
+
+from app.ingest.bars import DAILY
+from app.ingest.yfinance_client import use_cache_dir, yf_download
+from app.settings import UNIVERSES, yfinance_cache_dir
+
+calls: Counter[str] = Counter()
+original = curl_cffi.requests.Session.request
+
+
+def counted(self, method, url, *args, **kwargs):  # type: ignore[no-untyped-def]
+    path = urlparse(str(url)).path
+    kind = "chart" if "/chart/" in path else "quoteSummary" if "quoteSummary" in path else path.split("/")[1] if path.count("/") > 1 else path
+    calls[kind] += 1
+    return original(self, method, url, *args, **kwargs)
+
+
+curl_cffi.requests.Session.request = counted  # type: ignore[method-assign]
+
+mode = sys.argv[1] if len(sys.argv) > 1 else "cached"
+tickers = sorted({t for u in UNIVERSES for t in u.tickers})
+where = use_cache_dir()
+print(f"mode={mode} cache_dir={where} writable={os.access(where, os.W_OK) if os.path.isdir(where) else False} tickers={len(tickers)}")
+for n in (1, 2):
+    calls.clear()
+    frame, errors = yf_download(tickers, interval=DAILY, start=None, period="5d", actions=True)
+    print(f"batch {n}: {sum(calls.values())} requests {dict(sorted(calls.items()))}; rows {len(frame)}; errors {len(errors)}")
+if os.path.isdir(where):
+    for root, _, files in os.walk(where):
+        for f in files:
+            p = os.path.join(root, f)
+            print(f"cache file {p} {os.path.getsize(p)} bytes")
+print(f"(configured default: {yfinance_cache_dir()})")
