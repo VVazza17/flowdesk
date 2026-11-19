@@ -18,13 +18,15 @@ casting an instant to a date."""
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
+from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from app.ingest.bars import (
+    DAILY,
     Calendar,
     DistributionEvent,
     Session,
@@ -33,7 +35,7 @@ from app.ingest.bars import (
     SymbolFailure,
 )
 from app.ingest.errors import SchemaMismatch
-from app.models.prices import BarDaily, Distribution, Split
+from app.models.prices import BarDaily, BarGap, BarIntraday, Distribution, Split
 from app.models.reference import ProviderMapping, Symbol, TradingSession
 
 PROVIDER = "yfinance"
@@ -157,22 +159,25 @@ async def load_distributions(
     return out
 
 
+def _table(interval: str) -> Any:
+    return BarDaily if interval == DAILY else BarIntraday
+
+
 async def _stored(
-    conn: AsyncConnection, symbol_id: int, bars: Sequence[SettledBar]
+    conn: AsyncConnection, interval: str, symbol_id: int, bars: Sequence[SettledBar]
 ) -> dict[object, tuple[object, ...]]:
-    """The stored raw values of this symbol at these instants."""
+    """The stored raw values of this symbol at these instants, in this interval's table."""
+    t = _table(interval)
     instants = [b.effective_at for b in bars]
-    raw = {
+    query = select(t.effective_at, *(getattr(t, f) for f in RAW_FIELDS)).where(
+        t.symbol_id == symbol_id, t.effective_at.in_(instants)
+    )
+    if t is BarIntraday:
+        query = query.where(BarIntraday.interval == interval)
+    return {
         r.effective_at: tuple(getattr(r, f) for f in RAW_FIELDS)
-        for r in (
-            await conn.execute(
-                select(BarDaily.effective_at, *(getattr(BarDaily, f) for f in RAW_FIELDS)).where(
-                    BarDaily.symbol_id == symbol_id, BarDaily.effective_at.in_(instants)
-                )
-            )
-        ).all()
+        for r in (await conn.execute(query)).all()
     }
-    return raw
 
 
 async def write_daily(
@@ -186,13 +191,15 @@ async def write_daily(
     feed: str,
     ingestion_run_id: int | None,
     source: str = PROVIDER,
+    interval: str = DAILY,
 ) -> WriteCounts:
-    """Write one parsed batch (keyed by provider symbol; `symbols` maps it to symbols.id)."""
+    """Write one parsed batch (keyed by provider symbol; `symbols` maps it to symbols.id) into
+    `bars_daily` or, for `interval='15m'`, `bars_intraday`, with the same rules."""
     counts = WriteCounts()
     async with engine.begin() as conn:
         for provider_symbol, rows in bars.items():
             symbol_id = symbols[provider_symbol]
-            stored_raw = await _stored(conn, symbol_id, rows)
+            stored_raw = await _stored(conn, interval, symbol_id, rows)
             n_price = len(PRICE_FIELDS)
             if any(
                 b.effective_at in stored_raw
@@ -259,11 +266,14 @@ async def write_daily(
                 counts.splits += len(done.all())
             if not rows:
                 continue
+            table = _table(interval)
+            extra = {} if table is BarDaily else {"interval": interval}
             done = await conn.execute(
-                pg_insert(BarDaily)
+                pg_insert(table)
                 .values(
                     [
                         {
+                            **extra,
                             "symbol_id": symbol_id,
                             "effective_at": b.effective_at,
                             "o_raw": b.o_raw,
@@ -282,7 +292,7 @@ async def write_daily(
                     ]
                 )
                 .on_conflict_do_nothing()
-                .returning(BarDaily.effective_at)
+                .returning(table.effective_at)
             )
             counts.bars += len(done.all())
     return counts
@@ -357,3 +367,65 @@ def coverage(
         missing = tuple(d for d in expected if first <= d <= last and d not in present)
         out.append(Coverage(m.ticker, len(have), first, last, first > window_first, missing))
     return out
+
+
+async def last_stored(
+    engine: AsyncEngine, symbol_ids: Iterable[int], interval: str
+) -> dict[int, tuple[date, datetime] | None]:
+    """Each symbol's newest stored bar in `interval`: (its session date, its effective_at), or None.
+    The poll's start (gap-driven, inclusive: decided 2026-11-15 and 2026-11-18). The session date
+    comes from the calendar, never a CAST."""
+    t = _table(interval)
+    ids = list(symbol_ids)
+    newest = (
+        select(t.symbol_id, func.max(t.effective_at).label("at"))
+        .where(t.symbol_id.in_(ids))
+        .group_by(t.symbol_id)
+    )
+    if t is BarIntraday:
+        newest = newest.where(BarIntraday.interval == interval)
+    sub = newest.subquery()
+    join = (
+        (TradingSession.opens_at == sub.c.at)
+        if t is BarDaily
+        else (TradingSession.opens_at <= sub.c.at) & (sub.c.at < TradingSession.closes_at)
+    )
+    out: dict[int, tuple[date, datetime] | None] = {i: None for i in ids}
+    async with engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                select(sub.c.symbol_id, TradingSession.session_date, sub.c.at).join(
+                    TradingSession, join & (TradingSession.calendar_code == CALENDAR)
+                )
+            )
+        ).all()
+    for r in rows:
+        out[r.symbol_id] = (r.session_date, r.at)
+    return out
+
+
+async def record_gap(
+    engine: AsyncEngine,
+    symbol_id: int,
+    interval: str,
+    missing_from: datetime,
+    missing_to: datetime,
+    *,
+    ingestion_run_id: int | None,
+) -> int:
+    """Record an unrecoverable gap, [missing_from, missing_to) over bar open instants (decided
+    2026-11-15). Never deleted; a second run cannot record it twice. Returns rows written."""
+    async with engine.begin() as conn:
+        done = await conn.execute(
+            pg_insert(BarGap)
+            .values(
+                symbol_id=symbol_id,
+                interval=interval,
+                missing_from=missing_from,
+                missing_to=missing_to,
+                ingestion_run_id=ingestion_run_id,
+            )
+            .on_conflict_do_nothing()
+            .returning(BarGap.id)
+        )
+        return len(done.all())

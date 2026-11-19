@@ -1,0 +1,25 @@
+baseline: tests/test_bars_feed.py, tests/test_rate_budget.py pass unmutated
+   1. caught                   the 15m run skips its own split check  [-k test_no_15m_bar_is_accepted_before_a_split]  1 failed, 17 deselected, 4 warnings in 2.01s
+   2. caught                   the split check fetches 15m instead of daily actions  [-k test_the_15m_backfill_checks_splits_first]  1 failed, 17 deselected, 4 warnings in 1.79s
+   3. caught                   the split check's events are not written  [-k test_no_15m_bar_is_accepted_before_a_split]  1 failed, 17 deselected, 4 warnings in 1.97s
+   4. caught                   a symbol whose check failed still gets 15m bars  [-k test_a_symbol_whose_split_check_fails]  1 failed, 17 deselected, 4 warnings in 2.19s
+   5. caught                   the second request takes no rate-budget slot  [-k test_the_15m_backfill_checks_splits_first]  1 failed, 17 deselected, 4 warnings in 2.00s
+   6. caught                   the poll starts after the last stored session  [-k test_the_daily_poll_starts_at_the_last_stored_session or test_the_15m_poll_starts]  1 failed, 16 deselected, 4 warnings in 2.02s
+   7. caught                   a symbol with no stored bar is polled anyway  [-k test_a_symbol_with_no_stored_bar]  1 failed, 17 deselected, 4 warnings in 1.96s
+   8. caught                   every symbol's last bar is the newest of any symbol  [-k test_the_15m_poll_records_a_gap]  1 failed, 17 deselected, 4 warnings in 2.08s
+   9. caught                   daily bars count as 15m history  [-k test_daily_bars_do_not_count_as_15m_history]  1 failed, 17 deselected, 4 warnings in 1.95s
+  10. caught                   15m re-fetches are compared with bars_daily  [-k test_the_15m_poll_starts_at_its_last_stored_session_and_counts]  1 failed, 17 deselected, 4 warnings in 2.56s
+  11. caught                   no gap is recorded beyond the look-back  [-k test_the_15m_poll_records_a_gap]  1 failed, 17 deselected, 4 warnings in 1.98s
+  12. caught                   the gap starts at the last stored bar itself  [-k test_the_15m_poll_records_a_gap]  1 failed, 17 deselected, 4 warnings in 2.13s
+  13. caught                   the gap ends a session late  [-k test_the_15m_poll_records_a_gap]  1 failed, 17 deselected, 4 warnings in 2.36s
+  14. caught                   polled rows are labelled backfill  [-k test_the_daily_poll_starts_at_the_last_stored_session]  1 failed, 17 deselected, 4 warnings in 2.03s
+  15. caught                   a batch reports none of its bars as written  [-k test_the_daily_poll_starts_at_the_last_stored_session]  1 failed, 17 deselected, 4 warnings in 2.26s
+  16. caught                   not backfilled reads as an empty batch  [-k test_a_symbol_with_no_stored_bar or test_run_failure_names]  1 failed, 16 deselected, 4 warnings in 2.67s
+  17. caught                   an unknown failure is dropped  [-k test_run_failure_names]  1 failed, 17 deselected in 0.77s
+  18. caught                   the wait bound is the floor, not two spacings  [-k test_a_second_slot_in_a_row or test_the_wait_bound]  1 failed, 5 deselected in 0.10s
+  19. caught                   the bars limiter uses the default bound  [-k test_the_wait_bound]  1 failed, 6 deselected in 0.57s
+  20. caught                   the polls are scheduled with the flag off  [-k test_beat_does_not_schedule_the_polls_unless_enabled]  1 failed, 14 deselected in 0.92s
+  21. caught                   any non-empty flag enables the polls  [-k test_beat_does_not_schedule_the_polls_unless_enabled]  1 failed, 1 passed, 14 deselected in 1.10s
+  22. caught                   the polls run at weekends  [-k test_enabled_both_polls_run_at_0905]  1 failed, 17 deselected in 0.77s
+  23. caught                   stale after three days  [-k test_both_bars_feeds_go_stale_after_four_days]  1 failed, 17 deselected in 0.89s
+23/23 mutations caught

@@ -1,0 +1,14 @@
+== Beat with the flag as configured (unset) schedules no bars poll
+beat schedule: canary canary_ingest fred_poll sweep
+ok: neither poll scheduled; both registered
+== the daily poll
+ok ingest.bars_daily_poll: task_runs 7903 succeeded in 24s; ingestion runs (id, rows_written):
+    288 0
+    {"interval": "1d", "rows_written": 0, "bars": 0, "splits": 0, "distributions": 0, "gaps": 0, "unsettled": 48, "volume_revisions": {}, "volume_revisions_total": 0, "failed": [], "event": "bars_poll_done", "level": "info", "timestamp": "2026-11-19T05:12:12.337373Z"}
+== the 15m poll (its own daily split check first: two rate-budget slots, 60 s apart)
+ok ingest.bars_15m_poll: task_runs 7904 succeeded in 116s; ingestion runs (id, rows_written):
+    289 0
+    {"interval": "15m", "rows_written": 0, "bars": 0, "splits": 0, "distributions": 0, "gaps": 0, "unsettled": 624, "volume_revisions": {}, "volume_revisions_total": 0, "failed": [], "event": "bars_poll_done", "level": "info", "timestamp": "2026-11-19T05:14:09.654404Z"}
+== health
+ok: /health/ready ok; yfinance bars_daily and bars_15m fresh
+PASS smoke-m2-slice6-poll

@@ -86,3 +86,15 @@ def batches[T](items: Sequence[T], budget: RateBudget) -> Iterator[Sequence[T]]:
     """Split `items` into chunks of at most `budget.max_batch`. Clients obey the cap with this."""
     for start in range(0, len(items), budget.max_batch):
         yield items[start : start + budget.max_batch]
+
+
+def wait_bound(budgets: Mapping[str, RateBudget], floor_seconds: float = 60.0) -> float:
+    """How long a caller may wait for a slot: at least two spacings of the slowest budget. A run
+    that makes two requests in a row (the 15m poll's split check, then its bars) waits out the slot
+    its own first request took, so a bound equal to the spacing refuses it whenever Redis's TTL and
+    the caller's sleep disagree by a little. MEASURED 2026-11-19: the dev stack refused the 15m
+    backfill's second slot at yfinance's 60 s spacing with a 60 s bound (this machine's clocks
+    disagree by about 8%, IDEA-048). Two spacings cover one whole slot plus that drift many
+    times."""
+    slowest = max((b.min_interval_seconds for b in budgets.values()), default=0.0)
+    return max(floor_seconds, 2 * slowest)

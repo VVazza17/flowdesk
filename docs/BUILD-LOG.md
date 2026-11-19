@@ -3821,3 +3821,104 @@ fetching deep history (`not_backfilled`, decided 2026-11-15):
 3. **The schedule (09:05 ET weekdays) and the 4-day stale threshold**, both ASSUMED above.
 4. **Whether the daily poll's `start` is inclusive of the last stored session** (re-checking it every morning, cheap; recommended) or the next one.
 """
+
+### Addendum 2026-11-18 (eighth) — Kyle's decisions on the step 6 questions
+
+Written the turn they were given.
+
+1. **A manual poll on the dev stack before IDEA-029 closes: ALLOWED.** The Beat entries stay behind `BARS_POLL_ENABLED=false` until slice 2's
+   desktop drill passes. **Wording corrected: the tables are insert-only, so "wiped" means dropping the dev database, not deleting rows.**
+2. **15m backfill: `python -m app.bars_backfill --interval 15m`**: 59 calendar days via `start=`, `feed = 'backfill'`, `available_at` = the 15m
+   settle point under the same recorded exception. **GENERAL RULE: no 15m bar is accepted until splits for its window are known IN THE SAME
+   RUN.** Every 15m write (the backfill as well as the poll) first fetches its own daily `actions=True` batch over its window plus the next
+   session, and stores and checks any new split and distribution; then it parses.
+3. **Schedule: 09:05 America/New_York, Monday to Friday: APPROVED. Stale after 4 calendar days: APPROVED, DERIVED, not measured**: the longest
+   normal gap between weekday runs (Friday to Monday) plus one day of margin. **Holidays produce a successful 0-row run.**
+4. **Inclusive start: APPROVED.** Re-checking the last stored bar every morning makes the poll count every late volume revision as it happens.
+   **Those counts are reported per run; they feed the revision-policy decision alongside the two-week tail.**
+5. **Recorded: 9.6e-8 relative (MEASURED 2026-11-18, computed against Yahoo's Adj Close ratio, 24 symbols over 2 years) is the measured
+   baseline for slice 7's computed-vs-Yahoo tolerance.**
+
+Build order: the 15m backfill first, then both polls behind the flag; rule 9 on every keyed start, mutation, a smoke through the real worker,
+HEALTH.md for both feeds, `commit-gated.sh`; the 15m backfill and one manual run of each poll on the dev stack. Also: the IDEA-029 restore drill
+written as a step-by-step for Kyle in `docs/BACKUP.md` (Kyle holds the age identity key; Claude must not).
+
+### Addendum 2026-11-19 — two findings during step 6, neither decided here (FLAGGED for Kyle)
+
+**F-6a. FALSIFIED: "59 calendar days on `start=`" is not always inside Yahoo's 60-day limit (rule 10's sixth).** MEASURED 2026-11-19 04:08
+UTC, the first real `python -m app.bars_backfill --interval 15m` on the dev stack: every one of the 24 symbols was refused, `15m data not
+available for startTime=1789876800 and endTime=1795061334. The requested range must be within the last 60 days.` Decoded: start = 2026-09-20
+00:00 New York (EDT, 04:00 UTC: yfinance sends the start DATE as New York midnight), end = the request instant, 2026-11-18 23:08 New York
+(EST). That is 59 days 23 h 08 min of local time **plus the hour the clocks went back on 2026-11-01: 60.006 days**. The 2026-11-16
+measurement (step 1(b) item 4) passed at 12:10 ET, 59.5 days. So the limit is in INSTANTS (end - start <= 60 x 24 h, MEASURED once each
+side), and "today - 59 calendar days" exceeds it in the last hour of the New York day whenever the window spans the November DST change.
+**The 09:05 polls cannot hit it** (at most about
+59 days 10 h). **A late-evening manual backfill can, and did.** Nothing was written (the run failed loudly: `schema_mismatch`, rows 0).
+The decided rule (59 calendar days via `start=`, Kyle 2026-11-16 and 2026-11-18) is unchanged in code; the backfill was re-run after New
+York midnight inside it. Options for Kyle, not chosen: (a) 58 calendar days, (b) the client checks the instant span itself (start date's
+New York midnight >= now - 60 days + a margin) and moves the start a day later when needed. Either changes a recorded decision.
+  A second, smaller defect from the same run: the refusal reached the store as `an intraday batch has a timezone-naive index`
+  (`schema_mismatch`), because every ticker's soft error left an empty frame. Loud, but it names the wrong cause. Not changed.
+
+**F-6b. Two FRED series have been refused by the daily poll since 2026-11-16 (BAMLC0A0CM and BAMLH0A0HYM2, the ICE BofA spreads).** Seen
+2026-11-19 in `/health/providers` while checking step 6's health text: both `stale`, `last_success_at` 2026-11-15 13:00 UTC, every poll
+since (2026-11-16, 11-17, 11-18) failing `schema_mismatch`: `rule 3 (a chain does not end at the latest value): 3 to 4 periods, from
+['2023-11-14', '2023-11-15', '2023-11-16']; rule 4 (a latest value has no history): 1 period, from ['2026-11-10']; rule 5 (...)`. The other
+15 series succeed; the poll task row is `failed` each day because it names them (PollIncomplete). **It fails closed: nothing was stored
+for either series.** Probable cause, ASSUMED, not verified: FRED serves ICE BofA data only as a rolling three-year window, so the oldest
+periods drop out of the latest vintage as the window moves (2023-11-14 is three years before the failures began). This touches ADR-0003's
+six rules and is Kyle's to decide; nothing was changed. Not paged: stale feeds never degrade `/health/ready`.
+
+### 2026-11-19 — M2 slice 6 step 6 built: the 15m backfill and both settled polls, behind `BARS_POLL_ENABLED=false`
+
+Built in the order decided (addendum eighth): the 15m backfill first, then the polls. **Not scheduled: IDEA-029 has not closed.**
+
+- **One run for all four** (`app/ingest/bars_feed.py`, `run_bars(interval, mode)`): backfill or poll, daily or 15m, batches of at most 24,
+  each its own `run_feed`. `python -m app.bars_backfill` is now a thin entry point over it (`--interval 15m`: 59 calendar days via
+  `start=`, `feed = 'backfill'`, `available_at` = the 15m settle point). The polls are `ingest.bars_daily_poll` and `ingest.bars_15m_poll`
+  (`app/tasks/bars_ingest.py`), on the ingest queue, through `run_recorded`, and they count as ingest-worker work for `busy`
+  (`INGEST_WORKER_TASKS`; the bars backfill, a separate process, does not).
+- **The general rule (Kyle, 2026-11-18), for every 15m write:** the run first fetches its own daily `actions=True` batch over its window, writes
+  any new split and distribution under the usual checks, and only then fetches and parses the 15m bars. A symbol whose check fails is held
+  back from the 15m batch and named; one with no settled daily bar yet is still fetched. The second request takes its own rate-budget slot.
+- **The polls:** each symbol starts at its last stored session, INCLUSIVE (decided), so every morning re-compares that session and counts late
+  volume revisions (logged per run as `bars_poll_done`, per symbol). A symbol with no stored bar in that interval fails as `NotBackfilled`
+  (`permanent`, named; never fetched deep). A 15m symbol whose last bar is before the 59-day floor gets the unreachable range in `bar_gaps`
+  (once: a later run starts from its new last bar) and is fetched from the floor. Holidays: a successful 0-row run.
+- **Schedule and health:** 09:05 America/New_York Monday to Friday, only when `BARS_POLL_ENABLED=true` (compose and `.env.example` default
+  false); both feeds stale after 4 days (DERIVED); declared and judged with the flag off too (a `# DECISION:`; with the polls off they go stale 4
+  days after the last run, which is true and pages nobody). `docs/HEALTH.md`, "Bars feeds".
+
+**Two defects found by the work and fixed:**
+- `run_failure` knew three failure kinds; `NotBackfilled` fell through to `empty_result:DeadSymbols` with NO symbol named. It now has its own
+  group (`permanent:NotBackfilled: ... SPY`), and a failure of any type it does not know is named and fails the run as broken data.
+- **The rate limiter's 60 s wait bound equalled yfinance's 60 s spacing**, so a 15m run's second request (which waits out the slot its own first
+  request took) was refused by the real limiter: MEASURED 2026-11-19 05:02 UTC on the dev stack, `budget_unavailable:BudgetUnavailable`, all 24
+  symbols, 0 rows (the test limiter never waits, so no test could see it; the run at 04:08 squeezed through the same edge). Redis's TTL and the
+  caller's sleep disagree on this machine (about 8%, IDEA-048). `budget.wait_bound`: at least two spacings of the slowest budget (120 s for
+  yfinance; FRED's stays 60 s); the bars entry points share `bars_feed.yfinance_limiter`. A test reproduces it with a Redis stand-in whose TTL
+  runs 8% slow (refused at 60 s, granted at the bound).
+
+**Dev stack (MEASURED 2026-11-19):**
+- **15m backfill** (05:10 UTC, after New York midnight: F-6a): `bars_intraday` +26,208 = 24 symbols x 42 sessions (2026-09-21 to 11-17) x 26;
+  624 unsettled skipped (11-18, settling at 09:00 today); splits +0, distributions +0 (the daily check found none new), gaps 0, volume
+  revisions none. SQL: 1,092 bars every symbol, first 2026-09-21 09:30 ET, last 11-17 15:45 ET, all `feed = backfill`, `raw_basis = live`,
+  and **every `available_at` equal to 09:00 New York on the next session (0 mismatches of 26,208)**.
+- **One manual run of each poll, through the real worker** (`infra/smoke-m2-slice6-poll.sh`, 05:11 to 05:14 UTC, 00:11 New York): daily
+  `task_runs` 7903 succeeded in 24 s, **rows written 0, volume revisions 0** (the inclusive start re-compared 11-16 for all 24; 11-17 and 11-18
+  not yet settled, 48 skipped); 15m `task_runs` 7904 succeeded in 116 s (two slots), **rows written 0, volume revisions 0** (11-17 re-compared,
+  624 bars; 11-18's 624 unsettled). Both 0 because nothing new had settled at that hour; the first run with new rows is after 09:00 ET.
+  Beat's schedule with the flag unset: `canary canary_ingest fred_poll sweep`. `/health/ready` ok; both bars feeds `fresh`.
+- Evidence: `docs/evidence/2026-11-19-bars-15m-backfill.txt`, `-bars-15m-backfill-refused-60d.txt` (F-6a), `-smoke-m2-slice6-poll.txt`,
+  `-step6-mutation-check.txt`.
+
+**Tests** (`tests/test_bars_feed.py`, 18 cases; `test_rate_budget.py` +2): the split check before the 15m batch (calls, `actions`, two slots);
+a split known only from the same run's daily check rebuilds pre-split 15m bars x2; a failed check holds the symbol back and names it; inclusive
+starts (daily and 15m) and their volume-revision counts; a re-run writes 0 with a succeeded 0-row ingestion run; **rule 9:** a symbol with no
+stored bar beside one with newer bars is `NotBackfilled` and not fetched, and a recent last bar does not hide another symbol's gap (the gap
+record for one symbol only, exact range); daily bars do not count as 15m history; recorded task executions; Beat off for unset, `false`, ``,
+`yes`; 09:05 Monday to Friday in winter and summer; stale after 4 days. **Mutation: `m2-slice6-step6` 23/23;** steps 2 to 5b re-run and all
+caught (35, 34, 13, 13, 23) after their snippets followed the code into `bars_feed.py`. Full gate before the limiter fix: 957 passed.
+
+**Still open for this step:** F-6a (the 59-day rule across DST) and F-6b (the two ICE BofA FRED series), both flagged above; the misleading
+error text when every 15m ticker is refused; IDEA-029, which blocks the flag.

@@ -12,6 +12,8 @@ from app import settings
 from app.logging import configure_logging
 from app.tasks.liveness import SWEEP_INTERVAL_SECONDS
 from app.tasks.names import (
+    BARS_15M_POLL,
+    BARS_DAILY_POLL,
     CANARY,
     FAKE_INGEST,
     FRED_POLL,
@@ -34,6 +36,7 @@ def create_celery() -> Celery:
         "flowdesk",
         broker=broker,
         include=[
+            "app.tasks.bars_ingest",
             "app.tasks.canary",
             "app.tasks.fake_ingest",
             "app.tasks.fred_ingest",
@@ -101,6 +104,22 @@ def create_celery() -> Celery:
             },
         },
     )
+    if settings.bars_poll_enabled():
+        # The settled bars polls, 09:05 America/New_York Monday to Friday (Kyle, 2026-11-18). Off
+        # by default: IDEA-029 must close first. Six hours' expiry, as the FRED poll: the next
+        # morning's run starts from each symbol's last stored bar, so a skipped one loses nothing
+        # but the 15m look-back, and that loss is recorded in bar_gaps.
+        when = crontab(
+            hour=settings.BARS_POLL_HOUR,
+            minute=settings.BARS_POLL_MINUTE,
+            day_of_week=settings.BARS_POLL_DAYS,
+        )
+        for key, task in (("bars_daily_poll", BARS_DAILY_POLL), ("bars_15m_poll", BARS_15M_POLL)):
+            app.conf.beat_schedule[key] = {
+                "task": task,
+                "schedule": when,
+                "options": {"expires": 6 * 3600},
+            }
     if settings.fake_provider_enabled():
         fake_interval = float(settings.fake_provider_interval_seconds())
         app.conf.beat_schedule["fake_ingest"] = {

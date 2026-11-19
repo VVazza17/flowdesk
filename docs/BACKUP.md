@@ -621,6 +621,241 @@ docker compose exec -u postgres backup /opt/backup/run-copy.sh
 
 That tests the configuration. It does not satisfy step 3.
 
+### The restore drill, step by step (IDEA-029; for Kyle to run)
+
+This is the drill that closes IDEA-029 and lets the bars polls be scheduled (`BARS_POLL_ENABLED`, M2 slice 6 step 6). It covers the six
+points of [Closing the slice](#closing-the-slice), in order. **You hold the age identity (private) key. It is never sent to Claude, never
+pasted into a chat, never on the laptop, and lives in the password manager; it touches the desktop's disk only for the minutes of step C4
+to C6.**
+
+**Shell: Git Bash, on both machines, for every command below**, with one exception: the desktop's OpenSSH Server and NTFS setup (step A2)
+is PowerShell **as Administrator**, exactly as [The destination](#the-destination-windows-openssh-server-and-ntfs) gives it. No command
+here is chained with `&&`: run each line on its own and read its output before the next. Where a line says *expect*, anything else means
+stop and send the output.
+
+**Where things stand (MEASURED 2026-11-19 on the laptop):** `infra/backup/recipients.txt` has no real age key (backups fail closed with
+`NoRecipient`), and `.env` has no `BACKUP_SSH_HOST`. So no scheduled backup has ever been taken. Part A is the one-time setup; then Part B
+is waiting for one unattended backup; then Part C restores it on the desktop.
+
+**Which backup file:** the **first `.tar.age` that the scheduler makes on its own, after a 03:00 `America/New_York` slot, once Part A is
+done**, named `flowdesk_<UTC stamp>.tar.age` (for example `flowdesk_20261121T080004Z.tar.age`), as it arrived on the desktop in
+`C:\FlowdeskBackups`. Not one made by `run-backup.sh` by hand, and not `verify-destination.sh`'s `flowdesk-probe-*.tar.age` (point 3:
+unattended). Use the newest such file if several have arrived. The `<UTC stamp>` part of its name is the **cutoff** used in steps B4 and C7;
+copy it exactly (Postgres reads `20261121T080004Z` as is).
+
+#### Part A — one-time setup
+
+**A1. Desktop: make the age key.** In Git Bash:
+
+```bash
+winget install FiloSottile.age
+```
+
+Close and reopen Git Bash (so `age` is on PATH), then:
+
+```bash
+age-keygen -o ~/flowdesk-age.key
+```
+
+*Expect* `Public key: age1...` printed. Open the file, copy **its whole contents** (three lines: created, public key, `AGE-SECRET-KEY-1...`)
+into a new password-manager entry named `FlowDesk age identity`. Check the entry saved. Then:
+
+```bash
+grep '^# public key:' ~/flowdesk-age.key
+rm ~/flowdesk-age.key
+ls ~/flowdesk-age.key
+```
+
+*Expect* the first line to print `# public key: age1...` and the last to say `No such file or directory`. **Send Claude the `age1...` public
+key** (it can only encrypt; it is committed to the repo) or put it in `infra/backup/recipients.txt` yourself, replacing the commented
+example, and commit and push.
+
+**A2. Desktop: OpenSSH Server, the `flowdesk-backup` account, the folder and its permissions.** Follow
+[The destination: Windows OpenSSH Server and NTFS](#the-destination-windows-openssh-server-and-ntfs) top to bottom, in PowerShell as
+Administrator, with the folder `C:\FlowdeskBackups` and policy write-once. Leave the `authorized_keys` step for A3. Then
+[What to verify on the desktop first](#what-to-verify-on-the-desktop-first), points 1 to 3 and 5.
+
+**A3. Laptop: the SSH key.** In Git Bash:
+
+```bash
+ssh-keygen -t ed25519 -N "" -C flowdesk-backup -f ~/.ssh/flowdesk_backup
+cat ~/.ssh/flowdesk_backup.pub
+```
+
+Install that one `ssh-ed25519 ...` line on the desktop as [The destination](#the-destination-windows-openssh-server-and-ntfs) says
+(`C:\ProgramData\ssh\flowdesk-backup.authorized_keys`, its `icacls` line, then restart `sshd`).
+
+**A4. Laptop: pin the desktop's host key.** In Git Bash, with `<HOST>` the desktop's home-network hostname:
+
+```bash
+ssh-keyscan -t ed25519 <HOST> > ~/.ssh/flowdesk_backup_known_hosts
+ssh-keygen -lf ~/.ssh/flowdesk_backup_known_hosts
+```
+
+On the desktop (PowerShell is fine for this one read): `ssh-keygen -lf C:\ProgramData\ssh\ssh_host_ed25519_key.pub`. *Expect* the same
+`SHA256:...` on both. Different means stop.
+
+**A5. Laptop: configure and restart.** Pull the commit with the real `recipients.txt` (`git pull`), add to `.env` the block from
+[Configuration](#configuration-env-all-gitignored) (`BACKUP_SSH_HOST` = the same `<HOST>`, `BACKUP_SSH_PATH=/C:/FlowdeskBackups`,
+`BACKUP_PING_URL` = the monitor's backup check), then:
+
+```bash
+docker compose build backup
+docker compose up -d
+```
+
+**A6. Laptop: the destination probe.**
+
+```bash
+docker compose exec -u postgres backup /opt/backup/verify-destination.sh
+```
+
+*Expect* the last lines to report `policy write-once` and end `RESULT: OK`, with delete and rename `refused` (point 1). It leaves one
+`flowdesk-probe-<stamp>.tar.age` on the desktop: delete it there as an administrator.
+
+**A7. Laptop: the scheduler sees the destination.**
+
+```bash
+docker compose logs backup | grep backup_scheduler_started
+```
+
+*Expect* `"offbox":"configured"` in the last such line (point 2).
+
+#### Part B — one unattended backup (run nothing by hand)
+
+**B1.** Leave the laptop on, or asleep across 03:00 New York and then woken; the desktop awake then, or later (a failed copy retries on its
+own). Run no backup command.
+
+**B2. Laptop, the next morning: the two tasks ran on their own.**
+
+```bash
+docker compose exec -T postgres psql -U flowdesk -d flowdesk -c "SELECT id, task_name, status, started_at FROM task_runs WHERE task_name IN ('ops.backup', 'ops.backup_copy') ORDER BY id DESC LIMIT 6"
+```
+
+*Expect* an `ops.backup` row `succeeded` started just after a 03:00 New York slot (08:00 UTC in winter) or just after the wake, and an
+`ops.backup_copy` row `succeeded` after it (point 3).
+
+```bash
+curl -s http://127.0.0.1:8000/health/data | python -m json.tool | grep -A 14 '"backups"'
+```
+
+*Expect* `backup` and `copy` both `"state": "ok"` with `"last_attempt_failed": false` (point 4). **Point 6:** the external monitor shows a ping from the backup check at about
+that time.
+
+**B3. Laptop: the file's name and size.**
+
+```bash
+docker compose exec -T backup ls -l /backups
+```
+
+*Expect* `flowdesk_<stamp>.tar.age` with the stamp of the B2 run. Note its size in bytes.
+
+**B4. Laptop: the fingerprint at the cutoff** (`<stamp>` from B3, exactly):
+
+```bash
+docker compose exec -T postgres psql -U flowdesk -d flowdesk -Atq -v cutoff=<stamp> -f - < infra/drill-fingerprint.sql > laptop-fingerprint.txt
+cat laptop-fingerprint.txt
+```
+
+*Expect* eleven lines (`alembic`, `hypertables`, `insert_only_triggers`, `symbols`, `provider_mappings`, `trading_sessions_to_cutoff`, then
+`macro_metrics`, `bars_daily`, `bars_intraday`, `splits`, `distributions`, each a count and an md5). `infra/drill-fingerprint.sql` counts
+only rows ingested at or before the stamp, so what the laptop wrote after the dump does not change it.
+
+#### Part C — the restore, on the desktop
+
+**C1. A clone of the repo at the laptop's commit.** On the laptop: `git rev-parse HEAD` (call it `<sha>`). On the desktop, in Git Bash:
+
+```bash
+git clone https://github.com/VVazza17/flowdesk.git ~/flowdesk-drill
+cd ~/flowdesk-drill
+git checkout <sha>
+```
+
+The same commit is the same Postgres image tag, which the restore checks against the backup's manifest (the version trap, above).
+
+**C2. A `.env` for the drill.** Its password protects nothing that matters (a scratch database, loopback only):
+
+```bash
+cp .env.example .env
+sed -i 's/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=drill-only/' .env
+grep '^POSTGRES_' .env
+```
+
+*Expect* `POSTGRES_PASSWORD=drill-only`. If something on the desktop already holds port 5432, also set `POSTGRES_PORT` to a free port.
+
+**C3. Start Postgres only.** **Never `docker compose up -d` without a service name on the desktop:** that would start a second worker and
+Beat, which would poll FRED and Yahoo and run backups of their own into the same folder.
+
+```bash
+docker compose up -d postgres
+docker compose ps postgres
+```
+
+*Expect* `postgres` `running (healthy)` (wait a few seconds and re-run `ps` if it says `starting`).
+
+**C4. The key, from the password manager, for the next two steps only.** Create the file and paste the entry's whole contents into it, save,
+close:
+
+```bash
+notepad "$(cygpath -w ~/flowdesk-age.key)"
+head -c 20 ~/flowdesk-age.key
+```
+
+*Expect* `# created: 20...`. (Notepad may ask to create the file: yes.)
+
+**C5. Restore the file from Part B** (`<stamp>` as in B3), into a database that is not the live name:
+
+```bash
+bash infra/restore-backup.sh /c/FlowdeskBackups/flowdesk_<stamp>.tar.age --identity ~/flowdesk-age.key --db flowdesk_drill
+```
+
+*Expect* the last line `OK: restored into 'flowdesk_drill' (TimescaleDB 2.31.0, alembic <rev>)` (point 5). If it stops at the version trap,
+the clone is not at the laptop's commit (C1). If `age` cannot decrypt, the key file is not the one whose public key is in
+`recipients.txt`.
+
+**C6. Remove the key from disk.**
+
+```bash
+rm ~/flowdesk-age.key
+ls ~/flowdesk-age.key
+```
+
+*Expect* `No such file or directory`. Empty the Recycle Bin if Notepad left anything there.
+
+**C7. The fingerprint of the restored copy, at the same cutoff:**
+
+```bash
+docker compose exec -T postgres psql -U flowdesk -d flowdesk_drill -Atq -v cutoff=<stamp> -f - < infra/drill-fingerprint.sql > desktop-fingerprint.txt
+cat desktop-fingerprint.txt
+```
+
+**C8. Compare.** Copy `laptop-fingerprint.txt` across (or paste both into the message to Claude):
+
+```bash
+diff laptop-fingerprint.txt desktop-fingerprint.txt
+```
+
+*Expect* no output: every line identical, counts and md5s. **A difference in any line is a failed drill**, not a rounding matter.
+
+**C9. Afterwards** (after sending the results): `docker compose down -v` in `~/flowdesk-drill` removes the drill database. The backup file
+stays in `C:\FlowdeskBackups`.
+
+#### What to send Claude afterwards
+
+From the laptop: the output of **A6** (last 10 lines), **A7**, **B2** (both commands), **B3**, and `laptop-fingerprint.txt`; the time the
+monitor showed the ping (point 6). From the desktop: `git rev-parse HEAD` in the clone, the **whole output of C5**, `desktop-fingerprint.txt`,
+the output of **C8**, and `ls -l /c/FlowdeskBackups` (name and size of the file restored; it must equal B3's size).
+
+**Never send:** the age private key or any part of `AGE-SECRET-KEY-1...`, the contents of `~/flowdesk-age.key`, `~/.ssh/flowdesk_backup`
+(the SSH private key), or either `.env`.
+
+What Claude then does: checks the six points against what you sent, and records the drill in `docs/BUILD-LOG.md` and IDEA-029. If they all
+hold, IDEA-029 closes, and enabling `BARS_POLL_ENABLED=true` becomes a decision you can make.
+
+**Method check (MEASURED 2026-11-19 on the laptop, plain `backup.sh` and `restore.sh`, not the scheduled path):** the fingerprint of the live
+database and of a fresh restore of `flowdesk_20261119T041134Z.dump`, at that stamp, matched on all eleven lines; after changing one bar's
+volume by 1 in the restored copy, `bars_daily`'s md5 changed and its count did not. The throwaway database was then dropped.
+
 ### What to verify on the desktop first
 
 1. **Is the OpenSSH Server feature installed and the `sshd` service Running and Automatic?** (Step 1.) It is

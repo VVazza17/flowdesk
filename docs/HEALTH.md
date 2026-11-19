@@ -135,8 +135,9 @@ The question is asked only when the canary says otherwise, and a failure to ask 
 to ask is not evidence). Only the ingest worker can be `busy`: the ops worker runs the canary and the sweep and
 nothing long, so nothing excuses a stuck ops canary.
 
-- **Which tasks count** (`app.tasks.names.INGEST_WORKER_TASKS`: `ingest.fake` and the daily `ingest.fred_poll`): Celery tasks that run in the ingest worker. A
-  manual backfill (`python -m app.backfill`, a separate process) deliberately does **not**: its heartbeat says
+- **Which tasks count** (`app.tasks.names.INGEST_WORKER_TASKS`: `ingest.fake`, the daily `ingest.fred_poll` and, from M2 slice 6 step 6, the
+  bars polls `ingest.bars_daily_poll` and `ingest.bars_15m_poll`): Celery tasks that run in the ingest worker. A
+  manual backfill (`python -m app.backfill` or `python -m app.bars_backfill`, a separate process) deliberately does **not**: its heartbeat says
   nothing about the ingest worker, and counting it would let a wedged ingest worker look busy for the length of a
   backfill.
 - **What a beat proves.** The worker PROCESS is alive and can reach Postgres (a thread writes it, so a body stuck
@@ -218,6 +219,28 @@ freshness**: `last_success_at` moves whenever a poll or backfill of the series s
 changed, so a quarterly series polled daily is fresh. How old the DATA is against its series' own publication cadence
 (ADR-0003 decision 5) is a different question, answered by step 4's point-in-time read. A poll that is refused for a
 series with no captured history (`NoBaseline`) or whose rules fail is a failed run, visible as `last_attempt_failed`.
+
+**Bars feeds (M2 slice 6, step 6).** Two feeds, `yfinance` / `bars_daily` and `yfinance` / `bars_15m`, written by the backfill
+(`python -m app.bars_backfill [--interval 15m]`) and by the polls (`ingest.bars_daily_poll`, `ingest.bars_15m_poll`, 09:05 America/New_York
+Monday to Friday). Each is judged against **4 calendar days** (`settings.BARS_POLL_STALE_AFTER`; **DERIVED, not measured**: the longest
+normal gap between weekday runs, Friday to Monday, plus one day; Kyle, 2026-11-18). Poll health, not data freshness, as for FRED; per-symbol
+data age is slice 7's.
+
+- **The flag.** Beat schedules the polls only when `BARS_POLL_ENABLED=true`, which stays off until IDEA-029 closes (the desktop restore
+  drill, `docs/BACKUP.md`). **The feeds are declared and judged either way** (`# DECISION:` in `app/settings.py`): with the polls off, each
+  feed goes `stale` 4 days after its last backfill or manual run. That is the true state (nothing is polling); `stale` here, as everywhere
+  on this endpoint, never degrades `/health/ready` and pages nobody.
+- **A holiday** is a successful run with `rows_written` 0: nothing new has settled, the inclusive re-check of the last stored session finds it
+  identical, and `last_success_at` moves.
+- **Failures, each a failed ingestion run naming its symbols** (`last_attempt_failed`; the good symbols' rows are still written, D4):
+  `permanent:NotBackfilled` (a symbol with no stored bar in that interval: the poll never fetches deep history; run the backfill),
+  `schema_mismatch:SymbolsFailed` (a rule broke: a re-fetched price differs, a split or distribution disagrees with the stored one, an
+  inexact rebuild; **in the 15m poll, a symbol whose same-run split check fails gets no 15m bars in that run**), `empty_result:DeadSymbols` /
+  `LikelyGoneSymbols` (D4), and the whole-batch kinds of the yfinance client (rate limited, transient).
+- **A late volume revision is not a failure.** The inclusive start re-fetches each symbol's last stored session every morning; a volume that
+  changed after its settle point is counted and logged (`bars_poll_done`, `volume_revisions` per symbol), the stored value kept.
+- **A 15m gap beyond the 59-day look-back** (a poll missed for two months) is recorded in `bar_gaps` and the poll continues from the limit;
+  the run succeeds. A gap is a record, not a health state; slice 7's gap checks read it.
 
 Top-level `status`, in precedence order. **Only `stale` means something broke.**
 

@@ -177,7 +177,14 @@ below).
   dated events in `distributions` like splits: as paid, `available_at` = ex-date open, Yahoo's convention `1 - D/Close_prev`. This amends
   D3 (distribution events pulled forward from slice 8). Slice 7 checks computed returns against Yahoo's ratios with a measured tolerance.
   **Step 5b built (2026-11-18):** migration 0013, `bars_read.total_return_between(..., as_of=, include_backfill=)` (a ratio, never a level);
-  dev stack: 119 distributions; computed 2-year returns match Yahoo's Adj Close ratio to <= 9.6e-8 relative on all 24 symbols.
+  dev stack: 119 distributions; computed 2-year returns match Yahoo's Adj Close ratio to <= 9.6e-8 relative on all 24 symbols
+  (the MEASURED baseline for slice 7's tolerance). **General rule (Kyle, 2026-11-18): no 15m bar is accepted until splits for its window
+  are known in the same run** (backfill and poll alike fetch their own daily actions batch first). Step 6 polls: 09:05 ET Mon-Fri, behind
+  `BARS_POLL_ENABLED=false` until IDEA-029's drill passes; stale after 4 days (DERIVED); inclusive start (counts late volume revisions).
+  **Step 6 built (2026-11-19):** `app/ingest/bars_feed.run_bars` (backfill and poll, daily and 15m), tasks `ingest.bars_daily_poll` /
+  `ingest.bars_15m_poll`; dev stack: 15m backfill 26,208 bars, one manual run of each poll (0 rows, 0 volume revisions at 00:11 ET).
+  Bars entry points use `yfinance_limiter` (wait bound two spacings: a 60 s bound refused the 15m run's second slot, MEASURED). Open:
+  F-6a (59 days across DST) and F-6b (two FRED ICE series refused since 11-16), BUILD-LOG 2026-11-19.
 - **The base image is pinned by digest** (M2 slice 0, 2026-11-08). The `FROM` line in `backend/Dockerfile` is
   the one definition. The CI tooling container, `lock-deps.sh` and the smokes read it through
   `infra/base-image.sh`, and lint fails on a second definition. The base no longer updates itself: the daily
@@ -338,7 +345,9 @@ elaboration is the most comfortable way to avoid execution.*
     assumption as settled and building on it. Three plan numbers have been falsified by measurement so far, each written as fact:
     ADR-0003 **F1** (a revision's date can only be known to a poll interval), ADR-0003 **F2** (a `"."` published in no vintage) and
     step 5's thresholds (sized from **lag**; the gap between publications is the quantity). When a measurement falsifies one,
-    say so in the plan entry (an addendum, for an ADR) and keep this count. **Count: five (2026-11-16).** Fourth: slice 6 step 1(a), "the cross-section needs an
+    say so in the plan entry (an addendum, for an ADR) and keep this count. **Count: six (2026-11-19).** Sixth: "59 calendar days on
+    `start=`" is inside Yahoo's 15m limit (the limit is 60 x 24 h in instants; a late-evening run across the November DST change
+    measured 60.006 days; BUILD-LOG F-6a, not yet decided). Fourth: slice 6 step 1(a), "the cross-section needs an
     `(interval, ts)` index" (the primary key served it). Fifth: slice 6 step 1(b) F-a, the implicit premise that a completed yfinance bar is final (its volume was still
     changing 28 minutes after it ended; counted though it was never written as a number; Kyle ruled 2026-11-16 that it counts).
 
@@ -378,6 +387,10 @@ bash infra/smoke-m2-beat-schedule.sh # IDEA-043: image owns /var/lib/beat, compo
 bash infra/smoke-m2-slice2.sh     # M2 slice 2: encrypt, SFTP copy to stand-in sshd (3 permission policies), restore with the private key only
 docker compose run --rm worker python -m app.backfill   # FRED revision history, every series not yet captured; --series A,B [--force]
 docker compose run --rm worker python -m app.bars_backfill   # 2 years of settled daily bars, every mapped symbol; --symbols A,B. A re-run writes 0
+docker compose run --rm worker python -m app.bars_backfill --interval 15m   # 59 days of 15m (own daily split check first). Not in the last NY hour (F-6a)
+docker compose exec worker celery -A app.worker call ingest.bars_daily_poll   # also ingest.bars_15m_poll; Beat schedules them only with BARS_POLL_ENABLED=true
+bash infra/smoke-m2-slice6-poll.sh # M2 slice 6 step 6: both polls through the real worker and real Yahoo (writes poll rows); needs both backfills
+docker compose exec -T postgres psql -U flowdesk -d <db> -Atq -v cutoff=<stamp> -f - < infra/drill-fingerprint.sql   # IDEA-029 drill (docs/BACKUP.md)
 bash infra/backup.sh              # dump + manifest into dumps/. Restoring and the version trap: docs/BACKUP.md
 bash infra/restore.sh dumps/<name>.dump --db <new-or-empty-db>   # refuses a non-empty target
 bash infra/restore-backup.sh <name>.tar.age --identity <age key> --db <new-or-empty-db>   # a scheduled backup, on the desktop
@@ -386,7 +399,7 @@ bash infra/mutation-check.sh m2-slice6-step3   # the yfinance client and parser 
 bash infra/ci-checks.sh lint      # also: test | audit | license | arm64. Same code ci.yml runs
                                   # LINT COVERAGE (pinned by backend/tests/test_lint_coverage.py): the gate runs INSIDE backend/ as
                                   #   `ruff check .`, `ruff format --check .`, `mypy` (config: backend/pyproject.toml; mypy `files` =
-                                  #   app, tests, alembic, tools = every directory of Python we own; 129 files). NEVER check a list of
+                                  #   app, tests, alembic, tools = every directory of Python we own; 138 files). NEVER check a list of
                                   #   paths (`ruff check app tests` let alembic/ through). The repo-root ruff.toml is only a guard for a
                                   #   run from the repo root (it keeps the FROZEN spec and spikes/ out of `ruff format .`, which rewrites
                                   #   Markdown code blocks); it does not change what backend/ lints (the nearest config wins). Not

@@ -19,7 +19,14 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd  # type: ignore[import-untyped]
 
-from app.ingest.errors import EmptyResult, ProviderError, RateLimited, SchemaMismatch, Transient
+from app.ingest.errors import (
+    EmptyResult,
+    Permanent,
+    ProviderError,
+    RateLimited,
+    SchemaMismatch,
+    Transient,
+)
 
 NEW_YORK = ZoneInfo("America/New_York")
 
@@ -88,6 +95,12 @@ class LikelyGone(EmptyResult):
 
 class SymbolsFailed(SchemaMismatch):
     """At least one symbol's data broke a rule. The good symbols' rows are still returned (D4)."""
+
+
+class NotBackfilled(Permanent):
+    """The poll was asked for a symbol with no stored bar in this interval (decided 2026-11-15):
+    the poll only extends what is there; deep history is `python -m app.bars_backfill`. An operator
+    action, so a `permanent` failure, named."""
 
 
 class DeadSymbols(EmptyResult):
@@ -528,11 +541,23 @@ def run_failure(failures: Sequence[SymbolFailure]) -> ProviderError | None:
     for f in failures:
         by_kind[type(f.error)].append(f.ticker)
     broken = sorted(t for f in failures if isinstance(f.error, SchemaMismatch) for t in [f.ticker])
+    unbackfilled = sorted(by_kind.get(NotBackfilled, []))
     gone = sorted(by_kind.get(LikelyGone, []))
     empty = sorted(by_kind.get(EmptyToday, []))
+    # Never dropped: a failure of a type this function does not know is still named, and fails
+    # the run as broken data (step 6 found NotBackfilled falling through to an empty DeadSymbols).
+    known = (SchemaMismatch, NotBackfilled, LikelyGone, EmptyToday)
+    other = sorted(f.ticker for f in failures if not isinstance(f.error, known))
     parts = []
     if broken:
         parts.append("data broke a rule for: " + ", ".join(broken))
+    if other:
+        parts.append("failed for: " + ", ".join(other))
+    if unbackfilled:
+        parts.append(
+            "no stored bar to poll from (run python -m app.bars_backfill): "
+            + ", ".join(unbackfilled)
+        )
     if gone:
         parts.append(
             f"empty for {LIKELY_GONE_SESSIONS} or more sessions, suspected gone (an operator "
@@ -541,8 +566,10 @@ def run_failure(failures: Sequence[SymbolFailure]) -> ProviderError | None:
     if empty:
         parts.append("no rows in this batch for: " + ", ".join(empty))
     text = "; ".join(parts)
-    if broken:
+    if broken or other:
         return SymbolsFailed(text)
+    if unbackfilled:
+        return NotBackfilled(text)
     if gone:
         return LikelyGoneSymbols(text)
     return DeadSymbols(text)

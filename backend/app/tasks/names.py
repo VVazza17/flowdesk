@@ -47,6 +47,11 @@ FRED_BACKFILL = "ingest.fred_backfill"
 # name in `task_runs`.
 BARS_BACKFILL = "ingest.bars_backfill"
 
+# The settled bars polls (M2 slice 6, step 6). Celery tasks on the ingest queue; Beat schedules them
+# only when BARS_POLL_ENABLED is true (app/settings.py: off until IDEA-029 closes).
+BARS_DAILY_POLL = "ingest.bars_daily_poll"
+BARS_15M_POLL = "ingest.bars_15m_poll"
+
 # The daily FRED poll (M2 slice 5, step 3). A Celery task on the ingest queue, scheduled by Beat at
 # 08:00 America/New_York (6.4): it asks FRED only for what changed since each series was captured.
 FRED_POLL = "ingest.fred_poll"
@@ -71,4 +76,6 @@ UNSWEPT_TASKS = (BACKUP, BACKUP_COPY)
 # is alive (checks.ingest_worker reports `busy`). Deliberately not FRED_BACKFILL: the backfill is a
 # separate process (`python -m app.backfill`), and its heartbeat says nothing about the ingest
 # worker; counting it would let a wedged ingest worker look busy for the length of a backfill.
-INGEST_WORKER_TASKS = (FAKE_INGEST, FRED_POLL)
+# The bars polls (step 6) run in the ingest worker and count; the bars backfill is a separate
+# process, like FRED_BACKFILL, and does not.
+INGEST_WORKER_TASKS = (FAKE_INGEST, FRED_POLL, BARS_DAILY_POLL, BARS_15M_POLL)

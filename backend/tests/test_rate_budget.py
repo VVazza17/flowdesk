@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from app.ingest.budget import RateBudget, RedisSpacingLimiter, batches
+from app.ingest.budget import RateBudget, RedisSpacingLimiter, batches, wait_bound
 from app.ingest.errors import BudgetUnavailable
 
 
@@ -97,3 +97,42 @@ def test_batches_obey_the_cap() -> None:
     sizes = [len(b) for b in batches(list(range(250)), BUDGETS["p"])]
     assert sizes == [100, 100, 50]
     assert list(batches([], BUDGETS["p"])) == []
+
+
+class SlowTtlRedis(FakeRedis):
+    """A key lives 8% longer than asked, as this machine's Redis TTL against the caller's sleep
+    (IDEA-048, MEASURED about 8%)."""
+
+    async def set(self, name: str, value: str, *, nx: bool, px: int) -> object:
+        return await super().set(name, value, nx=nx, px=round(px * 1.08))
+
+
+def test_a_second_slot_in_a_row_is_granted_within_the_wait_bound_despite_clock_drift() -> None:
+    # MEASURED 2026-11-19: the 15m backfill's second request was refused with a 60 s bound at
+    # yfinance's 60 s spacing. Reproduced here; then granted with wait_bound.
+    yf = {"yfinance": RateBudget(min_interval_seconds=60.0, max_batch=24)}
+    for bound, granted in ((60.0, False), (wait_bound(yf), True)):
+        clock = Clock()
+        limiter = RedisSpacingLimiter(
+            SlowTtlRedis(clock),
+            yf,
+            sleep=clock.sleep,
+            max_wait_seconds=bound,
+        )
+        asyncio.run(limiter.acquire("yfinance"))
+        if granted:
+            asyncio.run(limiter.acquire("yfinance"))
+            assert clock.now == pytest.approx(64.8)  # waited out the whole (drifted) slot
+        else:
+            with pytest.raises(BudgetUnavailable):
+                asyncio.run(limiter.acquire("yfinance"))
+
+
+def test_the_wait_bound_is_at_least_two_spacings_of_every_declared_budget() -> None:
+    from app import settings
+    from app.ingest.bars_feed import yfinance_limiter
+
+    bound = wait_bound(settings.RATE_BUDGETS)
+    assert all(bound >= 2 * b.min_interval_seconds for b in settings.RATE_BUDGETS.values())
+    assert wait_bound({"fred": RateBudget(min_interval_seconds=1.0, max_batch=1)}) == 60.0
+    assert yfinance_limiter(FakeRedis(Clock()))._max_wait == bound

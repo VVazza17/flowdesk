@@ -31,7 +31,9 @@ M12 = "alembic/versions/0012_universe_membership_close_reason.py"
 BARS = "app/ingest/bars.py"
 CLIENT = "app/ingest/yfinance_client.py"
 STORE = "app/services/bars_store.py"
-BACKFILL = "app/bars_backfill.py"
+FEED_PY = "app/ingest/bars_feed.py"  # the backfill and the polls (step 6 moved the run here)
+CELERY = "app/celery_app.py"
+SETTINGS = "app/settings.py"
 READ = "app/services/bars_read.py"
 M13 = "alembic/versions/0013_distributions_drop_total_return.py"
 # The trigger-creating loop in 0010 and 0011 (each file has it once).
@@ -51,6 +53,189 @@ class Mutation:
 
 
 SUITES: dict[str, tuple[str, list[Mutation]]] = {
+    "m2-slice6-step6": (
+        "tests/test_bars_feed.py",
+        [
+            # --- the same-run split check (Kyle, 2026-11-18: every 15m write) ---
+            Mutation(
+                "the 15m run skips its own split check",
+                FEED_PY,
+                "            if fetch and interval == INTRADAY_15M:",
+                "            if False:",
+                "test_no_15m_bar_is_accepted_before_a_split",
+            ),
+            Mutation(
+                "the split check fetches 15m instead of daily actions",
+                FEED_PY,
+                "                check = await client.fetch(list(fetch), DAILY, today=today, "
+                "start=start)",
+                "                check = await client.fetch(list(fetch), INTRADAY_15M, "
+                "today=today, start=start)",
+                "test_the_15m_backfill_checks_splits_first",
+            ),
+            Mutation(
+                "the split check's events are not written",
+                FEED_PY,
+                "                    {p: [] for p in fetch},\n",
+                "                    {},\n",
+                "test_no_15m_bar_is_accepted_before_a_split",
+            ),
+            Mutation(
+                "a symbol whose check failed still gets 15m bars",
+                FEED_PY,
+                "                fetch = {p: s for p, s in fetch.items() if p not in held}",
+                "                fetch = dict(fetch)",
+                "test_a_symbol_whose_split_check_fails",
+            ),
+            Mutation(
+                "the second request takes no rate-budget slot",
+                FEED_PY,
+                "                await limiter.acquire(bars_store.PROVIDER)\n",
+                "",
+                "test_the_15m_backfill_checks_splits_first",
+            ),
+            # --- the poll's keyed start (rule 9) ---
+            Mutation(
+                "the poll starts after the last stored session",
+                FEED_PY,
+                "                    own = got[0]  # inclusive: the last stored session is fetch"
+                "ed again",
+                "                    own = got[0] + timedelta(days=1)",
+                "test_the_daily_poll_starts_at_the_last_stored_session or test_the_15m_poll_starts",
+            ),
+            Mutation(
+                "a symbol with no stored bar is polled anyway",
+                FEED_PY,
+                "                    if got is None:\n                        refused.append(",
+                "                    if got is None and False:\n"
+                "                        refused.append(",
+                "test_a_symbol_with_no_stored_bar",
+            ),
+            Mutation(
+                "every symbol's last bar is the newest of any symbol",
+                STORE,
+                '        select(t.symbol_id, func.max(t.effective_at).label("at"))\n'
+                "        .where(t.symbol_id.in_(ids))\n"
+                "        .group_by(t.symbol_id)\n",
+                '        select(t.symbol_id, func.max(t.effective_at).over().label("at"))\n'
+                "        .where(t.symbol_id.in_(ids))\n"
+                "        .distinct()\n",
+                "test_the_15m_poll_records_a_gap",
+            ),
+            Mutation(
+                "daily bars count as 15m history",
+                STORE,
+                "    return BarDaily if interval == DAILY else BarIntraday",
+                "    return BarDaily",
+                "test_daily_bars_do_not_count_as_15m_history",
+            ),
+            Mutation(
+                "15m re-fetches are compared with bars_daily",
+                STORE,
+                "    t = _table(interval)\n    instants",
+                "    t = BarDaily\n    instants",
+                "test_the_15m_poll_starts_at_its_last_stored_session_and_counts",
+            ),
+            # --- the gap record ---
+            Mutation(
+                "no gap is recorded beyond the look-back",
+                FEED_PY,
+                "                    if interval == INTRADAY_15M and own < floor:",
+                "                    if False:",
+                "test_the_15m_poll_records_a_gap",
+            ),
+            Mutation(
+                "the gap starts at the last stored bar itself",
+                FEED_PY,
+                "                            got[1] + timedelta(minutes=15),",
+                "                            got[1],",
+                "test_the_15m_poll_records_a_gap",
+            ),
+            Mutation(
+                "the gap ends a session late",
+                FEED_PY,
+                "s for s in calendar.sessions if s.session_date >= floor",
+                "s for s in calendar.sessions if s.session_date > floor",
+                "test_the_15m_poll_records_a_gap",
+            ),
+            # --- provenance and counts ---
+            Mutation(
+                "polled rows are labelled backfill",
+                FEED_PY,
+                "    feed_value = BACKFILL if mode == BACKFILL else POLL",
+                "    feed_value = BACKFILL",
+                "test_the_daily_poll_starts_at_the_last_stored_session",
+            ),
+            Mutation(
+                "a batch reports none of its bars as written",
+                FEED_PY,
+                "                written += counts.rows_written\n                report.unsettled",
+                "                report.unsettled",
+                "test_the_daily_poll_starts_at_the_last_stored_session",
+            ),
+            Mutation(
+                "not backfilled reads as an empty batch",
+                BARS,
+                "    if unbackfilled:\n        return NotBackfilled(text)\n",
+                "",
+                "test_a_symbol_with_no_stored_bar or test_run_failure_names",
+            ),
+            Mutation(
+                "an unknown failure is dropped",
+                BARS,
+                "    other = sorted(f.ticker for f in failures if not isinstance(f.error, known))",
+                "    other: list[str] = []",
+                "test_run_failure_names",
+            ),
+            # --- the wait bound (MEASURED 2026-11-19: a 60 s bound refused the second slot) ---
+            Mutation(
+                "the wait bound is the floor, not two spacings",
+                "app/ingest/budget.py",
+                "    return max(floor_seconds, 2 * slowest)",
+                "    return max(floor_seconds, slowest)",
+                "test_a_second_slot_in_a_row or test_the_wait_bound",
+                "tests/test_rate_budget.py",
+            ),
+            Mutation(
+                "the bars limiter uses the default bound",
+                FEED_PY,
+                "        redis, settings.RATE_BUDGETS, max_wait_seconds=wait_bound(settings.RATE_B"
+                "UDGETS)\n",
+                "        redis, settings.RATE_BUDGETS\n",
+                "test_the_wait_bound",
+                "tests/test_rate_budget.py",
+            ),
+            # --- the schedule and health ---
+            Mutation(
+                "the polls are scheduled with the flag off",
+                CELERY,
+                "    if settings.bars_poll_enabled():",
+                "    if True:",
+                "test_beat_does_not_schedule_the_polls_unless_enabled",
+            ),
+            Mutation(
+                "any non-empty flag enables the polls",
+                SETTINGS,
+                '    return os.environ.get("BARS_POLL_ENABLED", "").strip().lower() == "true"',
+                '    return os.environ.get("BARS_POLL_ENABLED", "").strip() != ""',
+                "test_beat_does_not_schedule_the_polls_unless_enabled",
+            ),
+            Mutation(
+                "the polls run at weekends",
+                CELERY,
+                "            day_of_week=settings.BARS_POLL_DAYS,\n",
+                "",
+                "test_enabled_both_polls_run_at_0905",
+            ),
+            Mutation(
+                "stale after three days",
+                SETTINGS,
+                "BARS_POLL_STALE_AFTER = timedelta(days=4)",
+                "BARS_POLL_STALE_AFTER = timedelta(days=3)",
+                "test_both_bars_feeds_go_stale_after_four_days",
+            ),
+        ],
+    ),
     "m2-slice6-step5b": (
         "tests/test_bars_read.py",
         [
@@ -357,9 +542,8 @@ SUITES: dict[str, tuple[str, list[Mutation]]] = {
             Mutation(
                 "the stored-bar comparison loses its symbol filter",
                 STORE,
-                "                    BarDaily.symbol_id == symbol_id, BarDaily.effective_at.in_(i"
-                "nstants)",
-                "                    BarDaily.effective_at.in_(instants)",
+                "        t.symbol_id == symbol_id, t.effective_at.in_(instants)\n",
+                "        t.effective_at.in_(instants)\n",
                 "test_a_price_difference_fails_its_symbol",
             ),
             Mutation(
@@ -396,17 +580,17 @@ SUITES: dict[str, tuple[str, list[Mutation]]] = {
             Mutation(
                 "bars_daily insert without ON CONFLICT DO NOTHING",
                 STORE,
-                "                .on_conflict_do_nothing()\n                .returning(BarDaily.e"
-                "ffective_at)",
-                "                .returning(BarDaily.effective_at)",
+                "                .on_conflict_do_nothing()\n                .returning(table.effe"
+                "ctive_at)",
+                "                .returning(table.effective_at)",
                 "test_a_second_run_writes_zero_rows",
             ),
             # --- what is written ---
             Mutation(
                 "backfilled rows are labelled poll",
-                BACKFILL,
-                'BACKFILL_FEED_VALUE = "backfill"',
-                'BACKFILL_FEED_VALUE = "poll"',
+                FEED_PY,
+                "    feed_value = BACKFILL if mode == BACKFILL else POLL",
+                "    feed_value = POLL",
                 "test_bars_and_splits_are_written",
             ),
             Mutation(
@@ -437,7 +621,7 @@ SUITES: dict[str, tuple[str, list[Mutation]]] = {
             # --- batches and D4 ---
             Mutation(
                 "every symbol in one batch, past max_batch",
-                BACKFILL,
+                FEED_PY,
                 "    batches = [symbols[i : i + max_batch] for i in range(0, len(symbols), max_ba"
                 "tch)]",
                 "    batches = [symbols]",
@@ -445,16 +629,14 @@ SUITES: dict[str, tuple[str, list[Mutation]]] = {
             ),
             Mutation(
                 "likely_gone is judged within the batch only",
-                BACKFILL,
-                "            every = await bars_store.stored_sessions(engine, [m.symbol_id for m "
-                "in symbols])",
-                "            every = await bars_store.stored_sessions(engine, by_provider.values("
-                "))",
+                FEED_PY,
+                "                    engine, [m.symbol_id for m in symbols], interval\n",
+                "                    engine, list(fetch.values()), interval\n",
                 "test_likely_gone_is_judged_against_every_symbol",
             ),
             Mutation(
                 "a failed batch does not fail the run",
-                BACKFILL,
+                FEED_PY,
                 "    if errors:\n        # DECISION",
                 "    if False:\n        # DECISION",
                 "test_a_dead_symbol_fails_the_run_by_name",
@@ -638,8 +820,8 @@ SUITES: dict[str, tuple[str, list[Mutation]]] = {
             Mutation(
                 "broken data no longer comes first",
                 BARS,
-                "    if broken:\n        return SymbolsFailed(text)",
-                "    if broken:\n        return DeadSymbols(text)",
+                "    if broken or other:\n        return SymbolsFailed(text)",
+                "    if broken or other:\n        return DeadSymbols(text)",
                 "test_the_run_names_every_failed_symbol",
             ),
             # --- the client ---

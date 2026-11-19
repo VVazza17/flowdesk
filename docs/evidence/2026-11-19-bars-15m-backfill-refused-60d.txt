@@ -1,0 +1,37 @@
+{"event": "$DBA: 15m data not available for startTime=1789876800 and endTime=1795061329. The requested range must be within the last 60 days.", "level": "error", "timestamp": "2026-11-19T04:08:50.918245Z"}
+{"event": "$IWM: 15m data not available for startTime=1789876800 and endTime=1795061330. The requested range must be within the last 60 days.", "level": "error", "timestamp": "2026-11-19T04:08:51.231328Z"}
+{"event": "$XLF: 15m data not available for startTime=1789876800 and endTime=1795061330. The requested range must be within the last 60 days.", "level": "error", "timestamp": "2026-11-19T04:08:51.454406Z"}
+{"event": "$SMH: 15m data not available for startTime=1789876800 and endTime=1795061330. The requested range must be within the last 60 days.", "level": "error", "timestamp": "2026-11-19T04:08:51.668507Z"}
+{"event": "$UNG: 15m data not available for startTime=1789876800 and endTime=1795061330. The requested range must be within the last 60 days.", "level": "error", "timestamp": "2026-11-19T04:08:51.881658Z"}
+{"event": "$XLK: 15m data not available for startTime=1789876800 and endTime=1795061331. The requested range must be within the last 60 days.", "level": "error", "timestamp": "2026-11-19T04:08:52.149299Z"}
+{"event": "$XLY: 15m data not available for startTime=1789876800 and endTime=1795061331. The requested range must be within the last 60 days.", "level": "error", "timestamp": "2026-11-19T04:08:52.379820Z"}
+{"event": "$XLE: 15m data not available for startTime=1789876800 and endTime=1795061331. The requested range must be within the last 60 days.", "level": "error", "timestamp": "2026-11-19T04:08:52.639905Z"}
+{"event": "$USO: 15m data not available for startTime=1789876800 and endTime=1795061331. The requested range must be within the last 60 days.", "level": "error", "timestamp": "2026-11-19T04:08:52.874758Z"}
+{"event": "$GLD: 15m data not available for startTime=1789876800 and endTime=1795061331. The requested range must be within the last 60 days.", "level": "error", "timestamp": "2026-11-19T04:08:53.079957Z"}
+{"event": "$QQQ: 15m data not available for startTime=1789876800 and endTime=1795061332. The requested range must be within the last 60 days.", "level": "error", "timestamp": "2026-11-19T04:08:53.286772Z"}
+{"event": "$SPY: 15m data not available for startTime=1789876800 and endTime=1795061332. The requested range must be within the last 60 days.", "level": "error", "timestamp": "2026-11-19T04:08:53.497699Z"}
+{"event": "$CPER: 15m data not available for startTime=1789876800 and endTime=1795061332. The requested range must be within the last 60 days.", "level": "error", "timestamp": "2026-11-19T04:08:53.730119Z"}
+{"event": "$IGV: 15m data not available for startTime=1789876800 and endTime=1795061332. The requested range must be within the last 60 days.", "level": "error", "timestamp": "2026-11-19T04:08:53.932743Z"}
+{"event": "$XLRE: 15m data not available for startTime=1789876800 and endTime=1795061332. The requested range must be within the last 60 days.", "level": "error", "timestamp": "2026-11-19T04:08:54.140838Z"}
+{"event": "$RSP: 15m data not available for startTime=1789876800 and endTime=1795061333. The requested range must be within the last 60 days.", "level": "error", "timestamp": "2026-11-19T04:08:54.352180Z"}
+{"event": "$URA: 15m data not available for startTime=1789876800 and endTime=1795061333. The requested range must be within the last 60 days.", "level": "error", "timestamp": "2026-11-19T04:08:54.577847Z"}
+{"event": "$XLI: 15m data not available for startTime=1789876800 and endTime=1795061333. The requested range must be within the last 60 days.", "level": "error", "timestamp": "2026-11-19T04:08:54.794403Z"}
+{"event": "$XLV: 15m data not available for startTime=1789876800 and endTime=1795061333. The requested range must be within the last 60 days.", "level": "error", "timestamp": "2026-11-19T04:08:55.031317Z"}
+{"event": "$XLP: 15m data not available for startTime=1789876800 and endTime=1795061333. The requested range must be within the last 60 days.", "level": "error", "timestamp": "2026-11-19T04:08:55.238482Z"}
+{"event": "$ARKK: 15m data not available for startTime=1789876800 and endTime=1795061334. The requested range must be within the last 60 days.", "level": "error", "timestamp": "2026-11-19T04:08:55.503977Z"}
+{"event": "$XLU: 15m data not available for startTime=1789876800 and endTime=1795061334. The requested range must be within the last 60 days.", "level": "error", "timestamp": "2026-11-19T04:08:55.721649Z"}
+{"event": "$XLB: 15m data not available for startTime=1789876800 and endTime=1795061334. The requested range must be within the last 60 days.", "level": "error", "timestamp": "2026-11-19T04:08:55.932031Z"}
+{"event": "$SLV: 15m data not available for startTime=1789876800 and endTime=1795061334. The requested range must be within the last 60 days.", "level": "error", "timestamp": "2026-11-19T04:08:56.141693Z"}
+{"event": "\n24 Failed downloads:", "level": "error", "timestamp": "2026-11-19T04:08:56.142317Z"}
+{"event": "['DBA']: 15m data not available for startTime=1789876800 and endTime=1795061329. The requested range must be within the last 60 days.", "level": "error", "timestamp": "2026-11-19T04:08:56.142433Z"}
+{"event": "['IWM', 'XLF', 'SMH', 'UNG']: 15m data not available for startTime=1789876800 and endTime=1795061330. The requested range must be within the last 60 days.", "level": "error", "timestamp": "2026-11-19T04:08:56.142550Z"}
+{"event": "['XLK', 'XLY', 'XLE', 'USO', 'GLD']: 15m data not available for startTime=1789876800 and endTime=1795061331. The requested range must be within the last 60 days.", "level": "error", "timestamp": "2026-11-19T04:08:56.142674Z"}
+{"event": "['QQQ', 'SPY', 'CPER', 'IGV', 'XLRE']: 15m data not available for startTime=1789876800 and endTime=1795061332. The requested range must be within the last 60 days.", "level": "error", "timestamp": "2026-11-19T04:08:56.142800Z"}
+{"event": "['RSP', 'URA', 'XLI', 'XLV', 'XLP']: 15m data not available for startTime=1789876800 and endTime=1795061333. The requested range must be within the last 60 days.", "level": "error", "timestamp": "2026-11-19T04:08:56.142900Z"}
+{"event": "['ARKK', 'XLU', 'XLB', 'SLV']: 15m data not available for startTime=1789876800 and endTime=1795061334. The requested range must be within the last 60 days.", "level": "error", "timestamp": "2026-11-19T04:08:56.143087Z"}
+{"provider": "yfinance", "feed": "bars_15m", "kind": "schema_mismatch", "event": "ingest_run_failed", "level": "warning", "timestamp": "2026-11-19T04:08:56.164847Z"}
+bars_intraday +0, distributions +0, splits +0, bar_gaps +0 (rows written 0); unsettled rows skipped 0
+volume revised after settle: none
+FAILED symbols: ARKK, CPER, DBA, GLD, IGV, IWM, QQQ, RSP, SLV, SMH, SPY, UNG, URA, USO, XLB, XLE, XLF, XLI, XLK, XLP, XLRE, XLU, XLV, XLY
+{"error": "schema_mismatch:SchemaMismatch", "detail": "an intraday batch has a timezone-naive index", "event": "bars_backfill_failed", "level": "error", "timestamp": "2026-11-19T04:08:56.181834Z"}
+

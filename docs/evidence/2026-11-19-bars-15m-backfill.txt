@@ -1,0 +1,3 @@
+bars_intraday +26208, distributions +0, splits +0, bar_gaps +0 (rows written 26208); unsettled rows skipped 624
+volume revised after settle: none
+{"interval": "15m", "rows_written": 26208, "bars": 26208, "distributions": 0, "splits": 0, "volume_revisions": {}, "event": "bars_backfill_done", "level": "info", "timestamp": "2026-11-19T05:11:20.794286Z"}

@@ -71,6 +71,16 @@ FEED_STALE_AFTER: dict[tuple[str, str], timedelta] = {}
 FRED_POLL_HOUR, FRED_POLL_MINUTE = 8, 0
 FRED_POLL_STALE_AFTER = timedelta(hours=72)  # three missed daily runs
 
+# The settled bars polls (M2 slice 6, step 6; Kyle, 2026-11-18): 09:05 America/New_York, Monday to
+# Friday, after both settle points (15m 09:00 on D+1, daily 09:00 on D+2). A holiday run finds
+# nothing new and succeeds with 0 rows.
+BARS_POLL_HOUR, BARS_POLL_MINUTE = 9, 5
+BARS_POLL_DAYS = "mon-fri"
+# DERIVED, not measured (Kyle, 2026-11-18): the longest normal gap between weekday runs (Friday to
+# Monday, 3 days) plus one day of margin. Poll health only; per-symbol data age is slice 7's.
+BARS_POLL_STALE_AFTER = timedelta(days=4)
+BARS_FEEDS = ("bars_daily", "bars_15m")  # app.ingest.bars_feed.FEEDS, the ingestion feed names
+
 
 def feed_stale_after() -> dict[tuple[str, str], timedelta]:
     """FEED_STALE_AFTER plus the fake provider's feed when it is switched on. Read at call time, so
@@ -83,6 +93,11 @@ def feed_stale_after() -> dict[tuple[str, str], timedelta]:
     # (ADR-0003 decision 5) is a separate question, answered by step 4's point-in-time read.
     for item in FRED_SERIES:
         thresholds[("fred", item.series_id)] = FRED_POLL_STALE_AFTER
+    # DECISION: the bars feeds are declared and judged whether or not BARS_POLL_ENABLED is on. With
+    # the poll off they go stale 4 days after their last run, which is true (nothing is polling);
+    # a stale feed never degrades /health/ready (docs/HEALTH.md).
+    for feed in BARS_FEEDS:
+        thresholds[("yfinance", feed)] = BARS_POLL_STALE_AFTER
     if fake_provider_enabled():
         thresholds[FAKE_FEED] = timedelta(
             seconds=fake_provider_interval_seconds() * WORKER_STALE_MULTIPLIER
@@ -200,6 +215,14 @@ def ingest_retry_initial_seconds() -> float:
 # it only registers one Beat task and one feed. It never runs in a normal stack.
 FAKE_FEED = ("fake", "ticks")
 FAKE_MODES = ("ok", "transient", "rate_limited", "permanent", "empty", "schema", "down", "slow")
+
+
+def bars_poll_enabled() -> bool:
+    """Beat schedules the bars polls only when BARS_POLL_ENABLED=true. OFF until IDEA-029 closes
+    (slice 2's restore drill from the real desktop; Kyle, 2026-11-18): a scheduled poll captures
+    what a lost machine would erase for good. A manual run (`celery call`) is allowed on the dev
+    stack."""
+    return os.environ.get("BARS_POLL_ENABLED", "").strip().lower() == "true"
 
 
 def fake_provider_enabled() -> bool:
