@@ -343,6 +343,23 @@ SUITES: dict[str, tuple[str, list[Mutation]]] = {
                 "test_daily_bars_settle",
             ),
             Mutation(
+                "an unsettled row's contents are judged before the clock drops it",
+                BARS,
+                "        settle = calendar.settle_point(day, interval)\n"
+                "        if settle is None or settle > now:\n"
+                "            result.unsettled += 1\n"
+                "            continue\n"
+                "        if any(pd.isna(v) for v in prices):\n"
+                '            raise IncompleteBar(f"{ticker}: a bar has missing fields")\n',
+                "        if any(pd.isna(v) for v in prices):\n"
+                '            raise IncompleteBar(f"{ticker}: a bar has missing fields")\n'
+                "        settle = calendar.settle_point(day, interval)\n"
+                "        if settle is None or settle > now:\n"
+                "            result.unsettled += 1\n"
+                "            continue\n",
+                "test_an_unsettled_row_is_dropped_by_the_clock",
+            ),
+            Mutation(
                 "bars outside an early close are kept",
                 BARS,
                 "                or key + INTERVAL_LENGTH[interval] > session.closes_at",
@@ -466,6 +483,14 @@ SUITES: dict[str, tuple[str, list[Mutation]]] = {
                 "            and start < today - timedelta(days=INTRADAY_START_LIMIT_DAYS)",
                 "            and start <= today - timedelta(days=INTRADAY_START_LIMIT_DAYS)",
                 "test_a_15m_start_beyond_59_days",
+                "tests/test_yfinance_client.py",
+            ),
+            Mutation(
+                "downloads are threaded again (the cold-cache lock)",
+                CLIENT,
+                "        threads=False,\n",
+                "        threads=True,\n",
+                "test_the_real_call_shape",
                 "tests/test_yfinance_client.py",
             ),
             Mutation(

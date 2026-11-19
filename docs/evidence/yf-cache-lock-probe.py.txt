@@ -1,0 +1,31 @@
+"""How often does yfinance's SQLite cache raise 'database is locked' under threaded downloads?
+
+Measurement script, not repo code. Each configuration runs in a FRESH process (a cold cache), 10 batches of
+SPY + QQQ + the dead ticker, back to back, and counts per-ticker errors by class. Run in the worker image:
+
+    MSYS_NO_PATHCONV=1 docker compose run --rm -v "$(pwd -W)/docs/evidence:/e:ro" -e PYTHONPATH=/srv \
+        worker python /e/yf-cache-lock-probe.py.txt <cached-threads|cached-nothreads|uncached-threads>
+"""
+
+import sys
+from collections import Counter
+
+from yfinance.multi import _download_impl, _DownloadCtx
+
+from app.ingest.yfinance_client import use_cache_dir
+
+mode = sys.argv[1]
+use_cache_dir("/proc/no-cache" if mode.startswith("uncached") else None)
+threads = mode.endswith("-threads")
+errors: Counter[str] = Counter()
+batches_with_error = 0
+for _ in range(10):
+    ctx = _DownloadCtx()
+    _download_impl(ctx, ["SPY", "QQQ", "ZZZQXFAKE"], period="5d", interval="1d", actions=True,
+                   auto_adjust=False, prepost=False, group_by="ticker", threads=threads, progress=False)
+    live = {t: e for t, e in ctx.errors.items() if t != "ZZZQXFAKE"}
+    if live:
+        batches_with_error += 1
+    for e in live.values():
+        errors[e.split("(")[0]] += 1
+print(f"{mode}: batches with a live-ticker error {batches_with_error}/10; errors by class {dict(errors)}")

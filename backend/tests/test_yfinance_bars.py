@@ -367,6 +367,22 @@ def test_a_differing_duplicate_fails_that_symbol_never_last_write_wins() -> None
     assert result.bars["QQQ"] == daily().bars["QQQ"]  # same duplicated label, identical: fine
 
 
+def test_an_unsettled_row_is_dropped_by_the_clock_before_its_contents_are_judged() -> None:
+    # MEASURED 2026-11-18: at about 20:15 ET the day's own daily bar had Close and Adj Close blank.
+    # Wed 11-18 settles Fri 09:00, so at the recording time it is unsettled: dropped and counted,
+    # never a failure of the symbol (F-a). The same blank on a settled row still fails it (below).
+    frame, _, _ = load("daily_3mo_universe_plus_dead")
+    frame = frame.copy()
+    for ticker in ("SPY", "QQQ"):
+        frame.loc[pd.Timestamp("2026-11-18"), [(ticker, "Close"), (ticker, "Adj Close")]] = float(
+            "nan"
+        )
+    result = daily(frame=frame)
+    assert result.failures == []
+    assert result.bars["SPY"] == daily().bars["SPY"]
+    assert result.unsettled == 2 * len(UNIVERSE)
+
+
 def test_a_bar_with_a_missing_field_fails_that_symbol_never_filled() -> None:
     frame, _, _ = load("daily_3mo_universe_plus_dead")
     frame = frame.copy()

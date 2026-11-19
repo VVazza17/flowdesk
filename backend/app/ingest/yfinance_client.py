@@ -14,7 +14,8 @@ pinned 1.8.0; a version bump re-checks it (a test pins the call's shape against 
 fixtures). Hard rule: a drifted provider keeps the interface and adapts the client internals.
 
 Every call: `auto_adjust=False` always and explicit (ADR-0002: the default silently returns
-total-return prices), `prepost=False`, grouped by ticker, actions (splits, dividends, capital gains)
+total-return prices), `prepost=False`, `threads=False` (a threaded cold cache locked), grouped
+by ticker, actions (splits, dividends, capital gains)
 for daily only. Nothing the library says is ever stored: exceptions raised here carry fixed text.
 """
 
@@ -86,7 +87,11 @@ def yf_download(
         auto_adjust=False,
         prepost=False,
         group_by="ticker",
-        threads=True,
+        # DECISION (2026-11-18): one ticker at a time. Threaded, yfinance's SQLite cache raised
+        # `database is locked` on a COLD cache: MEASURED, 1 of 10 fresh-container batches lost a
+        # live ticker (0 of 10 unthreaded). Sequential is also gentler on Yahoo; a cold 24-ticker
+        # batch takes about 5.4 s (MEASURED), against a budget of one batch a minute.
+        threads=False,
         progress=False,
     )
     return frame, dict(ctx.errors)

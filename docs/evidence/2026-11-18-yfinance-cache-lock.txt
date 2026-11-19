@@ -1,0 +1,23 @@
+cold run 1 live-ticker errors {} rows 23 rows with a NaN in SPY/QQQ 1
+cold run 2 live-ticker errors {} rows 23 rows with a NaN in SPY/QQQ 1
+cold run 3 live-ticker errors {'QQQ': "OperationalError('database is locked')"} rows 23 rows with a NaN in SPY/QQQ 23
+cold run 4 live-ticker errors {} rows 23 rows with a NaN in SPY/QQQ 1
+cold run 5 live-ticker errors {} rows 23 rows with a NaN in SPY/QQQ 1
+cold run 6 live-ticker errors {} rows 23 rows with a NaN in SPY/QQQ 1
+cold run 7 live-ticker errors {} rows 23 rows with a NaN in SPY/QQQ 1
+cold run 8 live-ticker errors {} rows 23 rows with a NaN in SPY/QQQ 1
+cold run 9 live-ticker errors {} rows 23 rows with a NaN in SPY/QQQ 1
+cold run 10 live-ticker errors {} rows 23 rows with a NaN in SPY/QQQ 1
+cold no-threads run 1 tickers 3 live-ticker errors {} 1.75 s
+cold no-threads run 2 tickers 3 live-ticker errors {} 1.66 s
+cold no-threads run 3 tickers 3 live-ticker errors {} 1.72 s
+cold no-threads run 4 tickers 3 live-ticker errors {} 1.71 s
+cold no-threads run 5 tickers 3 live-ticker errors {} 1.81 s
+cold no-threads run 6 tickers 3 live-ticker errors {} 1.66 s
+cold no-threads run 7 tickers 3 live-ticker errors {} 1.77 s
+cold no-threads run 8 tickers 3 live-ticker errors {} 1.79 s
+cold no-threads run 9 tickers 3 live-ticker errors {} 1.75 s
+cold no-threads run 10 tickers 24 live-ticker errors {} 5.35 s
+cached-threads: batches with a live-ticker error 0/10; errors by class {}
+cached-nothreads: batches with a live-ticker error 0/10; errors by class {}
+uncached-threads: batches with a live-ticker error 0/10; errors by class {}

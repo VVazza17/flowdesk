@@ -342,8 +342,6 @@ def _parse_symbol(
         prices = [record[c] for c in PRICE_COLUMNS]
         if all(pd.isna(v) for v in prices):
             continue  # this ticker has no bar at this label (another ticker does)
-        if any(pd.isna(v) for v in prices):
-            raise IncompleteBar(f"{ticker}: a bar has missing fields")
         key: date | datetime = dates[pos] if interval == DAILY else instants[pos]
         day = dates[pos] if interval == DAILY else instants[pos].astimezone(NEW_YORK).date()
         # Splits come from EVERY row, settled or not: a split on a session not yet settled still
@@ -351,6 +349,16 @@ def _parse_symbol(
         ratio = record.get("Stock Splits")
         if ratio is not None and not pd.isna(ratio) and ratio != 0:
             frame_splits[day] = _decimal(ratio)
+        # F-a: an unsettled row is excluded by the CLOCK, BEFORE anything in it is judged. Its
+        # contents are provisional by definition: MEASURED 2026-11-18, the day's own daily bar had
+        # Close and Adj Close blank at about 20:15 ET (complete at 18:37). Judged first, that blank
+        # failed every symbol on an evening run.
+        settle = calendar.settle_point(day, interval)
+        if settle is None or settle > now:
+            result.unsettled += 1
+            continue
+        if any(pd.isna(v) for v in prices):
+            raise IncompleteBar(f"{ticker}: a bar has missing fields")
         stamp = tuple(float(v) for v in prices)
         if key in rows:
             if rows[key] != stamp:
@@ -388,11 +396,9 @@ def _parse_symbol(
                 result.outside_session += 1
                 continue
             effective_at = key
+        # Every row here is settled (the first pass dropped the rest, by the clock).
         settle = calendar.settle_point(session_date, interval)
-        # F-a: unsettled bars are excluded by the CLOCK, never by anything in the frame.
-        if settle is None or settle > now:
-            result.unsettled += 1
-            continue
+        assert settle is not None
         # Intraday rows carry no Stock Splits column, so a 15m batch rebuilds from `known` only.
         # STEP 6 REQUIREMENT (Kyle, 2026-11-18): every 15m run first fetches its own daily
         # actions=True batch (same symbols, same window plus the next session) and checks any new

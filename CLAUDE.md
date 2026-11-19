@@ -341,9 +341,11 @@ elaboration is the most comfortable way to avoid execution.*
 
 11. **A script that writes files stops on the first failure, and writes nothing until every change is known to apply.** Twice on
     2026-11-18 a step ran after the one before it had failed (a lint failure pushed; a doc script applied half its edits and the
-    commit went through). Edit files through `backend/tools/edits.py` (all or nothing; every miss named). In the shell: `set -euo
-    pipefail` and ONE COMMAND PER LINE, because bash ignores `set -e` for every command of an `&&` list except the last. Judge a
-    gate by its exit code, never by piped output, and commit only after every gate's exit code is 0.
+    commit went through), and a third time the same evening. Edit files through `backend/tools/edits.py` (all or nothing; every miss
+    named). **Commit only through `bash infra/commit-gated.sh <message-file> <paths>`**, which runs lint and the full test gate in its
+    own bash process and commits and pushes only when both exit 0. Why a script: **`set -e` does NOT take effect in the Claude Code
+    Bash tool's own shell** (MEASURED 2026-11-18: `set -euo pipefail; false; echo x` prints x), and bash also ignores it inside an `&&`
+    list. Never judge a gate by piped output.
 
 ## Commands
 

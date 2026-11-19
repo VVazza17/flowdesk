@@ -3691,3 +3691,28 @@ filesystem (`/var/cache/yfinance`, made in the image), not on a volume. So every
 first batch costs about double (MEASURED: 50 requests against 24 warm, 2026-11-18); the long-lived worker warms after one batch. Step 1(b)
 measured its throttling margin in fresh containers with a writable cache, so the margin (one 24-ticker batch a minute, 30x slower than
 measured) assumes exactly this: a cold first batch, then warm ones.
+
+### 2026-11-18 — two bugs in shipped code, found by the live check; and `set -e` does nothing in the tool's shell
+
+The proposal commit above (`e17288a`) went through with the test gate RED: one failure, the live yfinance check. Two causes, both in code
+already pushed, and one reason the commit was not stopped.
+
+1. **An unsettled row was judged before the clock dropped it** (step 3, `app/ingest/bars.py`; it breaks F-a: unsettled bars are excluded by
+   the clock, never by the frame). MEASURED 2026-11-18 about 20:15 ET: Wednesday's own daily bar came back with **Close and Adj Close blank**
+   (Open, High, Low, Volume present); at 18:37 it was complete. The parser raised `IncompleteBar` for it, failing EVERY symbol, on any evening
+   run. The 18:43 backfill got through only because the row was not blank yet. **Fixed:** the settle point is checked first; an unsettled row is
+   counted and dropped before its contents are judged (splits are still read from it). Test: blank Close on the unsettled 11-18 row fails
+   nothing; on a settled row it still fails the symbol. Mutation-checked.
+2. **yfinance's SQLite cache locks under threaded downloads on a cold cache** (introduced by `713be70`, the cache fix). MEASURED 2026-11-18,
+   fresh containers (`docs/evidence/2026-11-18-yfinance-cache-lock.txt`): **threaded, 1 of 10 cold batches lost a live ticker to
+   `database is locked`; unthreaded, 0 of 10**, and 0 of 30 warm batches in any mode. (Ten is a small sample: "not seen", not "cannot".) A locked
+   ticker is classified `transient`, so the batch failed and would be retried, not mis-stored. **Fixed: `threads=False`** (DECISION): sequential
+   is also gentler on Yahoo, and a cold 24-ticker batch takes about 5.4 s (MEASURED), against a budget of one batch a minute. The call-shape test
+   pins it; mutation-checked. Step 1(b)'s throttling margin was measured threaded; sequential sends the same requests more slowly.
+3. **`set -e` does not take effect in the Claude Code Bash tool's own shell.** MEASURED 2026-11-18: `set -euo pipefail; false; echo x` prints
+   `x` there (`$-` shows `e`); the harness evidently runs the command where bash suspends errexit. In a child `bash` (a script, or `bash -c`) it
+   works. So rule 11's "set -euo pipefail, one command per line" never held at the top level, and the test gate's non-zero exit let the commit run.
+   **Fixed structurally: `infra/commit-gated.sh <message-file> <paths>`** runs lint and the full test gate in its own bash process, checks each
+   exit code explicitly, and commits and pushes only when both pass. Rule 11 in CLAUDE.md now says so.
+
+`e17288a` itself changed documentation and a settings comment only; it is left as it is, and this commit fixes what made its gate red.

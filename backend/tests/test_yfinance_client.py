@@ -118,6 +118,8 @@ def test_the_real_call_shape_against_yfinance_1_8_0() -> None:
     assert {"dfs", "errors"} <= set(_DownloadCtx.__slots__)
     source = inspect.getsource(yf_download)
     assert "auto_adjust=False" in source and "prepost=False" in source  # ADR-0002: always explicit
+    # A threaded cold cache raised `database is locked` (MEASURED 2026-11-18, 1 in 10).
+    assert "threads=False" in source
 
 
 # --- the exceptions: mapped, with fixed text ------------------------------------------------------
