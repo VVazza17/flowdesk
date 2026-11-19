@@ -1,0 +1,39 @@
+fetched 2026-11-19T01:03:36.220287+00:00
+
+== 1. bar_as_of(XLK, 2025-06-02, as_of=2025-07-01, include_backfill=True)
+   c_raw 232.94999694824220  split_factor 1  c_adj 232.94999694824220  total_return 115.5403823852539 (revision 0, available_at 2025-06-04 09:00:00-04:00)
+   c_adj / total_return = 2.0162
+   provider today: Close (split-adjusted) 116.4749984741211, Adj Close 115.5403823852539; stored c_raw / Close = 2.0000; Adj Close / Close = 0.991976
+
+== 2. the stored total-return level contains dividends paid after the bar
+   SPY 2025-03-03: 7 later ex-dates up to the fetch (2025-03-21 1.696, 2025-06-20 1.761, 2025-09-19 1.831, 2025-12-19 1.993, 2026-03-20 1.797, 2026-06-18 1.904, 2026-09-18 1.889)
+      Adj Close / Close today 0.980733; product of (1 - div/Close_prev) over them 0.980733; difference 1.65e-07
+   bar_as_of(SPY, 2025-03-03, as_of=2025-03-06 12:00 ET): c_raw 583.77001953125, total_return 572.5224609375, total_return / c_raw = 0.980733
+      (at that as_of, none of those later ex-dates had happened: the read hands a 2025 replay a 2026 level)
+   XLK 2025-06-02: 6 later ex-dates up to the fetch (2025-06-23 0.199, 2025-09-22 0.179, 2025-12-22 0.219, 2026-03-23 0.168, 2026-06-22 0.228, 2026-09-21 0.221)
+      Adj Close / Close today 0.991976; product of (1 - div/Close_prev) over them 0.991976; difference 2.26e-08
+
+== 3. the basis of yfinance's Dividends (ex-dates before the 2025-12-05 2:1 splits)
+   XLK ex 2024-12-23 div 0.193: implied factor 0.998364; 1 - div/Close_prev (split-adjusted) 0.998364; 1 - div/(2 Close_prev) (as traded) 0.999182
+   XLK ex 2025-03-24 div 0.1875: implied factor 0.998247; 1 - div/Close_prev (split-adjusted) 0.998247; 1 - div/(2 Close_prev) (as traded) 0.999124
+   XLK ex 2025-06-23 div 0.199: implied factor 0.998345; 1 - div/Close_prev (split-adjusted) 0.998345; 1 - div/(2 Close_prev) (as traded) 0.999173
+   XLK ex 2025-09-22 div 0.179: implied factor 0.998717; 1 - div/Close_prev (split-adjusted) 0.998716; 1 - div/(2 Close_prev) (as traded) 0.999358
+   XLE ex 2024-12-23 div 0.35: implied factor 0.991681; 1 - div/Close_prev (split-adjusted) 0.991681; 1 - div/(2 Close_prev) (as traded) 0.995840
+   XLE ex 2025-03-24 div 0.358: implied factor 0.992261; 1 - div/Close_prev (split-adjusted) 0.992261; 1 - div/(2 Close_prev) (as traded) 0.996131
+   XLE ex 2025-06-23 div 0.359: implied factor 0.991931; 1 - div/Close_prev (split-adjusted) 0.991931; 1 - div/(2 Close_prev) (as traded) 0.995965
+   XLE ex 2025-09-22 div 0.3745: implied factor 0.991539; 1 - div/Close_prev (split-adjusted) 0.991539; 1 - div/(2 Close_prev) (as traded) 0.995769
+   XLY ex 2024-12-23 div 0.2165: implied factor 0.998108; 1 - div/Close_prev (split-adjusted) 0.998108; 1 - div/(2 Close_prev) (as traded) 0.999054
+   XLY ex 2025-03-24 div 0.271: implied factor 0.997255; 1 - div/Close_prev (split-adjusted) 0.997255; 1 - div/(2 Close_prev) (as traded) 0.998628
+   XLY ex 2025-06-23 div 0.2235: implied factor 0.997878; 1 - div/Close_prev (split-adjusted) 0.997878; 1 - div/(2 Close_prev) (as traded) 0.998939
+   XLY ex 2025-09-22 div 0.2125: implied factor 0.998239; 1 - div/Close_prev (split-adjusted) 0.998239; 1 - div/(2 Close_prev) (as traded) 0.999120
+   XLU ex 2024-12-23 div 0.314: implied factor 0.991783; 1 - div/Close_prev (split-adjusted) 0.991783; 1 - div/(2 Close_prev) (as traded) 0.995892
+   XLU ex 2025-03-24 div 0.2775: implied factor 0.992952; 1 - div/Close_prev (split-adjusted) 0.992952; 1 - div/(2 Close_prev) (as traded) 0.996476
+   XLU ex 2025-06-23 div 0.2785: implied factor 0.993105; 1 - div/Close_prev (split-adjusted) 0.993105; 1 - div/(2 Close_prev) (as traded) 0.996552
+   XLU ex 2025-09-22 div 0.284: implied factor 0.993314; 1 - div/Close_prev (split-adjusted) 0.993314; 1 - div/(2 Close_prev) (as traded) 0.996657
+   XLB ex 2024-12-23 div 0.222: implied factor 0.994812; 1 - div/Close_prev (split-adjusted) 0.994812; 1 - div/(2 Close_prev) (as traded) 0.997406
+   XLB ex 2025-03-24 div 0.2035: implied factor 0.995256; 1 - div/Close_prev (split-adjusted) 0.995256; 1 - div/(2 Close_prev) (as traded) 0.997628
+   XLB ex 2025-06-23 div 0.219: implied factor 0.994932; 1 - div/Close_prev (split-adjusted) 0.994932; 1 - div/(2 Close_prev) (as traded) 0.997466
+   XLB ex 2025-09-22 div 0.2145: implied factor 0.995277; 1 - div/Close_prev (split-adjusted) 0.995277; 1 - div/(2 Close_prev) (as traded) 0.997638
+
+== 4. Capital Gains in the 2-year batch
+   nonzero Capital Gains values: 0 across 24 symbols

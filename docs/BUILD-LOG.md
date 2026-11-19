@@ -3604,3 +3604,90 @@ cannot be mutation-tested while only `15m` exists; whoever widens `ck_bars_intra
 and a hash join to `trading_sessions`. The rest of the 2-year read is the total-return lookup for 499 instants, the splits query and building 499
 objects in Python. **No index added; none is needed at this size.** Not re-measured: a cross-section across symbols (not part of this API) and
 any size beyond the 24 symbols.
+
+### 2026-11-18 — total return leaks hindsight: MEASURED; proposal for dividends as dated events (PROPOSAL, NOT BUILT; the poll waits)
+
+Kyle's suspicion: `bar_total_return` stores Yahoo's Adj Close, which Yahoo rescales after every later split and dividend; the backfill's
+revision 0 carries the November 2026 basis but is dated at each bar's 2024-2025 settle point, so a replay at a past T reads a level built
+from events that had not happened. Measured read-only on the dev stack (`docs/evidence/tr-hindsight-probe.py.txt`, output
+`docs/evidence/2026-11-18-total-return-hindsight.txt`; one 24-ticker 2-year batch, fetched 2026-11-19 01:03 UTC).
+
+#### What the measurement shows (MEASURED 2026-11-18)
+
+1. **CONFIRMED. `bar_as_of(XLK, 2025-06-02, as_of=2025-07-01, include_backfill=True)`: `c_adj` 232.950, `total_return` 115.540, ratio 2.0162.**
+   It decomposes exactly: **2.0000** is the 2025-12-05 2:1 split (stored `c_raw` / today's split-adjusted Close = 2.0000), correctly NOT
+   applied to `c_adj` because the split was not knowable on 2025-07-01, but already in the stored Adj Close; and **1/0.991976 = 1.0081** is six
+   dividends after the bar (ex 2025-06-23, -09-22, -12-22, 2026-03-23, -06-22, -09-21). Of those six, ONE (2025-06-23) was knowable at
+   2025-07-01; five were not.
+2. **CONFIRMED. A bar with dividends after it: SPY 2025-03-03.** Its stored total return / Close = **0.980733**, and the product of
+   `(1 - dividend_E / Close_{E-1})` over its **seven later ex-dates** up to the fetch (2025-03-21 ... 2026-09-18) = **0.980733** (difference
+   1.65e-7). XLK 2025-06-02 likewise: 0.991976 against 0.991976 (difference 2.3e-8). **`bar_as_of(SPY, 2025-03-03, as_of=2025-03-06 12:00 ET)`
+   returns that level, though none of the seven ex-dates had happened by then: a 2025 replay reads a 2026 level, 1.93% lower than anything
+   knowable at T.** This also MEASURES Yahoo's convention: the Adj Close factor is `1 - D / Close_{E-1}` on the split-adjusted basis.
+3. **One refinement of the framing (derived, not measured): the leak is in the LEVEL.** For two bars t0 < t1 both known at T and stored from
+   ONE fetch, the ratio Adj(t1)/Adj(t0) is hindsight-free: the factors of events after t1 multiply both and cancel, and events in (t0, t1] were
+   knowable. **But it breaks across fetches:** a bar stored before a dividend (the backfill) and a bar stored after it (a later poll) are on
+   different bases, so their ratio silently omits that dividend. Every comparison with as-traded or split-adjusted-at-T prices (`c_adj`, as in
+   point 1) is also a level comparison. D2's revision machinery existed to chase exactly this, one rescaled history per dividend.
+4. **yfinance's `Dividends` are on the SPLIT-ADJUSTED basis** (the current share count), like its Close. At all 20 ex-dates of XLK, XLE, XLY, XLU,
+   XLB before their 2025-12-05 2:1 split, the factor implied by the Adj Close series equals `1 - div / Close_prev` on the split-adjusted Close to
+   6 decimals (e.g. XLK 2024-12-23: 0.998364 and 0.998364), and not the as-traded basis (0.999182). So an as-paid amount is the provider's amount
+   multiplied by the ratios of splits effective after the ex-date, exactly as prices are rebuilt.
+5. **Capital Gains: none.** 0 nonzero values across the 24 ETFs in 2 years. How Yahoo treats one is therefore UNMEASURED.
+
+#### Proposal: dividends treated like splits (D3 b applied to dividends). NOT BUILT; for Kyle
+
+**A. Store distributions as dated events, total return computed on read.** A minimal `distributions` table, the `splits` pattern:
+`symbol_id`, `effective_at` DATE (the ex-date session), `kind` TEXT CHECK IN (`dividend`, `capital_gain`), `amount` NUMERIC (as paid per share
+at the time), `raw_basis` (`live` | `reconstructed`), `available_at` (the ex-date session's open: the declaration date is unknown from yfinance,
+and a distribution is certainly known by its ex-date; late, never early: ASSUMED adequate), `ingested_at`, `source`, `ingestion_run_id`.
+PRIMARY KEY (`symbol_id`, `effective_at`, `kind`). Insert-only (the 0010 trigger). A re-fetch reporting a different amount for a stored date is
+a validation failure, never an overwrite (as splits). Rows come from the `Dividends` and `Capital Gains` columns the daily `actions=True` batch
+already returns (the backfill, the poll, and the 15m run's own split-check batch), read from every row settled or not (as splits).
+
+**B. Correct by construction, and what that needs.** Total return between two bars both visible at T is computed from (i) as-traded closes
+visible at T, (ii) splits with `available_at <= T`, (iii) distributions with `available_at <= T`. Nothing from after T enters, so no replay can
+see a later event. It needs:
+- **The split-adjustment of amounts** (MEASURED necessary, point 4): stored amounts are as paid (provider amount x later split ratios, the
+  volume and price rule); on read, put the close and the amount on one share basis across a split effective on the same session.
+- **A reinvestment convention**, a definition (ASSUMED, Kyle's choice). Two candidates, which differ at second order, (D/P)^2 per ex-date (about
+  7e-5 for XLE's 0.84% quarterly dividend, arithmetic):
+  - **Yahoo's, MEASURED in point 2:** gross return across ex-date E is `P_E / (P_{E-1} - D_E)`. **Recommended:** slice 7 can then validate our
+    computed returns against Yahoo's own Adj Close ratios between two dates of one fetch (hindsight-free, point 3) EXACTLY, to float32 rounding.
+  - CRSP's, reinvested at the ex-date close: `(P_E + D_E) / P_{E-1}`.
+- **Completeness of the provider's distributions.** A dividend yfinance never reports understates the return; it does not leak hindsight.
+  Slice 7's validation (computed against Yahoo ratios) is what would catch it.
+- **The read returns RETURNS, not a Yahoo-like level:** a cumulative factor series from the first bar of the caller's window, or the return
+  between two sessions. A level has no meaning without a base date, and the base is what leaked.
+
+**C. What it does to `bar_total_return`, the 16-ULP requirement and D2.**
+- **Recommended: drop `bar_total_return`** (a migration; DROP is not blocked by the row triggers). Nothing reads it yet. Kept even as an unread
+  archive it is a queryable hindsight-leaking number, and keeping it current would need a revision on roughly every bar of a symbol at each of
+  its dividends (about 24 symbols x 4 a year x 500 bars, 48,000 rows a year, ASSUMED) plus the re-fetch job's 16-ULP machinery.
+  The alternative: freeze it as an unread archive of provider values (no further writes, documented "never read"), or keep writing it for
+  provider comparison. Its validation role does not need it stored: Yahoo's ratios can be fetched and compared on the fly (B).
+- **D2 is superseded:** total return is no longer stored anywhere; "current total return" is the computed series with T = now.
+  `bars_read.Bar.total_return` and `total_return_revision` go; a `total_return_as_of` read (as_of and include_backfill required) replaces them.
+- **The 16-ULP requirement becomes moot** for the re-fetch job (no Adj Close is stored). The MEASURED jitter (at most 4 ULP) stays recorded;
+  it reapplies if slice 7 compares computed returns against Yahoo's ratios.
+- **The periodic history re-fetch job shrinks** to: new or changed distributions, new splits, post-settle volume revisions.
+
+**D. Slice 8, pulled forward like splits.** Yes, in part. D3 recorded "dividends ... stay slice 8"; this would change it (a recorded decision,
+Kyle's). Pulled forward: the minimal `distributions` table and its use on read. Left in slice 8: the confirmation workflow, `corporate_actions`,
+the split detector, and classifying special distributions or return of capital (ASSUMED: everything yfinance reports as `Dividends` is a cash
+distribution reinvested by the same rule).
+
+**E. Capital Gains distributions on ETFs.** None in the window (MEASURED, point 5), so Yahoo's treatment is UNMEASURED. Proposed: the same
+table, `kind = capital_gain`, the same split rule and the same reinvestment rule. Economically a capital-gain distribution lowers the NAV like a
+dividend, so a total return that left it out would understate (ASSUMED). Whether Yahoo's Adj Close includes them only affects the slice 7
+oracle, and is measured the first time one appears.
+
+**What does not change:** `bars_daily`, the settle points, the backfill exception for prices, `splits`, the price/volume re-fetch rule.
+
+**State: measured and proposed. Not built. The poll (step 6) waits for this decision, because it would extend the pattern.**
+
+**Recorded (Kyle, 2026-11-18, no action): what the measured rate margin assumes about the yfinance cache.** The cache lives in the container's
+filesystem (`/var/cache/yfinance`, made in the image), not on a volume. So every fresh `docker compose run` (the backfill) starts COLD and its
+first batch costs about double (MEASURED: 50 requests against 24 warm, 2026-11-18); the long-lived worker warms after one batch. Step 1(b)
+measured its throttling margin in fresh containers with a writable cache, so the margin (one 24-ticker batch a minute, 30x slower than
+measured) assumes exactly this: a cold first batch, then warm ones.

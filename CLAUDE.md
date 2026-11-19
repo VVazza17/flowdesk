@@ -172,6 +172,9 @@ below).
   **Step 5 built (2026-11-18): `app/services/bars_read.py`**, the point-in-time read: `as_of` AND `include_backfill` are required
   keywords (strict mode = `include_backfill=False`), visible iff `available_at <= as_of`, adjusted on read by splits knowable at T, total
   return = latest revision knowable at T, seven absence reasons. 2-year read of one symbol 23.5 ms on the real 12k rows; no index added.
+  **OPEN, BLOCKS STEP 6 (2026-11-18): `bar_total_return` leaks hindsight** (MEASURED: it stores Yahoo's Adj Close on today's basis, so a
+  2025 replay reads later dividends and splits). Proposal (not built): dividends as dated events like splits, total return computed on
+  read; drop `bar_total_return`; D2 superseded. Do not build the poll, and do not read `total_return`, until Kyle decides.
 - **The base image is pinned by digest** (M2 slice 0, 2026-11-08). The `FROM` line in `backend/Dockerfile` is
   the one definition. The CI tooling container, `lock-deps.sh` and the smokes read it through
   `infra/base-image.sh`, and lint fails on a second definition. The base no longer updates itself: the daily

@@ -168,7 +168,10 @@ def ingest_worker_stale_after() -> timedelta:
 # 24-ticker batches 2 s apart and about 45 single calls in 20 minutes, no throttling; the threshold
 # was not found (deliberately not provoked). One a minute is 30x slower than what was measured, and
 # that safety factor is ASSUMED. The VM's ~8% fast clock (IDEA-048) is irrelevant at this spacing.
-# max_batch is the measured batch size; a bigger batch is unmeasured.
+# max_batch is the measured batch size; a bigger batch is unmeasured. The margin also assumes the
+# yfinance cache as it runs (yfinance_cache_dir, inside the container): a fresh `docker compose run`
+# starts cold, so its first batch costs about double (50 requests against 24 warm, MEASURED
+# 2026-11-18); the long-lived worker warms after one batch. Step 1(b) measured under the same.
 RATE_BUDGETS: dict[str, RateBudget] = {
     "fake": RateBudget(min_interval_seconds=0.2, max_batch=100),
     "fred": RateBudget(min_interval_seconds=1.0, max_batch=1),
