@@ -4186,3 +4186,34 @@ The early-morning read's 11-19 on one series is ASSUMED to be a cached response 
   - how rule 4 would recognise the case;
   - F3 alone does not unblock the two series.
 - Nothing is built.
+
+### Addendum 2026-11-20 (third) — Kyle approves 6ac96f4; F3 approved in principle; evidence protection; repeated holds; the pre-flag checklist
+
+1. **Commit `6ac96f4` approved.** Rebuild now (`docker compose up -d --build`). Confirm `/health/ready` ok, that the worker and Beat show
+   the 10:05 schedule and `BARS_POLL_ENABLED` is still false, and that CI is green on `6ac96f4`.
+2. **F3 (ADR-0003 addendum draft): approved in principle**, with these answers (the draft is revised to carry them):
+   - (a) **"First observed" is an instant:** the `ingested_at` time of the first FlowDesk run whose response contained the period.
+   - (b) **The row keeps FRED's claimed date in a separate column, for audit only.** `available_at` is the first-observed instant.
+     Reads never use the claimed date.
+   - (c) **Rule 4:** a new period whose `effective_at` is on or before the series' `captured_through`, with no stored history, is a
+     **late arrival**. It is accepted only if every vintage in the poll's window agrees on its single value; otherwise it is refused, as
+     now. Periods after `captured_through` are unchanged.
+   - **Build F3 together with the rolling-window fix (F-6b cause (i)), after Monday's F-6b rerun.** Neither alone unblocks the two
+     series. Nothing is built now.
+3. **Evidence protection (recorded in CLAUDE.md):** no `--force` re-capture and no `FRED_RULE_VERSION` bump touching BAMLC0A0CM or
+   BAMLH0A0HYM2 without Kyle's approval. Both would re-date 2026-11-10 to FRED's claimed date and erase the measurement.
+4. **Repeated holds. Required before `BARS_POLL_ENABLED` flips; not built now.**
+   - A symbol held on two consecutive scheduled poll runs fails the run, named, as `empty_result`.
+   - DERIVED: one hold can be Yahoo running late; two in a row is a problem.
+   - This closes the limit recorded with the build: a symbol held every day otherwise never fails a run and never makes its feed `stale`.
+
+#### Pre-flag checklist: everything that must be true before `BARS_POLL_ENABLED=true` (started 2026-11-20)
+
+Each item names where it was decided. **The flag flips only when every box is checked, and only on Kyle's word.**
+
+- [ ] **IDEA-029 closed:** a real unattended backup lands off-box and restores from there. Currently impossible: no destination exists
+  (machine-roles correction, addendum 2026-11-20). Waits on Kyle choosing one (likely an Oracle Cloud Always Free VM).
+- [ ] **Repeated holds fail the run:** a symbol held on two consecutive scheduled poll runs fails it, named, `empty_result`
+  (item 4 above). Not built.
+- [x] **The polls run at 10:05 ET, after today's daily row exists** (addendum 2026-11-20 second, built in `6ac96f4`). On the dev stack
+  once the rebuild of this addendum's item 1 is confirmed.

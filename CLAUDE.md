@@ -271,6 +271,12 @@ intraday, and **M4 planning must decide whether `compute_rotation`'s 30-minute i
 
 Do not resolve these unilaterally. Flag and wait.
 
+**Evidence protection (Kyle, 2026-11-20): no `python -m app.backfill --force` re-capture and no `FRED_RULE_VERSION` bump that
+touches BAMLC0A0CM or BAMLH0A0HYM2 without Kyle's approval.** Both rebuild from FRED's current record, which back-dates period
+2026-11-10 to vintage 2026-11-10; FlowDesk measured that it was not in FRED's record until after 2026-11-15 13:00Z (F-6b, ADR-0003 F3
+draft). A re-capture would store FRED's claimed date and erase the measurement. **Pre-flag checklist** for `BARS_POLL_ENABLED`:
+`docs/BUILD-LOG.md`, addendum 2026-11-20 (third).
+
 ## Hard rules (§17.1 — follow literally)
 
 - Do not reorder the build order. Do not start a milestone before the previous gate passes.

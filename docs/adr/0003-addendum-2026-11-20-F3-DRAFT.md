@@ -1,6 +1,9 @@
-# DRAFT, NOT BINDING: proposed ADR-0003 addendum (F3), for Kyle's approval
+# DRAFT, NOT BINDING: proposed ADR-0003 addendum (F3). APPROVED IN PRINCIPLE by Kyle 2026-11-20, with answers (revised below)
 
-Drafted 2026-11-20 at Kyle's request (`docs/BUILD-LOG.md`, addendum 2026-11-20 second, item 3(ii)). Nothing is built.
+Drafted 2026-11-20 at Kyle's request (`docs/BUILD-LOG.md`, addendum 2026-11-20 second, item 3(ii)); approved in principle
+the same day with answers (a) to (c) (addendum 2026-11-20 third). **To be built together with the rolling-window fix (F-6b
+cause (i)), after Monday's F-6b rerun; neither alone unblocks the two series.** It is appended to the ADR when it is built,
+with the final text. Nothing is built.
 `docs/adr/0003-point-in-time-observation-model.md` is unchanged until this is approved. On approval, the text below is
 appended there as "Addendum, 2026-11-2x (F3)", the Status line names it, decision 3's rewritten text (F1, "What changes")
 gets an inline `[Amended: F3]` marker, and this file is deleted. It follows the falsification mechanism of the 2026-11-13
@@ -43,33 +46,33 @@ that no live observer saw.
 yet captured past when it first read it is dated by FRED's vintage (`available_at_for(vintage)`). That is what nearly
 every revision is, and it is unchanged. The six rules stand; rule 4 did its job.
 
-**What is superseded: proposed rule (Kyle's, 2026-11-20).** *A period, or a revision, that arrives after FlowDesk has
-already captured past its vintage takes `available_at` = when FlowDesk first observed it, never FRED's earlier date.*
-- "Captured past it": its FRED vintage date is on or before the `captured_through` FlowDesk held when it last read
-  that vintage without the column.
-- Equivalently `available_at = max(available_at_for(FRED vintage), FlowDesk's first observation)`, applied only where
-  FlowDesk has a recorded read that lacked the column.
+**What is superseded: the rule (Kyle, 2026-11-20; decided).** *A period that arrives after FlowDesk has already captured
+past it takes `available_at` = when FlowDesk first observed it, never FRED's earlier date.*
+- **(a) "First observed" is an instant:** the `ingested_at` time of the first FlowDesk run whose response contained the
+  period. Not the end-of-day rule: that rule exists because a vintage is a date, and this observation is not.
+- **(b) FRED's claimed date is kept in a separate column, for audit only.** `available_at` is the first-observed
+  instant, and **no read uses the claimed date** (`app/services/macro_read.py` filters on `available_at`, as now).
+- **(c) Recognition (rule 4):** a new period whose `effective_at` is on or before the series' `captured_through`, with
+  no stored history, is a **late arrival**. It is accepted only if every vintage in the poll's window agrees on its
+  single value; otherwise it is refused, as now. Periods after `captured_through` are unchanged (dated by FRED, F1).
 - "A rebuild from FRED reproduces the table exactly" no longer holds for such rows. A rebuild reproduces FRED's
   record. Only FlowDesk's own observations reproduce what was knowable.
 
-**Open questions for approval (each changes what gets built):**
-1. **"First observed" as an instant or a day.** Proposed: the observing ingestion run's start instant. FlowDesk
-   knows that exactly, and the end-of-day rule of 2026-11-11 exists only because a vintage is a *date*. The
-   alternative is `available_at_for(observation date)`, for one rule across the table.
-2. **How such a row is marked.** The table has no column saying an `available_at` came from FlowDesk rather than
-   FRED, and `source` is the provider. A row would be indistinguishable from a FRED-dated one, except by comparing
-   with FRED. Options: a counted exception in `series_history_state` (like F2's counts), or a column (a migration).
+**Answered 2026-11-20:** questions 1 (an instant: (a) above), 2 (a separate audit column: (b)) and 4 (recognition: (c))
+of the first draft. Still to settle when it is built:
+1. **The audit column** needs a migration on `macro_metrics` (name and type, for example `provider_claimed_available_at`,
+   NULL for every ordinary row). The model, `alembic check` and the rule 9 tests follow it.
+2. **"Every vintage in the poll's window agrees"** needs the late period's column in the window's `output_type=3`
+   rows. The poll's window starts at `captured_through`, and the period's own vintage (11-10) is before it, so the
+   window may hold no column for it at all. The build must say whether "no column" counts as agreement or as a
+   refusal. (MEASURED 2026-11-20: the window from 11-12 held no 11-10 row with values.)
 3. **A re-capture erases the evidence.** `python -m app.backfill --force`, or a `FRED_RULE_VERSION` bump (which the
    recorded principle requires when what is stored changes), rebuilds from FRED's current record. That record now
    shows 2026-11-10 in vintage 11-10. A re-capture would therefore store it with FRED's date, and the knowledge that
-   it arrived late would be lost. The rule needs either a re-capture that keeps FlowDesk-observed dates, or a
-   recorded statement that a re-capture may only make dates later, never earlier.
-4. **How the poll recognises it.** Today such a period refuses under rule 4. Proposed: rule 4 admits a latest value
-   with no chain when its first print's vintage is at or before `captured_through` and the series' state shows a
-   successful read at or after that vintage. It is stored with the observed date and counted apart, and every other
-   unexplained latest value still refuses. It needs the first print from `output_type=4` over the period's own
-   vintage, which the poll does not fetch today: it asks only for vintages from `captured_through` on.
-5. **Scope.** The two ICE BofA series are also refused under rule 3 (the rolling window, cause (i), still being
+   it arrived late would be lost. **Protected meanwhile (Kyle, 2026-11-20, CLAUDE.md):** no `--force` re-capture
+   and no `FRED_RULE_VERSION` bump touching the two series without Kyle's approval. The build still has to say
+   how a later re-capture keeps FlowDesk-observed dates.
+4. **Scope.** The two ICE BofA series are also refused under rule 3 (the rolling window, cause (i), still being
    measured). F3 alone does not unblock them.
 
 **Not done by this draft:** no rule, code, migration or `FRED_RULE_VERSION` change. The two series stay refused (they
