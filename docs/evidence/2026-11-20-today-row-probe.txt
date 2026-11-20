@@ -1,0 +1,43 @@
+=== setup check, NOT one of the three scheduled runs (task start 2026-11-20T06:43:54Z)
+ Container flowdesk-worker-run-788570156359 Creating 
+ Container flowdesk-worker-run-788570156359 Created 
+Traceback (most recent call last):
+  File "/probe/probe.py", line 23, in <module>
+    from app import settings
+ModuleNotFoundError: No module named 'app'
+
+=== setup check, NOT one of the three scheduled runs (2026-11-20T06:43:54Z) FAILED at 2026-11-20T06:43:57Z: probe exited 1 (output above)
+
+=== setup check 2, NOT one of the three scheduled runs (task start 2026-11-20T06:44:11Z)
+ Container flowdesk-worker-run-166a83119af6 Creating 
+ Container flowdesk-worker-run-166a83119af6 Created 
+=== run 2026-11-20T06:44:13+00:00 UTC = 2026-11-20 01:44:13 EST
+yfinance 1.8.0; start=2026-11-13; interval=1d; actions=True
+per-ticker errors: 0 (none); rows in frame: 5
+symbol 2026-11-20 row                   Open                  Close Stock Splits  last row
+XLK    absent                                                                     2026-11-19
+SMH    absent                                                                     2026-11-19
+IGV    absent                                                                     2026-11-19
+XLF    absent                                                                     2026-11-19
+XLE    absent                                                                     2026-11-19
+XLI    absent                                                                     2026-11-19
+XLV    absent                                                                     2026-11-19
+XLY    absent                                                                     2026-11-19
+XLP    absent                                                                     2026-11-19
+XLU    absent                                                                     2026-11-19
+XLB    absent                                                                     2026-11-19
+XLRE   absent                                                                     2026-11-19
+IWM    absent                                                                     2026-11-19
+ARKK   absent                                                                     2026-11-19
+SPY    absent                                                                     2026-11-19
+QQQ    absent                                                                     2026-11-19
+RSP    absent                                                                     2026-11-19
+USO    absent                                                                     2026-11-19
+UNG    absent                                                                     2026-11-19
+GLD    absent                                                                     2026-11-19
+SLV    absent                                                                     2026-11-19
+CPER   absent                                                                     2026-11-19
+URA    absent                                                                     2026-11-19
+DBA    absent                                                                     2026-11-19
+summary: 2026-11-20 row present for 0 of 24
+

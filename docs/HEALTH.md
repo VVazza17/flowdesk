@@ -239,7 +239,7 @@ data age is slice 7's.
   `LikelyGoneSymbols` (D4), and the whole-batch kinds of the yfinance client (rate limited, transient).
 - **A late volume revision is not a failure.** The inclusive start re-fetches each symbol's last stored session every morning; a volume that
   changed after its settle point is counted and logged (`bars_poll_done`, `volume_revisions` per symbol), the stored value kept.
-- **A 15m gap beyond the 59-day look-back** (a poll missed for two months) is recorded in `bar_gaps` and the poll continues from the limit;
+- **A 15m gap beyond the 58-day look-back** (`intraday_floor`; 59 until 2026-11-20, F-6a) (a poll missed for two months) is recorded in `bar_gaps` and the poll continues from the limit;
   the run succeeds. A gap is a record, not a health state; slice 7's gap checks read it.
 
 Top-level `status`, in precedence order. **Only `stale` means something broke.**

@@ -5,14 +5,15 @@ step 6).
 each batch its own `run_feed` (its own ingestion run and rate-budget slot), parses with
 `app.ingest.bars` and writes with `app.services.bars_store`. What differs by mode:
 
-  backfill  daily: `period="2y"`; 15m: `start` = today - 59 calendar days (the limit decided
-            2026-11-16). `feed = 'backfill'`: the recorded exception (values fetched after their
-            settle point). A `backfill_runs` progress row.
+  backfill  daily: `period="2y"`; 15m: `start` = today - 58 calendar days (`intraday_floor`;
+            decided 2026-11-16 as 59, changed to 58 by Kyle 2026-11-20, F-6a).
+            `feed = 'backfill'`: the recorded exception (values fetched after their settle
+            point). A `backfill_runs` progress row.
   poll      each symbol starts at ITS last stored session, INCLUSIVE (Kyle, 2026-11-18: re-checking
             it every morning counts every late volume revision as it happens; the counts are
             reported per run). A symbol with no stored bar fails as `NotBackfilled` (decided
             2026-11-15: the poll never fetches deep history). A 15m symbol whose last bar is more
-            than 59 days back has the unreachable range recorded in `bar_gaps`, then is fetched
+            than 58 days back has the unreachable range recorded in `bar_gaps`, then is fetched
             from the limit. `feed = 'poll'`.
 
 **No 15m bar is accepted until splits for its window are known in the same run** (Kyle, 2026-11-18,
@@ -47,9 +48,9 @@ from app.ingest.budget import Limiter, RedisSpacingLimiter, SetPttlRedis, wait_b
 from app.ingest.errors import ProviderError
 from app.ingest.runner import FeedContext, FeedResult, RetryPolicy, run_feed
 from app.ingest.yfinance_client import (
-    INTRADAY_START_LIMIT_DAYS,
     Download,
     YFinanceClient,
+    intraday_floor,
     yf_download,
 )
 from app.models.ops import BackfillRun
@@ -156,7 +157,7 @@ async def run_bars(
         async def body(ctx: FeedContext) -> FeedResult:
             now = clock()
             today = now.astimezone(NEW_YORK).date()
-            floor = today - timedelta(days=INTRADAY_START_LIMIT_DAYS)
+            floor = intraday_floor(today)
             refused: list[SymbolFailure] = []
             written = 0  # this batch's rows (a verification signal, never attempts)
             start: date | None = None

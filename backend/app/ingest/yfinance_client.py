@@ -30,10 +30,22 @@ from app import settings
 from app.ingest.bars import DAILY, INTRADAY_15M
 from app.ingest.errors import Permanent, ProviderError, RateLimited, Transient
 
-# Decided 2026-11-16: a 15m `start=` request reaching back more than 60 calendar days is refused by
-# Yahoo (MEASURED); the gap limit is 59, and no `period=` fallback is used.
-INTRADAY_START_LIMIT_DAYS = 59
+# Decided 2026-11-16: a 15m `start=` request reaching back more than 60 days is refused by
+# Yahoo (MEASURED); no `period=` fallback is used. Changed 59 -> 58 by Kyle 2026-11-20 (F-6a):
+# the limit is 60 x 24 h in INSTANTS (MEASURED 2026-11-16 and 2026-11-19), and yfinance sends
+# the start DATE as New York midnight, so a request spans N days + up to 24 h of today + 1 h
+# when the window crosses the November DST change. 59 measured 60.006 d at 23:08 New York on
+# 2026-11-18 (refused); 58 is at most about 59.04 d (DERIVED from the measured limit). ONE
+# constant, through `intraday_floor`: the client's guard, the 15m backfill's start and the
+# 15m poll's `bar_gaps` floor.
+INTRADAY_START_LIMIT_DAYS = 58
 INTERVALS = (DAILY, INTRADAY_15M)
+
+
+def intraday_floor(today: date) -> date:
+    """The earliest 15m `start=` date (New York `today` minus INTRADAY_START_LIMIT_DAYS): the 15m
+    backfill starts here, and the 15m poll records anything before it in `bar_gaps`."""
+    return today - timedelta(days=INTRADAY_START_LIMIT_DAYS)
 
 
 @dataclass(frozen=True)
@@ -142,13 +154,9 @@ class YFinanceClient:
             raise Permanent("a ticker is requested twice")
         if (start is None) == (period is None):
             raise Permanent("give exactly one of start or period")
-        if (
-            interval == INTRADAY_15M
-            and start is not None
-            and start < today - timedelta(days=INTRADAY_START_LIMIT_DAYS)
-        ):
+        if interval == INTRADAY_15M and start is not None and start < intraday_floor(today):
             # The poll records an unrecoverable gap beyond this; asking would be refused anyway.
-            raise Permanent("15m start is beyond the 59-day limit")
+            raise Permanent(f"15m start is beyond the {INTRADAY_START_LIMIT_DAYS}-day limit")
         try:
             frame, errors = await asyncio.to_thread(
                 self._download,

@@ -1,9 +1,9 @@
 """Entry point: `python -m app.bars_backfill`. Settled bars for every mapped symbol: two years of
-daily bars, or (`--interval 15m`) the last 59 calendar days of 15-minute bars.
+daily bars, or (`--interval 15m`) the last 58 calendar days of 15-minute bars.
 
     docker compose run --rm worker python -m app.bars_backfill                # daily, every symbol
     docker compose run --rm worker python -m app.bars_backfill --symbols XLK,XLE
-    docker compose run --rm worker python -m app.bars_backfill --interval 15m # 59 days of 15m
+    docker compose run --rm worker python -m app.bars_backfill --interval 15m # 58 days of 15m
 
 The counterpart to `python -m app.backfill` (M2 slice 6, step 4; Kyle, 2026-11-15: the poll never
 fetches deep history; deep history comes from a separate, RECORDED backfill command). Like it, it is
@@ -20,7 +20,7 @@ and `distributions` (step 5b; the same exception and `feed`). A re-fetch that di
 bar fails that symbol and overwrites nothing (D3).
 
 **15m (Kyle, 2026-11-18): no 15m bar is accepted until splits for its window are known in the same
-run.** The 15m backfill first fetches its own daily `actions=True` batch over the 59 days, stores
+run.** The 15m backfill first fetches its own daily `actions=True` batch over the 58 days, stores
 and checks any new split and distribution, and only then parses the 15m bars.
 
 A daily run reports per-symbol coverage over the window: a symbol younger than the window is
@@ -93,7 +93,7 @@ async def execute(
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="python -m app.bars_backfill",
-        description="Settled bars for every symbol with a yfinance mapping: 2 years daily, or 59 "
+        description="Settled bars for every symbol with a yfinance mapping: 2 years daily, or 58 "
         "days of 15m.",
     )
     parser.add_argument(
@@ -106,7 +106,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--interval",
         choices=[DAILY, INTRADAY_15M],
         default=DAILY,
-        help="1d (two years, the default) or 15m (59 calendar days)",
+        help="1d (two years, the default) or 15m (58 calendar days)",
     )
     return parser.parse_args(argv)
 

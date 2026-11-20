@@ -29,6 +29,7 @@ from app.ingest.bars import (
     DAILY,
     INTRADAY_15M,
     NEW_YORK,
+    DeadSymbols,
     NotBackfilled,
     SymbolFailure,
     SymbolsFailed,
@@ -49,7 +50,7 @@ from app.tasks.names import (
 from tests.yfixtures import load
 
 NOW = datetime(2026, 11, 19, 9, 5, tzinfo=NEW_YORK)
-FLOOR = date(2026, 9, 21)  # NOW's date - 59 calendar days
+FLOOR = date(2026, 9, 22)  # NOW's date - 58 calendar days (F-6a, Kyle 2026-11-20)
 THREE = ["QQQ", "SPY", "XLK"]
 NO_RETRY = RetryPolicy(attempts=1, initial_seconds=0.0, max_seconds=0.0)
 
@@ -233,6 +234,49 @@ def test_the_15m_backfill_checks_splits_first_then_stores_settled_bars_as_backfi
     # A re-run writes 0 rows.
     again, error, _ = backfill(db, INTRADAY_15M, THREE, Download())
     assert error is None and again.rows_written == 0
+
+
+REFUSED = (
+    "15m data not available for startTime=1789876800 and endTime=1795061334. "
+    "The requested range must be within the last 60 days."
+)
+
+
+class RefusedFifteen(Download):
+    """F-6a as MEASURED 2026-11-19: Yahoo refuses the whole 15m request. Every ticker has a soft
+    error (library text, no exception class), every group is all-NaN, and the index is
+    timezone-naive. The daily split check is served normally."""
+
+    def __call__(self, tickers: Sequence[str], **kw: Any) -> tuple[Any, dict[str, str]]:
+        if kw["interval"] == DAILY:
+            return super().__call__(tickers, **kw)
+        self.calls.append({"tickers": list(tickers), **kw})
+        frame, _, _ = load("m15_5d_three_plus_dead")
+        frame = frame[[c for c in frame.columns if c[0] in tickers]].iloc[:3].copy()
+        frame.loc[:, :] = float("nan")
+        frame.index = pd.DatetimeIndex(frame.index.tz_localize(None))
+        return frame, {t: f"${t}: {REFUSED}" for t in tickers}
+
+
+def test_a_batch_refused_for_every_ticker_is_named_per_symbol_not_as_a_naive_index(
+    db: str,
+) -> None:
+    # F-6a (Kyle, 2026-11-20): classified before the timezone check, named per symbol, and what is
+    # stored is <kind>:<Class> and FlowDesk's own text only. Three symbols, so a run that named one
+    # (or none, as before) fails.
+    report, error, _ = backfill(db, INTRADAY_15M, THREE, RefusedFifteen())
+    assert isinstance(error, DeadSymbols), repr(error)
+    assert report.failed == THREE
+    assert all(intraday(db, t) == [] for t in THREE)
+    (run_row,) = rows(db, "SELECT status, error FROM ingestion_runs ORDER BY id")
+    assert run_row.status == "failed"
+    assert run_row.error == "empty_result:DeadSymbols: no rows in this batch for: QQQ, SPY, XLK"
+    health = [r.last_error for r in rows(db, "SELECT last_error FROM providers_health")]
+    assert "empty_result:DeadSymbols" in health
+    for stored in [run_row.error, *health]:
+        assert stored is None or not any(
+            w in stored for w in ("startTime", "60 days", "timezone-naive", "$")
+        ), stored
 
 
 def test_no_15m_bar_is_accepted_before_a_split_in_its_window_is_known_in_the_same_run(
@@ -432,7 +476,7 @@ def test_the_15m_poll_records_a_gap_beyond_the_look_back_for_that_symbol_only(db
     )
     assert (gap.ticker, gap.interval) == ("XLK", "15m")
     assert gap.missing_from == old + timedelta(minutes=15)
-    assert gap.missing_to == et(2026, 9, 21, 9, 30)  # the open of the first session at the floor
+    assert gap.missing_to == et(2026, 9, 22, 9, 30)  # the open of the first session at the floor
     assert report.gaps == 1
     # One request for both, from the earliest start the look-back allows; the split check first.
     assert [(c["interval"], c["start"]) for c in dl.calls] == [

@@ -3922,3 +3922,157 @@ caught (35, 34, 13, 13, 23) after their snippets followed the code into `bars_fe
 
 **Still open for this step:** F-6a (the 59-day rule across DST) and F-6b (the two ICE BofA FRED series), both flagged above; the misleading
 error text when every 15m ticker is refused; IDEA-029, which blocks the flag.
+
+### Addendum 2026-11-20 — Kyle's decisions: machine roles, tonight's order, today's probe, F-6a, F-6b, concurrency
+
+Given 2026-11-20 at about 01:35 EST (the earlier block never reached the session; this one replaces it). Recorded the turn they were given.
+
+1. **Machine roles (MEASURED 2026-11-20, recorded):** `DESKTOP-GHDCBPQ` (no battery, `Win32_ComputerSystem.PCSystemType` = 1, Desktop; no
+   `sshd` service, no `C:\FlowdeskBackups`, no backup account) **runs the stack and is not a backup destination.** Every earlier entry that
+   calls the stack machine "the laptop" and this desktop the off-box destination is wrong about which machine is which. **Off-box backup is
+   currently impossible:** no second machine is set up to receive it. IDEA-029 and `docs/BACKUP.md` carry the correction. **Every drill-guide
+   fix is held until Kyle chooses a new destination.** The likely choice is an Oracle Cloud Always Free VM (a Linux SFTP target, with the
+   restore drill run on the laptop). Nothing is built for it yet.
+2. **Tonight, in order:** (a) `docker compose up -d`, `/health/ready` ok, row counts of `bars_daily`, `bars_intraday`, `splits`,
+   `distributions`, `bar_gaps`, `BARS_POLL_ENABLED` still false; (b) find why every container stopped at about 19:30 EST 11-19 from Docker
+   Desktop's logs and the Windows event log (report, not guess), turn on "Start Docker Desktop when you sign in", check the restart policy
+   brings the stack back after Docker restarts; (c) `docs/evidence/settle/run.sh` exits non-zero when Docker is unreachable or no snapshot
+   was taken; the 11-18 01:10Z and 11-19 snapshots are recorded as **missed, never filled in afterwards**.
+3. **Today's measurement (Fri 11-20, the same-run split-check gap):** three one-time Windows scheduled tasks at 09:05, 09:35 and 10:05 ET,
+   WakeToRun, each a read-only daily `actions=True` fetch of all 24 symbols in the **worker image** (the production client), no database
+   writes, recording whether a 2026-11-20 row is present with its Open, Close and Stock Splits into
+   `docs/evidence/2026-11-20-today-row-probe.txt`; each waits up to 30 minutes for Docker and fails loudly if Docker is down. Also answered
+   from the code: (a) does any check require the daily frame to contain the session after the newest accepted bar, or today's row? (c) is
+   there evidence of when Yahoo adjusts history relative to when it shows the split row (ASSUMED if none)?
+4. **F-6a: 58 calendar days.** DERIVED from the MEASURED instant limit: 58 d + at most 24 h of local day + 1 h DST = about 59.04 d < 60 d.
+   One constant for both the backfill start and the `bar_gaps` floor. A test at the worst case: 23:59 New York, the window spanning the
+   November change. **A batch where every ticker is refused is classified before the timezone check**, named per symbol, storing
+   `<kind>:<Class>` and FlowDesk's own text only. Both mutation-checked. Commit through `commit-gated.sh` and push.
+5. **F-6b: day 1 of the measurement.** Fetch the latest vintage of BAMLC0A0CM and BAMLH0A0HYM2 today and record each one's earliest
+   observation; repeat on Monday's run. **The rolling-window cause is shown only if that earliest date moves forward.** Explain rule 4's
+   2026-11-10 period. Secondary sources say FRED has limited the ICE BofA series to a rolling three-year window since April 2026:
+   **SUPPORTED, not MEASURED.** No rule changes.
+6. **Concurrency:** with the stack up, call both polls back-to-back as Beat would, and report each request's wait against the 120 s bound.
+
+### 2026-11-20 — the night's work on Kyle's six items: what was done and MEASURED
+
+Order as given. Evidence files are in `docs/evidence/` with the prefix `2026-11-20-`.
+
+**1. Machine roles.** Recorded above (addendum 2026-11-20) and as corrections in IDEA-029 and `docs/BACKUP.md`. The drill guide's
+fixes are held. Nothing was built for a new destination.
+
+**2(a). Stack up.** `docker compose up -d` at 01:34 EST; `/health/ready` `ok` within about 10 s (postgres, redis, migrations, worker,
+ingest_worker all ok). Rows before tonight's poll calls: `bars_daily` 11,976, `bars_intraday` 26,208, `splits` 5, `distributions` 119,
+`bar_gaps` 0 (the same as recorded on 11-19). `BARS_POLL_ENABLED` is unset in `.env`. Inside the worker and Beat containers it is `false`,
+which is the compose default.
+
+**2(b). Why everything was down.** Evidence: `2026-11-20-docker-stop.txt`. **The stack did not stop "at about 19:30" (the status
+check's reading of `Exited 6 hours ago`, which was wrong).** It went down at **03:19:06 EST on 11-19**. Docker Desktop's backend was
+terminated then, with exit status `0x40010004` (DBG_TERMINATE_PROCESS). Two seconds later the machine went to sleep at a user-mode
+process's request (Kernel-Power 187, then 42). It slept until **18:20:27 EST** (Power-Troubleshooter 1, wake source Unknown). Docker
+Desktop stayed down until it was opened from the tray at 19:12:54 EST. The containers' `FinishedAt` of 19:13:09 EST is the relaunched
+engine recording them. **Not determined, and not guessed:**
+- why the `unless-stopped` containers did not start after that relaunch (the engine log rotates about every 10 minutes and had lost
+  19:13);
+- which process requested sleep;
+- why WakeToRun did not wake the machine for the 09:00 settle task (wake timers are enabled in the plan; `powercfg /waketimers` needs
+  elevation).
+
+**The 08:00 FRED poll and the 09:00 settle snapshot of 11-19 were missed because of this.**
+**Changed:** "Start Docker Desktop when you sign in" is ON. `settings-store.json` `AutoStart` went from false to true, with a backup
+kept, and the Startup-apps entry went from disabled to enabled.
+**Checked:** after a clean `docker desktop stop` and `start`, all eight `unless-stopped` services came back by themselves and ready was
+`ok`.
+**Not checked:** the 11-19 case, where the backend is terminated before sleep and relaunched after wake.
+
+**2(c). `docs/evidence/settle/run.sh`** exits non-zero and logs a `MISSED:` line in these cases:
+- exit 2: Docker unreachable after 30 minutes;
+- exit 3: the probe image could not be built;
+- exit 4: the probe exited non-zero;
+- exit 5: the probe exited 0 but wrote no snapshot file.
+
+Before this, both failures exited 0: a `| tail -5` pipe hid the probe's code, and the wait loop fell through. All three paths were
+checked against a stub `docker` in a scratch copy (exit 2 with MISSED, exit 5 with MISSED, exit 0).
+**Recorded as missed, never filled in** (`docs/evidence/settle/missed.txt`):
+- 2026-11-18T01:10:24Z;
+- the 2026-11-19 09:00 slot. It ran late by catch-up, at 18:26 EST, and failed at 23:56:58Z with Docker unreachable.
+
+**3. Today's measurement (the same-run split-check gap).** Three one-time tasks are registered: `FlowDesk-today-row-0905`, `-0935` and
+`-1005`. Each is 2026-11-20 ET, WakeToRun, StartWhenAvailable, the same Interactive principal as the settle task, and a 50-minute limit.
+Each runs `docs/evidence/today-row-probe/run.sh`, which:
+- waits up to 30 minutes for Docker, and otherwise writes a FAILED line and exits non-zero;
+- runs `probe.py` in the **worker image** (`docker compose run --rm --no-deps`), calling the production `YFinanceClient.fetch(24
+  symbols, "1d", start=today-7)` with `actions=True`;
+- opens no database connection and takes no rate-budget slot (the polls are off, so nothing shares the minute);
+- appends, per symbol, whether a 2026-11-20 row is present and its Open, Close and Stock Splits, to
+  `docs/evidence/2026-11-20-today-row-probe.txt`.
+
+**Setup check at 01:44 EST (not one of the three):** a 2026-11-20 row was absent for 24 of 24, and the last row was 11-19 for all. (The
+first setup attempt failed on `PYTHONPATH` and is in the file as FAILED.)
+**Risk, MEASURED 11-19:** WakeToRun did not wake this machine, and the tasks run only while Kyle is signed in.
+
+Answers from the code:
+- **(a) No.** No check requires the daily frame to contain the session after the newest accepted bar, or today's row. The 15m run's
+  split check (`bars_feed.run_bars`) fetches daily `actions=True` from its start to now. `parse_batch` takes `Stock Splits` from
+  whatever rows come back, settled or not. A missing row is silent: nothing counts or expects rows. At 09:05 on day D, the accepted 15m
+  bars are D-1's (settled 09:00 D). A split effective at D's open is learned only if D's row is already in the frame, and that is what
+  the probe measures.
+  A second code fact: `_parse_symbol` skips a row whose price columns are all NaN BEFORE it reads `Stock Splits` (`bars.py`, the
+  `if all(pd.isna(v) for v in prices): continue` line). So a split row with no prices would also be missed. The probe prints such a row
+  (its filter keeps a row with a non-zero split), so the measurement will show whether that case occurs.
+- **(c) ASSUMED; there is no evidence.** MEASURED: history comes back split-adjusted after a split (NVDA 2024-06-10 and XLK, step 1(b),
+  2026-11-16, read long after the fact). Never measured: when Yahoo adjusts earlier bars relative to when it first shows the split row,
+  for daily or 15m. That 15m bars are split-adjusted at all is itself ASSUMED (step 2 proposal, item 9).
+
+**4. F-6a: 58 calendar days, built.**
+- `INTRADAY_START_LIMIT_DAYS = 58` stays the ONE constant, now read only through
+  `yfinance_client.intraday_floor(today)`: the client's guard, the 15m backfill's start and the 15m poll's `bar_gaps` floor.
+- DERIVED from the MEASURED instant limit: 58 d + at most 24 h of local day + 1 h of DST is about 59.04 d, which is under 60 d.
+- New test `test_the_15m_window_is_inside_yahoos_60_x_24_h_at_the_worst_case`: 23:59 New York on 2026-11-18, window from 2026-09-21
+  across the November change. The span is exactly 59 d 0 h 59 min. The measured refusal is reproduced as 60.006 d, and the guard
+  accepts the floor and refuses the day before.
+- **An all-refused batch is classified before the timezone check** (`bars.parse_batch`): if every requested ticker's group is absent or
+  all-NaN, each ticker is a dead symbol, named. D4's `classify_dead` decides empty-today or likely-gone against every symbol's stored
+  history.
+  `# DECISION`: the soft message (library text) is not read to choose the kind, consistent with `_check_ctx_errors`. Stored:
+  `ingestion_runs.error` = `empty_result:DeadSymbols: no rows in this batch for: QQQ, SPY, XLK`, and `providers_health.last_error` =
+  `empty_result:DeadSymbols`. The test checks that neither holds `startTime`, `60 days`, `timezone-naive` or `$`.
+  **Kyle may prefer a `permanent` kind for a whole-request refusal; the dead-symbol kind was the simpler reading.**
+- Tests: `FLOOR` moved to 2026-09-22. The 58/59 boundary test was renamed. 94 passed in the four affected files.
+- **Mutation:** `m2-slice6-step6` 27/27 (four new: back to 59 days; the run computing its own floor; the early classification removed;
+  only the first symbol named). `m2-slice6-step3` 34/34 (its limit mutation follows the code). Evidence:
+  `2026-11-20-f6a-mutation-check.txt`.
+
+**5. F-6b, day 1 (MEASURED 2026-11-20 06:54 UTC, read-only, production `FredClient`).** Evidence: `2026-11-20-f6b-ice-bofa-window.txt`;
+the scripts are `docs/evidence/f6b/probe.py` (rerun it Monday) and `rule4_check.py`.
+- **Earliest observation in the latest vintage: 2023-11-20, for both BAMLC0A0CM and BAMLH0A0HYM2.** The latest observation is
+  2026-11-18, and there are 794 observations each. `output_type=4`'s earliest first print is 2023-11-21.
+- The stored history (captured 2026-11-13 to 11-15) begins at 2023-11-14 for both. Rule 3's refusals since 11-16 named 2023-11-14 to
+  11-16, which are stored periods now absent from the latest vintage. That fits a rolling window, but it compares a capture with today.
+  **By Kyle's criterion, the cause is shown only if Monday's earliest is later than 2023-11-20.** Secondary sources' "rolling three-year
+  window since April 2026": SUPPORTED, not MEASURED.
+- **Rule 4's 2026-11-10 period, MEASURED:**
+  - The stored history has no period 2026-11-10 for either series (stored: 11-09, 11-11, 11-12).
+  - Today, FRED's latest vintage, `output_type=4` and `output_type=3` all hold it: 0.9 and 3.3, first printed at vintage 2026-11-10.
+  - That vintage is earlier than `captured_through` (2026-11-12), and the poll asks only for vintages on or after `captured_through`.
+    So the period is in `latest`, with no stored chain and no window row, and rule 4 refuses ("a latest value has no history").
+  - The backfill passed rule 4 against that day's latest vintage. So (DERIVED) FRED's record then held no 2026-11-10: **FRED added a
+    period to a past vintage after it was captured.**
+  - **This is a second, separate cause.** Even if the rolling window were accommodated, rule 4 would still refuse these series.
+- No rule changed.
+
+**6. Concurrency (MEASURED 2026-11-20 06:55 to 06:58 UTC).** `celery call ingest.bars_daily_poll`, then `ingest.bars_15m_poll` 1.2 s
+later. The ingest worker runs `--concurrency=2`, so they ran at once, as Beat's 09:05 pair would. Waits were taken from
+`redis-cli MONITOR` on `ratelimit:yfinance` (Redis's clock, about 8% fast):
+
+| Request | Wait |
+|---|---|
+| daily poll's batch | **0.00 s** |
+| 15m poll's daily split check | **58.62 s** |
+| 15m poll's bars | **57.00 s** |
+
+The bound is 120 s, so the largest wait leaves a 61.4 s margin. Both task runs succeeded: daily in 3.3 s, 15m in 121.9 s (task_runs
+8460 and 8461).
+**These calls wrote rows:** `bars_daily` +24 (11-17 settled) and `bars_intraday` +624 (11-18 settled), all `feed = 'poll'`, with 0
+volume revisions, 0 splits and 0 gaps. These are the first poll rows with data. They were written by hand, not by schedule; the flag is
+still false. Evidence: `2026-11-20-poll-concurrency.txt`.

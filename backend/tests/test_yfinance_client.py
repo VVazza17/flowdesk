@@ -8,8 +8,9 @@ inside `run_feed` on a real database and reads back what was stored: nothing the
 
 import asyncio
 import inspect
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import curl_cffi
 import pandas as pd  # type: ignore[import-untyped]
@@ -23,7 +24,13 @@ from app import settings
 from app.ingest.bars import DAILY, INTRADAY_15M
 from app.ingest.errors import Permanent, RateLimited, Transient
 from app.ingest.runner import FeedContext, FeedResult, RetryPolicy, run_feed
-from app.ingest.yfinance_client import YFinanceClient, map_exception, yf_download
+from app.ingest.yfinance_client import (
+    INTRADAY_START_LIMIT_DAYS,
+    YFinanceClient,
+    intraday_floor,
+    map_exception,
+    yf_download,
+)
 from tests.recorded import recorded
 from tests.yfixtures import load
 
@@ -96,14 +103,48 @@ def test_a_malformed_request_is_refused_before_any_call(
     assert rec.calls == []
 
 
-def test_a_15m_start_beyond_59_days_is_refused_and_59_is_not() -> None:
+def test_a_15m_start_beyond_58_days_is_refused_and_58_is_not() -> None:
     rec = Recorder()
-    with pytest.raises(Permanent, match="59-day"):
-        fetch(client(rec), ["XLK"], INTRADAY_15M, start=TODAY - timedelta(days=60))
-    fetch(client(rec), ["XLK"], INTRADAY_15M, start=TODAY - timedelta(days=59))
+    with pytest.raises(Permanent, match="58-day"):
+        fetch(client(rec), ["XLK"], INTRADAY_15M, start=TODAY - timedelta(days=59))
+    fetch(client(rec), ["XLK"], INTRADAY_15M, start=TODAY - timedelta(days=58))
     assert len(rec.calls) == 1
     # Daily has no such limit (the backfill reaches two years).
     fetch(client(rec), ["XLK"], DAILY, start=TODAY - timedelta(days=730))
+
+
+NY = ZoneInfo("America/New_York")
+
+
+def _span(start: date, now: datetime) -> timedelta:
+    # yfinance sends a start DATE as New York midnight (MEASURED 2026-11-19, F-6a:
+    # startTime=1789876800 is 2026-09-20 00:00 EDT). In UTC: the same tzinfo on both sides
+    # would subtract wall clocks.
+    return now.astimezone(UTC) - datetime.combine(start, time(0), tzinfo=NY).astimezone(UTC)
+
+
+def test_the_15m_window_is_inside_yahoos_60_x_24_h_at_the_worst_case() -> None:
+    # F-6a (Kyle, 2026-11-20): the worst case is 23:59 New York with the window spanning the
+    # November DST change: 58 d + 23 h 59 min + 1 h, about 59.04 d, against the MEASURED
+    # 60 x 24 h limit.
+    now = datetime(2026, 11, 18, 23, 59, tzinfo=NY)
+    start = intraday_floor(now.date())
+    assert start == date(2026, 9, 21) and INTRADAY_START_LIMIT_DAYS == 58
+    assert start < date(2026, 11, 1) < now.date()  # the window spans the change (EDT -> EST)
+    assert _span(start, now) <= timedelta(days=60)
+    assert _span(start, now) == timedelta(days=59, hours=24, minutes=59) - timedelta(hours=24)
+    # The refusal that was MEASURED: 59 days, 23:08 New York on 2026-11-18, spanned 60.006 d.
+    measured = _span(date(2026, 9, 20), datetime(2026, 11, 18, 23, 8, 54, tzinfo=NY))
+    assert measured > timedelta(days=60)
+    assert round(measured / timedelta(days=1), 3) == 60.006
+    # The guard and the floor are the same date: the earliest start the client lets through.
+    rec = Recorder()
+    c = YFinanceClient(max_batch=24, download=rec)
+    asyncio.run(c.fetch(["XLK"], INTRADAY_15M, today=now.date(), start=start))
+    with pytest.raises(Permanent):
+        asyncio.run(
+            c.fetch(["XLK"], INTRADAY_15M, today=now.date(), start=start - timedelta(days=1))
+        )
 
 
 def test_the_real_call_shape_against_yfinance_1_8_0() -> None:

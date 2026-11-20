@@ -1,0 +1,41 @@
+Back-to-back bars polls, as Beat would send them at 09:05 (Kyle's item 6). MEASURED 2026-11-20 06:55-06:58 UTC (01:55 New York), dev stack, ingest worker --concurrency=2.
+Commands: celery call ingest.bars_daily_poll; celery call ingest.bars_15m_poll (1.2 s apart). Waits from redis-cli MONITOR on ratelimit:yfinance (Redis's clock: the VM wall clock, ~8% fast, IDEA-048).
+A request = one connection's run of SET NX attempts; granted = the SET not followed by that connection's PTTL.
+
+raw events:
+  06:55:55.015Z 172.19.0.7:46768 SET "1" "NX" "PX" "60000"
+  06:55:56.394Z 172.19.0.7:46240 SET "1" "NX" "PX" "60000"
+  06:55:56.394Z 172.19.0.7:46240 PTTL 
+  06:56:52.567Z 172.19.0.7:46240 SET "1" "NX" "PX" "60000"
+  06:56:52.568Z 172.19.0.7:46240 PTTL 
+  06:56:52.664Z 172.19.0.7:46240 SET "1" "NX" "PX" "60000"
+  06:56:52.664Z 172.19.0.7:46240 PTTL 
+  06:56:55.018Z 172.19.0.7:46240 SET "1" "NX" "PX" "60000"
+  06:56:58.035Z 172.19.0.7:46240 SET "1" "NX" "PX" "60000"
+  06:56:58.036Z 172.19.0.7:46240 PTTL 
+  06:57:52.529Z 172.19.0.7:46240 SET "1" "NX" "PX" "60000"
+  06:57:52.529Z 172.19.0.7:46240 PTTL 
+  06:57:52.546Z 172.19.0.7:46240 SET "1" "NX" "PX" "60000"
+  06:57:52.546Z 172.19.0.7:46240 PTTL 
+  06:57:55.033Z 172.19.0.7:46240 SET "1" "NX" "PX" "60000"
+
+per request (client 46768 = the daily poll; 46240 = the 15m poll, split check then bars):
+  daily poll, daily batch      first attempt 06:55:55.015Z  granted 06:55:55.015Z  waited  0.00 s
+  15m poll, daily split check  first attempt 06:55:56.394Z  granted 06:56:55.018Z  waited 58.62 s
+  15m poll, 15m bars           first attempt 06:56:58.035Z  granted 06:57:55.033Z  waited 57.00 s
+  bound: 120 s (budget.wait_bound, two yfinance spacings). Largest wait 58.62 s; margin 61.4 s.
+
+  id  |       task_name        |  status   |          started_at           |         completed_at          
+------+------------------------+-----------+-------------------------------+-------------------------------
+ 8460 | ingest.bars_daily_poll | succeeded | 2026-11-20 06:55:54.917795+00 | 2026-11-20 06:55:58.244335+00
+ 8461 | ingest.bars_15m_poll   | succeeded | 2026-11-20 06:55:56.274784+00 | 2026-11-20 06:57:58.131394+00
+(2 rows)
+
+ task_run_id |    feed    |  status   | rows_read | rows_written 
+-------------+------------+-----------+-----------+--------------
+        8460 | bars_daily | succeeded |        48 |           24
+        8461 | bars_15m   | succeeded |      1248 |          624
+(2 rows)
+
+{"interval": "1d", "rows_written": 24, "bars": 24, "splits": 0, "distributions": 0, "gaps": 0, "unsettled": 48, "volume_revisions": {}, "volume_revisions_total": 0, "failed": [], "event": "bars_poll_done", "level": "info", "timestamp": "2026-11-20T06:55:58.244151Z"}
+{"interval": "15m", "rows_written": 624, "bars": 624, "splits": 0, "distributions": 0, "gaps": 0, "unsettled": 624, "volume_revisions": {}, "volume_revisions_total": 0, "failed": [], "event": "bars_poll_done", "level": "info", "timestamp": "2026-11-20T06:57:58.131126Z"}

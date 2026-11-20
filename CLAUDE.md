@@ -53,7 +53,10 @@ below).
   on any deployed instance (quarterly, and after a provider notice).
 - **Any new `degraded` condition on `/health/ready` also pages the owner** (ADR-0008 section 4). The sender
   pings only on exactly `ok`.
-- **Scheduled backups are built (M2 slice 2) but the slice is not closed** (IDEA-029). The `backup` compose
+- **Scheduled backups are built (M2 slice 2) but the slice is not closed** (IDEA-029). **Correction 2026-11-20 (Kyle, MEASURED):
+  the stack runs on `DESKTOP-GHDCBPQ`, a desktop that is NOT a backup destination; off-box backup is currently impossible, and the
+  "laptop runs it, desktop receives it" text below has the machines the wrong way round. Drill-guide fixes are held until Kyle
+  picks a new destination (likely an Oracle Cloud Always Free VM: Linux SFTP).** The `backup` compose
   service dumps nightly (03:00 `America/New_York`, with catch-up after sleep), encrypts with `age` to the
   public key in `infra/backup/recipients.txt`, keeps 14 dailies plus 8 weeklies locally, and then copies to
   Kyle's Windows desktop over SFTP (Windows OpenSSH Server, a dedicated non-admin account, restricted by NTFS
@@ -183,8 +186,9 @@ below).
   `BARS_POLL_ENABLED=false` until IDEA-029's drill passes; stale after 4 days (DERIVED); inclusive start (counts late volume revisions).
   **Step 6 built (2026-11-19):** `app/ingest/bars_feed.run_bars` (backfill and poll, daily and 15m), tasks `ingest.bars_daily_poll` /
   `ingest.bars_15m_poll`; dev stack: 15m backfill 26,208 bars, one manual run of each poll (0 rows, 0 volume revisions at 00:11 ET).
-  Bars entry points use `yfinance_limiter` (wait bound two spacings: a 60 s bound refused the 15m run's second slot, MEASURED). Open:
-  F-6a (59 days across DST) and F-6b (two FRED ICE series refused since 11-16), BUILD-LOG 2026-11-19.
+  Bars entry points use `yfinance_limiter` (wait bound two spacings: a 60 s bound refused the 15m run's second slot, MEASURED). F-6a
+  closed 2026-11-20: 58 days (`intraday_floor`), and an all-refused batch is named per symbol. Open: F-6b (two FRED ICE series
+  refused since 11-16; day 1 measured 2026-11-20, repeat Monday), BUILD-LOG 2026-11-20.
 - **The base image is pinned by digest** (M2 slice 0, 2026-11-08). The `FROM` line in `backend/Dockerfile` is
   the one definition. The CI tooling container, `lock-deps.sh` and the smokes read it through
   `infra/base-image.sh`, and lint fails on a second definition. The base no longer updates itself: the daily
@@ -387,7 +391,7 @@ bash infra/smoke-m2-beat-schedule.sh # IDEA-043: image owns /var/lib/beat, compo
 bash infra/smoke-m2-slice2.sh     # M2 slice 2: encrypt, SFTP copy to stand-in sshd (3 permission policies), restore with the private key only
 docker compose run --rm worker python -m app.backfill   # FRED revision history, every series not yet captured; --series A,B [--force]
 docker compose run --rm worker python -m app.bars_backfill   # 2 years of settled daily bars, every mapped symbol; --symbols A,B. A re-run writes 0
-docker compose run --rm worker python -m app.bars_backfill --interval 15m   # 59 days of 15m (own daily split check first). Not in the last NY hour (F-6a)
+docker compose run --rm worker python -m app.bars_backfill --interval 15m   # 58 days of 15m (own daily split check first). Any hour (F-6a, 2026-11-20)
 docker compose exec worker celery -A app.worker call ingest.bars_daily_poll   # also ingest.bars_15m_poll; Beat schedules them only with BARS_POLL_ENABLED=true
 bash infra/smoke-m2-slice6-poll.sh # M2 slice 6 step 6: both polls through the real worker and real Yahoo (writes poll rows); needs both backfills
 docker compose exec -T postgres psql -U flowdesk -d <db> -Atq -v cutoff=<stamp> -f - < infra/drill-fingerprint.sql   # IDEA-029 drill (docs/BACKUP.md)

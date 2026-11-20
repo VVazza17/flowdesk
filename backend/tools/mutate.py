@@ -56,6 +56,36 @@ SUITES: dict[str, tuple[str, list[Mutation]]] = {
     "m2-slice6-step6": (
         "tests/test_bars_feed.py",
         [
+            # --- F-6a (Kyle, 2026-11-20): 58 days, and an all-refused batch named per symbol ---
+            Mutation(
+                "the 15m window is 59 days again",
+                CLIENT,
+                "INTRADAY_START_LIMIT_DAYS = 58\n",
+                "INTRADAY_START_LIMIT_DAYS = 59\n",
+                "test_the_15m_window_is_inside_yahoos_60_x_24_h_at_the_worst_case",
+                "tests/test_yfinance_client.py",
+            ),
+            Mutation(
+                "the run computes its own floor, not the client's",
+                FEED_PY,
+                "            floor = intraday_floor(today)\n",
+                "            floor = today - timedelta(days=59)\n",
+                "test_the_15m_backfill_checks_splits_first or test_the_15m_poll_records_a_gap",
+            ),
+            Mutation(
+                "an all-refused batch reaches the timezone check",
+                BARS,
+                "    if all(_empty(groups.get(t)) for t in tickers):\n",
+                "    if False:\n",
+                "test_a_batch_refused_for_every_ticker",
+            ),
+            Mutation(
+                "an all-refused batch names only its first symbol",
+                BARS,
+                "        result.dead.extend(tickers)\n",
+                "        result.dead.extend(tickers[:1])\n",
+                "test_a_batch_refused_for_every_ticker",
+            ),
             # --- the same-run split check (Kyle, 2026-11-18: every 15m write) ---
             Mutation(
                 "the 15m run skips its own split check",
@@ -826,11 +856,11 @@ SUITES: dict[str, tuple[str, list[Mutation]]] = {
             ),
             # --- the client ---
             Mutation(
-                "the 15m start limit is 58 days",
+                "the 15m start limit is one day shorter (<= for <)",
                 CLIENT,
-                "            and start < today - timedelta(days=INTRADAY_START_LIMIT_DAYS)",
-                "            and start <= today - timedelta(days=INTRADAY_START_LIMIT_DAYS)",
-                "test_a_15m_start_beyond_59_days",
+                "start is not None and start < intraday_floor(today):",
+                "start is not None and start <= intraday_floor(today):",
+                "test_a_15m_start_beyond_58_days",
                 "tests/test_yfinance_client.py",
             ),
             Mutation(

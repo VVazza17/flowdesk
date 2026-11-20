@@ -1,0 +1,48 @@
+Why every FlowDesk container was down on the evening of 2026-11-19 (Kyle's item 2b). MEASURED 2026-11-20 ~01:40 EST from
+Docker Desktop's host logs (%LOCALAPPDATA%\Docker\log\host) and the Windows System log. Times UTC unless marked EST.
+
+Docker Desktop.exe.log (complete sequence of backend sessions this week):
+  [2026-11-18T16:15:32Z] launching com.docker.backend.exe
+  [2026-11-19T08:19:06.114Z][E] backend process exited: exit status 0x40010004      <- 03:19:06 EST
+  [2026-11-20T00:12:54.309Z] launching com.docker.backend.exe                       <- 19:12:54 EST
+  (also earlier: [2026-11-17T14:41:36Z][E] backend process exited: exit status 0x40010004)
+  0x40010004 is DBG_TERMINATE_PROCESS: the process was terminated from outside, not crashed by an exception.
+
+electron-2026-11-19.log: UI unsubscribes 08:18:24Z, "[ENGINE] Disconnected from /events" 08:19:01Z; the next launch at
+  2026-11-20T00:12:56Z records "Launched with: { params: { reason: 'open-tray', name: 'dashboard' } }" (opened from the tray).
+
+com.docker.backend.exe.log.20261119-192351.863: last line of the old session 2026-11-19T08:19:06Z; no lines between 08:19Z and
+  2026-11-20T00:12:54Z; the new session reports "procd received state {Docker:stopped ...}" at 00:12:55Z, "VM started" 00:13:00Z.
+
+Windows System log (EST):
+  2026-11-19 03:19:07  Hyper-V-VmSwitch 234   VM NIC disconnected
+  2026-11-19 03:19:08  Kernel-Power 187       "User-mode process attempted to change the system state by calling SetSuspendState
+                                               or SetSystemPowerState APIs." (the event does not name the process)
+  2026-11-19 03:19:08  Kernel-Power 42        The system is entering sleep.
+  2026-11-19 18:20:27  Power-Troubleshooter 1 returned from a low power state. Sleep Time 2026-11-19T08:19:08Z,
+                                               Wake Time 2026-11-19T23:20:26Z, Wake Source: Unknown
+  2026-11-19 18:20:52  Hyper-V-VmSwitch 69/71 port of the old VM deleted
+  2026-11-19 19:12:57  Hyper-V-VmSwitch 67    new VM port created (Docker Desktop relaunched)
+
+docker inspect (after 2026-11-20 restart): every flowdesk-* container FinishedAt 2026-11-20T00:13:09-12Z, exit 0,
+  RestartPolicy unless-stopped (migrate: no). That FinishedAt is when the RELAUNCHED engine recorded them, not when they stopped.
+
+FINDINGS
+  1. The stack did not stop "at about 19:30". It went down at 03:19:06 EST on 11-19, when Docker Desktop's backend was terminated
+     2 s before the machine went to sleep at a user-mode process's request. The machine slept until 18:20:27 EST (15 h).
+  2. Docker Desktop stayed down after the wake until it was opened from the tray at 19:12:54 EST.
+  3. After that relaunch, the unless-stopped containers did NOT come back (they sat Exited until `docker compose up -d` at
+     01:34 EST on 11-20). Why: NOT DETERMINED. The engine's own log (vm/init.log) rotates about every 10 minutes (1 MB of apiproxy
+     request lines per file, 9 files kept), so 19:13 EST was already gone when read. Not guessed.
+  4. WakeToRun on FlowDesk-settle-daily did not wake the machine for 09:00 (MEASURED: no wake between 03:19 and 18:20). Wake timers
+     are enabled in the active power plan (AC and DC index 1). Why the timer did not fire: NOT DETERMINED (`powercfg /waketimers`
+     needs an elevated prompt). The same applies to the three FlowDesk-today-row-* tasks.
+  5. What requested sleep at 03:19: NOT DETERMINED (event 187 names no process).
+
+CHANGES (2026-11-20 ~01:36 EST)
+  - "Start Docker Desktop when you sign in" turned ON: settings-store.json "AutoStart": false -> true (backup: settings-store.json.bak-20261120),
+    and the Startup-apps entry HKCU\...\Explorer\StartupApproved\Run "Docker Desktop" first byte 0x03 (disabled) -> 0x02 (enabled).
+    Docker Desktop was stopped for the edit (docker desktop stop) and started again (docker desktop start).
+  - Restart check: after that clean Docker Desktop restart, all eight unless-stopped services came back by themselves within ~25 s
+    and /health/ready returned ok. (research-scout's three containers, restart=no, were started by hand to leave them as found.)
+    NOT checked: the case that failed on 11-19 (backend terminated before sleep, relaunched after wake). That needs a sleep cycle.

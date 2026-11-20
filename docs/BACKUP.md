@@ -623,6 +623,8 @@ That tests the configuration. It does not satisfy step 3.
 
 ### The restore drill, step by step (IDEA-029; for Kyle to run)
 
+> **Correction 2026-11-20 (Kyle; MEASURED the same day): this drill cannot be run as written, and off-box backup is currently impossible.** The stack runs on `DESKTOP-GHDCBPQ`, a desktop (no battery, no `sshd`, no `C:\FlowdeskBackups`), which is **not** a backup destination. Everything below that says "laptop" for the stack machine and "desktop" for the destination has the two the wrong way round. **The guide's known fixes are held, not made, until Kyle chooses a new destination** (likely an Oracle Cloud Always Free VM, which would make the target Linux SFTP rather than Windows OpenSSH Server, and the restore drill run on the laptop). The text below is kept as written on 2026-11-19 until then. `docs/BUILD-LOG.md`, addendum 2026-11-20.
+
 This is the drill that closes IDEA-029 and lets the bars polls be scheduled (`BARS_POLL_ENABLED`, M2 slice 6 step 6). It covers the six
 points of [Closing the slice](#closing-the-slice), in order. **You hold the age identity (private) key. It is never sent to Claude, never
 pasted into a chat, never on the laptop, and lives in the password manager; it touches the desktop's disk only for the minutes of step C4

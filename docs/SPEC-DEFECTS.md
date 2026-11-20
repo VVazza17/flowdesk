@@ -760,6 +760,7 @@ Resolve before the first premium-module template is written (§7.5).
 ## IDEA-029: Nightly backups have no owner, no retention rule and no off-box copy
 
 **Status:** Open. Design settled 2026-11-08 and built in M2 slice 2 (the `backup` service, `docs/BACKUP.md`), but **not closed**: it closes when a real unattended dump lands on the real desktop and restores from there. Must be closed before M2 slice 6 persists its first scheduled bar (corrected 2026-11-08: this line said "before M2 writes its first persistent observation"; see the section below). **The drill, step by step for Kyle** (2026-11-19): `docs/BACKUP.md`, "The restore drill, step by step"; the bars polls stay behind `BARS_POLL_ENABLED=false` until it passes.
+**Correction 2026-11-20 (Kyle; MEASURED the same day): off-box backup is currently impossible.** The machine that runs the stack is `DESKTOP-GHDCBPQ`, a desktop, and it is not a backup destination; the "laptop runs the stack, desktop receives the copy" premise above and in `docs/BACKUP.md` has the machines the wrong way round, and no second machine is set up to receive a copy. This entry cannot close until Kyle chooses a new destination (likely an Oracle Cloud Always Free VM: a Linux SFTP target, the restore drill run on the laptop). Nothing is built for that yet, and the drill guide's fixes are held until the choice (`docs/BUILD-LOG.md`, addendum 2026-11-20).
 **Raised:** 2026-11-04 (M1 slice 9)
 
 ### The proposal

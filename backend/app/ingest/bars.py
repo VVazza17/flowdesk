@@ -282,6 +282,13 @@ def _groups(frame: pd.DataFrame, tickers: Sequence[str]) -> dict[str, pd.DataFra
     return {t: frame[t] for t in tickers if t in present}
 
 
+def _empty(group: pd.DataFrame | None) -> bool:
+    """D4: no group, or an all-NaN one (MEASURED F-e), is a dead symbol in this batch."""
+    return group is None or bool(
+        group[[c for c in PRICE_COLUMNS if c in group.columns]].isna().all().all()
+    )
+
+
 def _check_columns(group: pd.DataFrame) -> None:
     cols = set(group.columns)
     missing = set(PRICE_COLUMNS) - cols
@@ -322,6 +329,18 @@ def parse_batch(
     _check_ctx_errors(errors, tickers)
     groups = _groups(frame, tickers)
     result = BatchResult()
+    # F-6a (Kyle, 2026-11-20): a batch in which EVERY ticker came back empty is classified
+    # here, BEFORE the index is read. When Yahoo refuses the whole request (MEASURED
+    # 2026-11-19: a 15m range outside its 60-day limit, every ticker a soft error) only all-NaN
+    # groups remain, their index is timezone-naive, and the timezone check below then failed
+    # the batch with the wrong cause.
+    # Each ticker is named as a dead symbol; D4 (`classify_dead`, against EVERY symbol's stored
+    # history) decides empty-today or likely-gone, so an outage that empties a batch never reads as
+    # retirements. DECISION: the soft message (library text) is not read to choose the kind, as
+    # `_check_ctx_errors` already leaves "no data" text to the frame: empty is empty.
+    if all(_empty(groups.get(t)) for t in tickers):
+        result.dead.extend(tickers)
+        return result
 
     if interval == DAILY:
         dates = _session_dates_daily(frame.index, calendar) if groups else []
@@ -332,10 +351,7 @@ def parse_batch(
 
     for ticker in tickers:
         group = groups.get(ticker)
-        if (
-            group is None
-            or group[[c for c in PRICE_COLUMNS if c in group.columns]].isna().all().all()
-        ):
+        if _empty(group):
             # D4: an all-NaN group (MEASURED F-e) or no group at all is a dead symbol today.
             result.dead.append(ticker)
             continue
