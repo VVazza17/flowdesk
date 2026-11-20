@@ -4217,3 +4217,21 @@ Each item names where it was decided. **The flag flips only when every box is ch
   (item 4 above). Not built.
 - [x] **The polls run at 10:05 ET, after today's daily row exists** (addendum 2026-11-20 second, built in `6ac96f4`). On the dev stack
   once the rebuild of this addendum's item 1 is confirmed.
+
+### Addendum 2026-11-20 (fourth) — Kyle approves dbf86c2; F3 rule (c) corrected
+
+**`dbf86c2` approved. F3's rule (c) as recorded in the third addendum was wrong (Kyle):** it accepted a late period if "every vintage in
+the poll's window agrees". When no vintage in the window holds the period, that reads as agreement. **Absence never counts as agreement:**
+a late period that appears in no vintage of the poll's window has no evidence there. (MEASURED 2026-11-20: the window from 11-12 held no
+11-10 row with values, so the wrong rule would have accepted 2026-11-10 on no evidence at all.)
+
+**Revised (c):**
+- A **late arrival** is a new period whose `effective_at` is on or before `captured_through`, with no stored history. It triggers **its
+  own fetch**: that period's values across every vintage from its claimed vintage date to today. That is one extra request per late
+  period, and it takes its rate-budget slot.
+- It is **accepted only if** that fetch returns at least one vintage, every returned vintage agrees on a single value, and that value
+  equals the latest vintage's. Otherwise it is **refused as now, named.**
+- `available_at` = the first-observed instant (a). FRED's claimed date goes in the audit column (b).
+
+The audit column needs a migration on `macro_metrics` and is built with F3. **Still built together with the rolling-window fix, after
+Monday's F-6b rerun. Nothing is built now.** The draft `docs/adr/0003-addendum-2026-11-20-F3-DRAFT.md` carries the corrected rule.

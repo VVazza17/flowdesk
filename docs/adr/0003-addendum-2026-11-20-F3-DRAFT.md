@@ -1,10 +1,11 @@
 # DRAFT, NOT BINDING: proposed ADR-0003 addendum (F3). APPROVED IN PRINCIPLE by Kyle 2026-11-20, with answers (revised below)
 
 Drafted 2026-11-20 at Kyle's request (`docs/BUILD-LOG.md`, addendum 2026-11-20 second, item 3(ii)); approved in principle
-the same day with answers (a) to (c) (addendum 2026-11-20 third). **To be built together with the rolling-window fix (F-6b
+the same day with answers (a) to (c) (addendum 2026-11-20 third); **(c) corrected by Kyle the same day** (addendum
+2026-11-20 fourth: absence never counts as agreement). **To be built together with the rolling-window fix (F-6b
 cause (i)), after Monday's F-6b rerun; neither alone unblocks the two series.** It is appended to the ADR when it is built,
 with the final text. Nothing is built.
-`docs/adr/0003-point-in-time-observation-model.md` is unchanged until this is approved. On approval, the text below is
+`docs/adr/0003-point-in-time-observation-model.md` is unchanged until F3 is built. Then the text below is
 appended there as "Addendum, 2026-11-2x (F3)", the Status line names it, decision 3's rewritten text (F1, "What changes")
 gets an inline `[Amended: F3]` marker, and this file is deleted. It follows the falsification mechanism of the 2026-11-13
 addendum, part by part.
@@ -52,20 +53,30 @@ past it takes `available_at` = when FlowDesk first observed it, never FRED's ear
   period. Not the end-of-day rule: that rule exists because a vintage is a date, and this observation is not.
 - **(b) FRED's claimed date is kept in a separate column, for audit only.** `available_at` is the first-observed
   instant, and **no read uses the claimed date** (`app/services/macro_read.py` filters on `available_at`, as now).
-- **(c) Recognition (rule 4):** a new period whose `effective_at` is on or before the series' `captured_through`, with
-  no stored history, is a **late arrival**. It is accepted only if every vintage in the poll's window agrees on its
-  single value; otherwise it is refused, as now. Periods after `captured_through` are unchanged (dated by FRED, F1).
+- **(c) Recognition (rule 4), corrected 2026-11-20 (Kyle): absence never counts as agreement.** A late period that
+  appears in no vintage of the poll's window has no evidence there. (The first version accepted a late period when
+  "every vintage in the poll's window agrees"; for 2026-11-10 the window held no such vintage, MEASURED, so it would
+  have accepted the period on no evidence.) The rule:
+  - A **late arrival** is a new period whose `effective_at` is on or before the series' `captured_through`, with no
+    stored history. It **triggers its own fetch**: that period's values across every vintage from its claimed vintage
+    date to today. That is one extra request per late period, and it takes its rate-budget slot.
+  - It is **accepted only if** that fetch returns at least one vintage, every returned vintage agrees on a single
+    value, and that value equals the latest vintage's.
+  - Otherwise it is **refused as now, named.** Accepted, it is stored with `available_at` = the first-observed
+    instant (a), and FRED's claimed date in the audit column (b).
+  - Periods after `captured_through` are unchanged (dated by FRED, F1).
 - "A rebuild from FRED reproduces the table exactly" no longer holds for such rows. A rebuild reproduces FRED's
   record. Only FlowDesk's own observations reproduce what was knowable.
 
-**Answered 2026-11-20:** questions 1 (an instant: (a) above), 2 (a separate audit column: (b)) and 4 (recognition: (c))
-of the first draft. Still to settle when it is built:
-1. **The audit column** needs a migration on `macro_metrics` (name and type, for example `provider_claimed_available_at`,
-   NULL for every ordinary row). The model, `alembic check` and the rule 9 tests follow it.
-2. **"Every vintage in the poll's window agrees"** needs the late period's column in the window's `output_type=3`
-   rows. The poll's window starts at `captured_through`, and the period's own vintage (11-10) is before it, so the
-   window may hold no column for it at all. The build must say whether "no column" counts as agreement or as a
-   refusal. (MEASURED 2026-11-20: the window from 11-12 held no 11-10 row with values.)
+**Answered 2026-11-20:** questions 1 (an instant: (a) above), 2 (a separate audit column: (b)) and 4 (recognition: (c),
+as corrected) of the first draft. The second version's open question, whether "no column in the window" counts as
+agreement, is settled by the correction: it never does, and the late period gets its own fetch. Still to note:
+1. **The audit column needs a migration on `macro_metrics`, and is built with F3** (name and type to be chosen at the
+   build, for example `provider_claimed_available_at`, NULL for every ordinary row). The model, `alembic check` and
+   the rule 9 tests follow it.
+2. **The per-period fetch** is a new request shape for the poll: one period (`observation_start` = `observation_end`
+   = the period) across the real-time window from its claimed vintage to today. Its windowing and 504 handling,
+   and whether it reuses `revisions_since`'s machinery, are chosen at the build. It takes a FRED rate-budget slot.
 3. **A re-capture erases the evidence.** `python -m app.backfill --force`, or a `FRED_RULE_VERSION` bump (which the
    recorded principle requires when what is stored changes), rebuilds from FRED's current record. That record now
    shows 2026-11-10 in vintage 11-10. A re-capture would therefore store it with FRED's date, and the knowledge that
