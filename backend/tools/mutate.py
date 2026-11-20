@@ -56,6 +56,85 @@ SUITES: dict[str, tuple[str, list[Mutation]]] = {
     "m2-slice6-step6": (
         "tests/test_bars_feed.py",
         [
+            # --- today's row (Kyle, 2026-11-20) ---
+            Mutation(
+                "a symbol without today's row is not held",
+                FEED_PY,
+                "    return {t for t in tickers if t not in excluded and t not in "
+                "result.today_rows}\n",
+                "    return set()\n",
+                "test_a_symbol_without_todays_row_is_held or test_the_15m_run_holds",
+            ),
+            Mutation(
+                "one symbol without today's row holds the whole batch",
+                FEED_PY,
+                "    return {t for t in tickers if t not in excluded and t not in "
+                "result.today_rows}\n",
+                "    live = {t for t in tickers if t not in excluded}\n"
+                "    return live if live - result.today_rows else set()\n",
+                "test_a_symbol_without_todays_row_is_held",
+            ),
+            Mutation(
+                "the rule applies on a day with no session",
+                FEED_PY,
+                "    if not session_today:\n        return set()\n",
+                "",
+                "test_on_a_day_with_no_session",
+            ),
+            Mutation(
+                "the daily batch is not checked for today's row",
+                FEED_PY,
+                "                    no_today = without_today(result, fetch, "
+                "session_today=session_today)\n",
+                "                    pass\n",
+                "test_a_symbol_without_todays_row_is_held",
+            ),
+            Mutation(
+                "a held symbol's bars are written anyway",
+                FEED_PY,
+                "                hold(result, no_today, report)\n",
+                "",
+                "test_a_symbol_without_todays_row_is_held or test_the_15m_run_holds",
+            ),
+            Mutation(
+                "the 15m check writes a held symbol's split",
+                FEED_PY,
+                "                hold(checked, no_today)\n",
+                "",
+                "test_the_15m_run_holds",
+            ),
+            Mutation(
+                "the backfill does not say when to re-run",
+                "app/bars_backfill.py",
+                "Re-run after 09:35 ET. ",
+                "",
+                "test_before_the_open",
+            ),
+            Mutation(
+                "the polls run at 09:05 again",
+                SETTINGS,
+                "BARS_POLL_HOUR, BARS_POLL_MINUTE = 10, 5\n",
+                "BARS_POLL_HOUR, BARS_POLL_MINUTE = 9, 5\n",
+                "test_enabled_both_polls_run_at_1005",
+            ),
+            Mutation(
+                "a price-less row is skipped before its split is read",
+                BARS,
+                "        prices = [record[c] for c in PRICE_COLUMNS]\n",
+                "        prices = [record[c] for c in PRICE_COLUMNS]\n"
+                "        if all(pd.isna(v) for v in prices):\n"
+                "            continue\n",
+                "test_a_split_on_a_row_with_no_prices",
+                "tests/test_yfinance_bars.py",
+            ),
+            Mutation(
+                "a price-less split row is not today's row",
+                BARS,
+                "        if interval == DAILY and day == today and (priced or acted):\n",
+                "        if interval == DAILY and day == today and priced:\n",
+                "test_a_split_on_a_row_with_no_prices",
+                "tests/test_yfinance_bars.py",
+            ),
             # --- F-6a (Kyle, 2026-11-20): 58 days, and an all-refused batch named per symbol ---
             Mutation(
                 "the 15m window is 59 days again",
@@ -255,7 +334,7 @@ SUITES: dict[str, tuple[str, list[Mutation]]] = {
                 CELERY,
                 "            day_of_week=settings.BARS_POLL_DAYS,\n",
                 "",
-                "test_enabled_both_polls_run_at_0905",
+                "test_enabled_both_polls_run_at_1005",
             ),
             Mutation(
                 "stale after three days",

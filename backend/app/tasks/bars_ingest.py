@@ -1,6 +1,7 @@
 """The settled bars polls (M2 slice 6, step 6). Two Celery tasks on the ingest queue; Beat runs both
-at 09:05 America/New_York, Monday to Friday, only when BARS_POLL_ENABLED is true (off until IDEA-029
-closes). By hand on the dev stack (allowed, Kyle 2026-11-18):
+at 10:05 America/New_York (Kyle, 2026-11-20; 09:05 before), Monday to Friday, only when
+BARS_POLL_ENABLED is true (off until IDEA-029 closes). By hand on the dev stack (allowed, Kyle
+2026-11-18):
 
     docker compose exec worker celery -A app.worker call ingest.bars_daily_poll
     docker compose exec worker celery -A app.worker call ingest.bars_15m_poll
@@ -74,6 +75,8 @@ async def poll(
                 unsettled=report.unsettled,
                 volume_revisions=dict(sorted(report.volume_revisions.items())),
                 volume_revisions_total=sum(report.volume_revisions.values()),
+                held=dict(sorted(report.held.items())),
+                held_symbols=len(report.held),
                 failed=report.failed,
             )
 

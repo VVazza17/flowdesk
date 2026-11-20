@@ -127,6 +127,13 @@ def print_report(report: Report, interval: str = DAILY) -> None:
         )
     else:
         print("volume revised after settle: none", file=sys.stderr)
+    if report.held:
+        held = ", ".join(f"{t} {n}" for t, n in sorted(report.held.items()))
+        print(
+            "HELD, nothing written for these symbols: this run's daily frame has no row for today "
+            "yet (Kyle, 2026-11-20). Re-run after 09:35 ET. Settled bars not accepted: " + held,
+            file=sys.stderr,
+        )
     for c in report.coverage:
         print("  " + c.describe(), file=sys.stderr)
     if report.failed:
@@ -173,6 +180,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         distributions=report.distributions,
         splits=report.splits,
         volume_revisions=dict(sorted(report.volume_revisions.items())),
+        held=dict(sorted(report.held.items())),
     )
     return 0
 

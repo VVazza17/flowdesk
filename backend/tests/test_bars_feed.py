@@ -23,7 +23,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from app import settings
-from app.bars_backfill import Report, execute
+from app.bars_backfill import Report, execute, print_report
 from app.celery_app import create_celery
 from app.ingest.bars import (
     DAILY,
@@ -47,9 +47,10 @@ from app.tasks.names import (
     INGEST_QUEUE,
     INGEST_WORKER_TASKS,
 )
-from tests.yfixtures import load
+from tests.yfixtures import load, with_today_row
 
 NOW = datetime(2026, 11, 19, 9, 5, tzinfo=NEW_YORK)
+TODAY = NOW.date()  # the daily fixture gets a row for it (Download)
 FLOOR = date(2026, 9, 22)  # NOW's date - 58 calendar days (F-6a, Kyle 2026-11-20)
 THREE = ["QQQ", "SPY", "XLK"]
 NO_RETRY = RetryPolicy(attempts=1, initial_seconds=0.0, max_seconds=0.0)
@@ -65,11 +66,22 @@ class Limiter:
 
 class Download:
     """Serves the recorded daily or 15m batch for the interval asked, cut to the tickers and to
-    `start` (inclusive, as Yahoo does), after an optional tamper. Records every call."""
+    `start` (inclusive, as Yahoo does), after an optional tamper. Records every call. The daily
+    batch gets a row for `today` (NOW's date unless given; None for none) for every ticker but
+    those `without_today` (Kyle, 2026-11-20: no bar is accepted without today's row)."""
 
-    def __init__(self, daily_tamper: Any = None, m15_tamper: Any = None) -> None:
+    def __init__(
+        self,
+        daily_tamper: Any = None,
+        m15_tamper: Any = None,
+        *,
+        today: date | None = TODAY,
+        without_today: Sequence[str] = (),
+    ) -> None:
         self.calls: list[dict[str, Any]] = []
         self._tamper = {DAILY: daily_tamper, INTRADAY_15M: m15_tamper}
+        self._today = today
+        self._without_today = tuple(without_today)
 
     def __call__(self, tickers: Sequence[str], **kw: Any) -> tuple[Any, dict[str, str]]:
         interval = kw["interval"]
@@ -83,6 +95,8 @@ class Download:
         frame = frame.dropna(how="all")
         if self._tamper[interval] is not None:
             self._tamper[interval](frame)
+        if interval == DAILY and self._today is not None:
+            frame = with_today_row(frame, self._today, skip=self._without_today)
         return frame, {t: e for t, e in errors.items() if t in tickers}
 
 
@@ -203,6 +217,87 @@ def split_on(ticker: str, day: str, ratio: float) -> Any:
 
 
 # --- the 15m backfill ----------------------------------------------------------------------------
+
+
+# --- today's row (Kyle, 2026-11-20) ------------------------------------------------------------
+
+
+def stored_daily(url: str, ticker: str) -> int:
+    return rows(  # type: ignore[no-any-return]
+        url,
+        "SELECT count(*) FROM bars_daily b JOIN symbols s ON s.id = b.symbol_id "
+        "WHERE s.ticker = :t",
+        t=ticker,
+    )[0][0]
+
+
+def splits_of(url: str) -> list[tuple[str, date]]:
+    return [
+        (r.ticker, r.d)
+        for r in rows(
+            url,
+            "SELECT s.ticker, sp.effective_at AS d "
+            "FROM splits sp JOIN symbols s ON s.id = sp.symbol_id ORDER BY 1, 2",
+        )
+    ]
+
+
+def two_splits(frame: pd.DataFrame) -> None:
+    split_on("SPY", "2026-11-13", 2.0)(frame)
+    split_on("XLK", "2026-11-13", 2.0)(frame)
+
+
+def test_a_symbol_without_todays_row_is_held_and_one_with_it_is_written(db: str) -> None:
+    # Rule 9: SPY and QQQ have today's row and XLK has not, in the same batch. XLK's absence must
+    # not hold the others, and their presence must not admit XLK. Both SPY and XLK carry a split:
+    # SPY's is written, XLK's is not (nothing of a held symbol is written).
+    report, error, _ = backfill(db, DAILY, THREE, Download(two_splits, without_today=["XLK"]))
+    assert error is None and report.failed == []
+    assert stored_daily(db, "XLK") == 0
+    spy = stored_daily(db, "SPY")
+    assert spy > 0 and stored_daily(db, "QQQ") == spy
+    assert report.held == {"XLK": spy}  # the settled bars it would have had
+    assert splits_of(db) == [("SPY", date(2026, 11, 13))]
+    assert [r.status for r in rows(db, "SELECT status FROM ingestion_runs")] == ["succeeded"]
+
+
+def test_the_15m_run_holds_a_symbol_whose_split_check_has_no_todays_row(db: str) -> None:
+    # The 15m run's daily check is its daily actions=True frame. XLK lacks today's row there: no
+    # XLK 15m bar and no XLK split is written; SPY's split (same day) is, and SPY and QQQ get bars.
+    def adjusted_volumes(frame: pd.DataFrame) -> None:
+        # Yahoo's pre-split 15m volume is on the post-split basis (raw x 2), as in the test below.
+        ix = [i for i in frame.index if i < pd.Timestamp(et(2026, 11, 13))]
+        for t in ("SPY", "XLK"):
+            frame.loc[ix, (t, "Volume")] = frame.loc[ix, (t, "Volume")] * 2
+
+    dl = Download(two_splits, adjusted_volumes, without_today=["XLK"])
+    report, error, _ = backfill(db, INTRADAY_15M, THREE, dl)
+    assert error is None and report.failed == []
+    assert intraday(db, "XLK") == []
+    assert len(intraday(db, "SPY")) == 130 and len(intraday(db, "QQQ")) == 130
+    assert report.held == {"XLK": 130}  # 15m bars only: the check's daily bars are not counted
+    assert splits_of(db) == [("SPY", date(2026, 11, 13))]
+
+
+def test_before_the_open_a_backfill_holds_every_symbol_succeeds_and_says_to_rerun(
+    db: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    report, error, _ = backfill(db, DAILY, THREE, Download(today=None), now=et(2026, 11, 19, 8))
+    assert error is None and report.failed == []
+    assert set(report.held) == set(THREE) and report.rows_written == 0
+    assert all(stored_daily(db, t) == 0 for t in THREE)
+    assert [r.status for r in rows(db, "SELECT status FROM ingestion_runs")] == ["succeeded"]
+    print_report(report, DAILY)
+    err = capsys.readouterr().err
+    assert "HELD" in err and "Re-run after 09:35 ET" in err
+    assert all(t in err for t in THREE)
+
+
+def test_on_a_day_with_no_session_no_todays_row_is_needed(db: str) -> None:
+    # Saturday 2026-11-21: no session, so no row for today can exist; the rule does not apply.
+    report, error, _ = backfill(db, DAILY, THREE, Download(today=None), now=et(2026, 11, 21, 10, 5))
+    assert error is None and report.held == {}
+    assert all(stored_daily(db, t) > 0 for t in THREE)
 
 
 def test_the_15m_backfill_checks_splits_first_then_stores_settled_bars_as_backfill(db: str) -> None:
@@ -568,7 +663,7 @@ def due_at(schedule: crontab, local: datetime) -> bool:
     return bool(schedule.is_due(local - timedelta(seconds=30)).is_due)
 
 
-def test_enabled_both_polls_run_at_0905_new_york_monday_to_friday(
+def test_enabled_both_polls_run_at_1005_new_york_monday_to_friday(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = make_app(monkeypatch, "true")
@@ -581,11 +676,13 @@ def test_enabled_both_polls_run_at_0905_new_york_monday_to_friday(
         schedule = entry["schedule"]
         assert isinstance(schedule, crontab)
         ny = NEW_YORK
-        assert due_at(schedule, datetime(2026, 1, 12, 9, 5, 10, tzinfo=ny))  # Monday, winter
-        assert due_at(schedule, datetime(2026, 7, 17, 9, 5, 10, tzinfo=ny))  # Friday, summer
-        assert not due_at(schedule, datetime(2026, 7, 18, 9, 5, 10, tzinfo=ny))  # Saturday
-        assert not due_at(schedule, datetime(2026, 1, 11, 9, 5, 10, tzinfo=ny))  # Sunday
-        assert not due_at(schedule, datetime(2026, 1, 12, 9, 4, 40, tzinfo=ny))  # not yet
+        # 10:05 (Kyle, 2026-11-20): today's daily row was absent at 09:05 (MEASURED that day).
+        assert due_at(schedule, datetime(2026, 1, 12, 10, 5, 10, tzinfo=ny))  # Monday, winter
+        assert due_at(schedule, datetime(2026, 7, 17, 10, 5, 10, tzinfo=ny))  # Friday, summer
+        assert not due_at(schedule, datetime(2026, 7, 18, 10, 5, 10, tzinfo=ny))  # Saturday
+        assert not due_at(schedule, datetime(2026, 1, 11, 10, 5, 10, tzinfo=ny))  # Sunday
+        assert not due_at(schedule, datetime(2026, 1, 12, 10, 4, 40, tzinfo=ny))  # not yet
+        assert not due_at(schedule, datetime(2026, 1, 12, 9, 5, 10, tzinfo=ny))  # the old time
 
 
 def test_the_polls_count_as_ingest_worker_work_and_the_backfill_does_not() -> None:

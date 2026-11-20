@@ -105,7 +105,7 @@ def create_celery() -> Celery:
         },
     )
     if settings.bars_poll_enabled():
-        # The settled bars polls, 09:05 America/New_York Monday to Friday (Kyle, 2026-11-18). Off
+        # The settled bars polls, 10:05 America/New_York Monday to Friday (Kyle, 2026-11-20). Off
         # by default: IDEA-029 must close first. Six hours' expiry, as the FRED poll: the next
         # morning's run starts from each symbol's last stored bar, so a skipped one loses nothing
         # but the 15m look-back, and that loss is recorded in bar_gaps.

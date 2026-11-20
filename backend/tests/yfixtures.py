@@ -6,6 +6,7 @@ MultiIndex, and the index with the timezone it had (daily naive, intraday Americ
 """
 
 import json
+from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from functools import cache
 from pathlib import Path
@@ -13,7 +14,7 @@ from typing import Any
 
 import pandas as pd  # type: ignore[import-untyped]
 
-from app.ingest.bars import Calendar, Session
+from app.ingest.bars import ACTION_COLUMNS, Calendar, Session
 from app.services.sessions import compute_sessions
 
 DIR = Path(__file__).resolve().parent / "fixtures" / "yfinance"
@@ -30,6 +31,29 @@ def load(name: str) -> tuple[Any, dict[str, str], datetime]:
     frame = pd.DataFrame(data, index=index, columns=columns)
     fetched = datetime.fromisoformat(d["meta"]["fetched_at"]).astimezone(UTC)
     return frame, dict(d["errors"]), fetched
+
+
+def with_today_row(frame: Any, day: date, *, skip: Sequence[str] = ()) -> Any:
+    """A DAILY fixture frame with a row labelled `day` for every ticker that has data and none there
+    yet: prices copied from its last row, every split and distribution value 0. Since Kyle's rule of
+    2026-11-20 no bar is accepted on a session day unless the run's daily frame has TODAY's row, and
+    the recorded fixtures end before most tests' "now". A ticker in `skip` gets no row (it is held);
+    an all-NaN (dead) ticker gets none either."""
+    label = pd.Timestamp(day)
+    out = frame.copy()
+    if label not in out.index:
+        blank = pd.DataFrame(float("nan"), index=pd.DatetimeIndex([label]), columns=out.columns)
+        out = pd.concat([out, blank]).sort_index()
+    for ticker in dict.fromkeys(c[0] for c in out.columns):
+        if ticker in skip or not out.loc[label, ticker].isna().all():
+            continue
+        before = out[ticker].drop(index=label).dropna(how="all")
+        if before.empty:
+            continue
+        last = before.iloc[-1]
+        for col in out[ticker].columns:
+            out.loc[label, (ticker, col)] = 0.0 if col in ACTION_COLUMNS else last[col]
+    return out
 
 
 @cache

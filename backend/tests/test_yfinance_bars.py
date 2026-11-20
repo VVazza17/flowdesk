@@ -319,6 +319,37 @@ def test_a_split_on_an_unsettled_session_still_rebuilds_the_settled_bars() -> No
     assert result.new_splits["XLK"] == [SplitEvent(date(2025, 12, 5), Decimal("2.0"))]
 
 
+def test_a_split_on_a_row_with_no_prices_is_read_and_counts_as_todays_row() -> None:
+    # Kyle, 2026-11-20 (the second gap): the split value is read BEFORE a row is skipped as
+    # price-less. Rule 9: XLK's 12-05 row keeps its split and loses its prices; XLE's (and XLU's,
+    # XLB's) has prices and no split; XLY's has neither prices nor a split. Only XLK has a split,
+    # and every ticker but XLY has today's row.
+    frame, errors, _ = load("daily_split_2025_12_05")
+    day = pd.Timestamp("2025-12-05")
+    for t in ("XLK", "XLY"):
+        for col in ("Open", "High", "Low", "Close", "Adj Close", "Volume"):
+            frame.loc[day, (t, col)] = float("nan")
+    # The fixture records the 12-05 split for all five; only XLK keeps it here.
+    for t in ("XLE", "XLY", "XLU", "XLB"):
+        frame.loc[day, (t, "Stock Splits")] = 0.0
+    assert frame.loc[day, ("XLK", "Stock Splits")] == 2.0
+    result = parse_batch(
+        frame,
+        errors,
+        tickers=["XLK", "XLE", "XLY", "XLU", "XLB"],
+        interval=DAILY,
+        calendar=nyse(),
+        now=et(2025, 12, 5, 10, 5),
+        known_splits={},
+        known_distributions={},
+    )
+    assert result.failures == []
+    assert result.new_splits == {"XLK": [SplitEvent(date(2025, 12, 5), Decimal("2.0"))]}
+    assert result.today_rows == {"XLK", "XLE", "XLU", "XLB"}
+    # The split rebuilds XLK's settled bars before it, as from a priced split row.
+    assert bar_on(result, "XLK", date(2025, 12, 2)).raw_basis == "reconstructed"
+
+
 def test_a_stored_split_that_disagrees_fails_that_symbol_and_is_not_overwritten() -> None:
     result = split_batch(known_splits={"XLK": [SplitEvent(date(2025, 12, 5), Decimal("3"))]})
     assert [f.ticker for f in result.failures] == ["XLK"]

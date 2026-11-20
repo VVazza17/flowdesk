@@ -4076,3 +4076,113 @@ The bound is 120 s, so the largest wait leaves a 61.4 s margin. Both task runs s
 **These calls wrote rows:** `bars_daily` +24 (11-17 settled) and `bars_intraday` +624 (11-18 settled), all `feed = 'poll'`, with 0
 volume revisions, 0 splits and 0 gaps. These are the first poll rows with data. They were written by hand, not by schedule; the flag is
 still false. Evidence: `2026-11-20-poll-concurrency.txt`.
+
+### Addendum 2026-11-20 (second) — correction to 2(b), and Kyle's decisions on the split-check gap, the all-refused batch, F-6b and Docker
+
+**Correction to 2(b) above (MEASURED 2026-11-20, `task_runs` 8401).** The entry above says the `unless-stopped` containers did not come back
+after Docker Desktop's 19:12 EST relaunch. **That is wrong.** `ingest.fred_poll` row 8401 started at 2026-11-20 00:13:08Z (19:13:08 EST),
+so Beat and the worker were running. Every container then stopped cleanly (exit 0) at 00:13:09 to 00:13:12Z, 1 to 4 s later. **The cause
+is not determined.** Row 8401 stayed `running` until the sweep failed it as `Orphaned` after the stack was started at 01:34 EST.
+`docs/evidence/2026-11-20-docker-stop.txt` carries the same correction.
+
+**Today-row measurement (MEASURED 2026-11-20, `docs/evidence/2026-11-20-today-row-probe.txt`):**
+- The 11-20 daily row was present for 0 of 24 symbols at 09:05 ET, and for 24 of 24 at 09:35 and 10:05.
+- Stock Splits was 0.0 everywhere, and no price-less row carried a split.
+- Observation, recorded and not interpreted: today's row's Open moved between 09:35 and 10:05 for 22 of 24 symbols (SMH and QQQ
+  unchanged), e.g. SPY 737.46 to 713.56 and XLK 167.42 to 158.71.
+
+**1. The split-check gap: decided (Kyle, 2026-11-20).**
+- **Both polls move to 10:05 America/New_York, Monday to Friday,** 30 minutes after the first row appeared. DERIVED: one day measured,
+  one day of margin. The 4-day stale threshold is unchanged.
+- **The rule: on a session day, no bar is accepted for a symbol unless the same run's daily `actions=True` frame contains TODAY's row for
+  that symbol.** Otherwise the symbol is **held**: nothing is written for it, the run succeeds, and a held count is reported per symbol.
+  - It applies to the polls and to both backfills.
+  - A backfill run before the open holds everything and says to re-run after 09:35 ET.
+- **The second gap is fixed with it:** Stock Splits and the distribution values are read from EVERY row, including a row with no prices,
+  before that row is skipped as price-less. It is tested with a price-less row carrying a split.
+- **Today's row is used only for its split and distribution values, never for its prices.** The Open measurement above is why; prices
+  are never stored before settle anyway.
+- **Residual risk, ASSUMED, accepted, not engineered further:** Yahoo may adjust history over a weekend or holiday for a split dated
+  the next session, and nothing can see that before the open. It is detected the next morning, when the inclusive re-check fails that
+  symbol loudly.
+- Rule 9 tests, mutation-checked, `commit-gated.sh`, push. HEALTH.md (held counts) and the Beat entries are updated. Monday probe tasks
+  are not needed.
+
+**2. An all-refused batch stays dead symbols (`empty_result`). DECIDED.** Without reading Yahoo's text, a batch in which every symbol
+comes back empty could be an outage or a refusal, and "empty, all named" is the honest reading. The 58-day guard prevents the refusal case.
+
+**3. F-6b has two causes, recorded separately.**
+- **(i) The rolling window (rule 3):** rerun `docs/evidence/f6b/probe.py` on Monday's run.
+- **(ii) A FRED availability date earlier than FlowDesk could observe (rule 4).** MEASURED: FRED dates period 2026-11-10 to vintage
+  2026-11-10, but FlowDesk's capture, made after 11-10, did not contain it.
+  - This is a point-in-time finding of the same kind as ADR-0003 F1. **Rule 4 refusing was correct.**
+  - An ADR-0003 addendum is drafted for Kyle's approval: a period that arrives after FlowDesk has captured past it takes
+    `available_at` = when FlowDesk first observed it, never FRED's earlier date.
+  - Also to be explained, read-only: why the latest vintage gives `realtime_start` 11-19 or 11-20 for that period while
+    `output_type=4` says 11-10.
+- **Nothing is built for F-6b.**
+
+**4. Docker:** until 2026-12-03 the PC does not sleep (Kyle), so no workaround is built.
+
+### 2026-11-20 — built: today's row before any bar, actions read from price-less rows, polls at 10:05; the F3 draft; F-6b realtime_start explained
+
+**Built (Kyle's item 1, addendum 2026-11-20 second).**
+- `bars.parse_batch` now reads Stock Splits and the distribution columns from EVERY row **before** skipping a row as price-less. Daily
+  only, it also records `BatchResult.today_rows`: the symbols whose group has a row for `now`'s New York date with prices or a non-zero
+  split or distribution value.
+- `bars_feed.without_today` and `hold` implement the rule. On a session day (`calendar.get(today)`), a symbol that is not in the run's
+  daily `actions=True` frame's `today_rows` is **held**. Its bars, splits and distributions are dropped from the batch before anything is
+  written, and `Report.held[symbol]` counts the settled bars not accepted.
+  - The daily batch is its own daily frame. In a 15m run the frame is the split check: its events for a held symbol are dropped, and
+    so are its 15m bars, with only those counted.
+  - A dead or failed symbol is not held. It is already named as what it is, and holding it would hide that.
+  - No session today (a weekend or holiday): the rule does not apply.
+- **Reported:** the poll's `bars_poll_done` log line has `held` (per symbol) and `held_symbols`. `python -m app.bars_backfill` prints
+  `HELD, nothing written for these symbols: ... Re-run after 09:35 ET`.
+- `settings.BARS_POLL_HOUR, BARS_POLL_MINUTE = 10, 5`, so both polls run at 10:05 America/New_York, Monday to Friday. The stale threshold
+  is unchanged at 4 days.
+- Docs: `docs/HEALTH.md` ("A held symbol is not a failure"), `.env.example` and `CLAUDE.md`.
+
+**Tests.**
+- `test_bars_feed.py`:
+  - a symbol without today's row is held while two with it are written. Rule 9: SPY and XLK both carry a split, SPY's is written and
+    XLK's is not;
+  - the 15m run holds a symbol whose split check lacks today's row, writing no XLK 15m bars and no XLK split, with SPY's split written;
+  - before the open, a backfill holds every symbol, succeeds, and prints the re-run line;
+  - on a Saturday no row is needed;
+  - Beat runs at 10:05 and not at 09:05.
+- `test_yfinance_bars.py`: a split on a row with no prices is read and counts as today's row. A price-less row without a split does not
+  count, and only XLK's split is new.
+- The fixtures end before most tests' "now", so `tests/yfixtures.with_today_row` adds a today row (prices copied, action values 0) in
+  the two test downloads. `Download(today=None)` turns it off.
+- Lint is clean, and the four affected test files pass (99 tests).
+- **Mutation:** step 6 37/37 (re-run on the final code); steps 3 34/34, 4 13/13, 5 13/13, 5b 23/23, 2 35/35 (evidence `2026-11-20-today-row-mutation-check.txt`). The step 6 suite has ten new mutations:
+  - no symbol is held;
+  - one symbol without the row holds the whole batch;
+  - the rule applies on a day with no session;
+  - the daily batch is not checked;
+  - a held symbol's bars are written;
+  - the 15m check writes a held symbol's split;
+  - the backfill does not say when to re-run;
+  - the polls run at 09:05;
+  - a price-less row is skipped before its split is read;
+  - a price-less split row does not count as today's row.
+
+**One limit, recorded and not built:** a symbol held every day (if Yahoo never returns its row for today) fails no run, so its feed
+never goes `stale`. It shows only in the log until slice 7's per-symbol data age.
+
+**F-6b (ii), explained read-only (MEASURED 2026-11-20 afternoon, `docs/evidence/2026-11-20-f6b-ice-bofa-window.txt`).** With no
+real-time window, the latest values carry `realtime_start = realtime_end = 2026-11-20` on **all 794 observations** of each series. FRED
+stamps every row with the request's real-time date. It is not a publication date, and it says nothing about when 2026-11-10 appeared.
+The early-morning read's 11-19 on one series is ASSUMED to be a cached response or FRED's date boundary; not measured.
+- The gap is narrowed by FlowDesk's own runs. The rules passed against FRED's latest values at 2026-11-12 07:00Z, 11-13 08:06Z and
+  23:22Z, 11-14 18:34Z and **11-15 13:00Z**; rule 4 would have refused a latest 2026-11-10 with no chain. The first refusal naming it
+  was **2026-11-16 15:51Z**. So FRED back-dated that period by 5 to 6 days (DERIVED).
+- **The ADR-0003 addendum (F3) is drafted for Kyle's approval:** `docs/adr/0003-addendum-2026-11-20-F3-DRAFT.md`. The ADR itself is
+  unchanged. Five open questions:
+  - an instant or a day for "first observed";
+  - how such a row is marked;
+  - **a re-capture (`--force` or a rule-version bump) would erase the evidence**, re-dating 11-10 to FRED's date;
+  - how rule 4 would recognise the case;
+  - F3 alone does not unblock the two series.
+- Nothing is built.

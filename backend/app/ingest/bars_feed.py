@@ -22,9 +22,21 @@ for the same symbols over its window (to now, so the next session's row when it 
 checks any new split and distribution under the usual rules, and only then fetches and parses the
 15m bars. That second request takes its own rate-budget slot. A symbol whose split check failed
 (a disagreeing split, say) gets no 15m bars in that run and is named.
+
+**Today's row (Kyle, 2026-11-20; MEASURED that day: no row for the day at 09:05 ET for 0 of 24
+symbols, present at 09:35 and 10:05 for 24 of 24).** On a session day, no bar is accepted for a
+symbol unless this run's daily `actions=True` frame (the daily batch itself, or the 15m run's
+split check) has today's row for that symbol: until it does, a split or distribution effective
+at today's open is invisible. Otherwise the symbol is HELD: nothing is written for it (bars,
+splits, distributions), the run still succeeds, and `Report.held` counts per symbol the settled
+bars it did not accept. Polls, and both backfills. Today's row is read only for its split and
+distribution values, never for its prices (its Open moved between 09:35 and 10:05 for 22 of 24
+symbols, MEASURED). Residual risk, ASSUMED and accepted (Kyle): Yahoo adjusting history over a
+weekend or holiday for a split dated the next session is seen by nothing before the open; the
+next morning's inclusive re-check fails that symbol loudly (a re-fetched price differs).
 """
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -38,6 +50,7 @@ from app.ingest.bars import (
     DAILY,
     INTRADAY_15M,
     NEW_YORK,
+    BatchResult,
     NotBackfilled,
     SymbolFailure,
     classify_dead,
@@ -77,6 +90,30 @@ class Report:
     unsettled: int = 0
     coverage: list[Coverage] = field(default_factory=list)
     failed: list[str] = field(default_factory=list)
+    # Per symbol: settled bars not accepted because the run's daily frame had no row for today.
+    held: dict[str, int] = field(default_factory=dict)
+
+
+def without_today(result: BatchResult, tickers: Iterable[str], *, session_today: bool) -> set[str]:
+    """The symbols to HOLD (Kyle, 2026-11-20): on a session day, those whose daily `actions=True`
+    frame in this run has no row for today. A dead or failed symbol is not held: it is already
+    named as what it is, and holding would hide it."""
+    if not session_today:
+        return set()
+    excluded = set(result.dead) | {f.ticker for f in result.failures}
+    return {t for t in tickers if t not in excluded and t not in result.today_rows}
+
+
+def hold(result: BatchResult, held: Iterable[str], report: Report | None = None) -> None:
+    """Nothing of a held symbol is written: its bars, splits and distributions are dropped from
+    the batch. With `report`, its settled bars are counted in `report.held` (the run's own
+    interval only: the 15m run's daily check passes none)."""
+    for t in sorted(held):
+        dropped = len(result.bars.pop(t, []))
+        if report is not None:
+            report.held[t] = report.held.get(t, 0) + dropped
+        result.new_splits.pop(t, None)
+        result.new_distributions.pop(t, None)
 
 
 def yfinance_limiter(redis: SetPttlRedis) -> RedisSpacingLimiter:
@@ -158,6 +195,8 @@ async def run_bars(
             now = clock()
             today = now.astimezone(NEW_YORK).date()
             floor = intraday_floor(today)
+            session_today = calendar.get(today) is not None
+            no_today: set[str] = set()
             refused: list[SymbolFailure] = []
             written = 0  # this batch's rows (a verification signal, never attempts)
             start: date | None = None
@@ -213,6 +252,10 @@ async def run_bars(
                     known_splits=ksplits,
                     known_distributions=kdists,
                 )
+                # Today's row (Kyle, 2026-11-20): a symbol without it is held, and so are the
+                # split and distribution events this check found for it.
+                no_today = without_today(checked, fetch, session_today=session_today)
+                hold(checked, no_today)
                 counts = await bars_store.write_daily(
                     engine,
                     # Events only: no daily bar is written here (the daily feed owns those).
@@ -253,6 +296,10 @@ async def run_bars(
                     known_splits=ksplits,
                     known_distributions=kdists,
                 )
+                if interval == DAILY:
+                    # The daily batch is itself the run's daily actions=True frame.
+                    no_today = without_today(result, fetch, session_today=session_today)
+                hold(result, no_today, report)
                 counts = await bars_store.write_daily(
                     engine,
                     result.bars,

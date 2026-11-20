@@ -221,8 +221,8 @@ changed, so a quarterly series polled daily is fresh. How old the DATA is agains
 series with no captured history (`NoBaseline`) or whose rules fail is a failed run, visible as `last_attempt_failed`.
 
 **Bars feeds (M2 slice 6, step 6).** Two feeds, `yfinance` / `bars_daily` and `yfinance` / `bars_15m`, written by the backfill
-(`python -m app.bars_backfill [--interval 15m]`) and by the polls (`ingest.bars_daily_poll`, `ingest.bars_15m_poll`, 09:05 America/New_York
-Monday to Friday). Each is judged against **4 calendar days** (`settings.BARS_POLL_STALE_AFTER`; **DERIVED, not measured**: the longest
+(`python -m app.bars_backfill [--interval 15m]`) and by the polls (`ingest.bars_daily_poll`, `ingest.bars_15m_poll`, 10:05 America/New_York
+Monday to Friday; 09:05 until 2026-11-20). Each is judged against **4 calendar days** (`settings.BARS_POLL_STALE_AFTER`; **DERIVED, not measured**: the longest
 normal gap between weekday runs, Friday to Monday, plus one day; Kyle, 2026-11-18). Poll health, not data freshness, as for FRED; per-symbol
 data age is slice 7's.
 
@@ -237,6 +237,13 @@ data age is slice 7's.
   `schema_mismatch:SymbolsFailed` (a rule broke: a re-fetched price differs, a split or distribution disagrees with the stored one, an
   inexact rebuild; **in the 15m poll, a symbol whose same-run split check fails gets no 15m bars in that run**), `empty_result:DeadSymbols` /
   `LikelyGoneSymbols` (D4), and the whole-batch kinds of the yfinance client (rate limited, transient).
+- **A held symbol is not a failure** (Kyle, 2026-11-20). On a session day no bar is accepted for a symbol unless the run's own daily
+  `actions=True` frame has today's row for it (today's split and distribution values; its prices are never used). Without it the symbol is
+  **held**: nothing is written for it, the ingestion run succeeds, and the count of settled bars not accepted is reported per symbol: `held`
+  and `held_symbols` in the poll's `bars_poll_done` log line; a `HELD ... Re-run after 09:35 ET` line from `python -m app.bars_backfill`.
+  MEASURED 2026-11-20: the row was absent at 09:05 ET for 24 of 24 symbols, present at 09:35, which is why the polls run at 10:05. A
+  held symbol is fetched again the next morning (the inclusive start), so holding loses nothing; a symbol held every day is visible only
+  in the log today, not on this endpoint (it does not make its feed `stale`, because the run succeeds).
 - **A late volume revision is not a failure.** The inclusive start re-fetches each symbol's last stored session every morning; a volume that
   changed after its settle point is counted and logged (`bars_poll_done`, `volume_revisions` per symbol), the stored value kept.
 - **A 15m gap beyond the 58-day look-back** (`intraday_floor`; 59 until 2026-11-20, F-6a) (a poll missed for two months) is recorded in `bar_gaps` and the poll continues from the limit;

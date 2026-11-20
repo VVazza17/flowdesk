@@ -172,6 +172,10 @@ class BatchResult:
     failures: list[SymbolFailure] = field(default_factory=list)
     dead: list[str] = field(default_factory=list)  # empty groups, classified later (classify_dead)
     unsettled: int = 0  # rows dropped because their settle point is after `now`
+    # Daily only: the symbols whose group has a row for `now`'s New York date, with prices or a
+    # non-zero split or distribution value (Kyle, 2026-11-20: the run's own evidence that today's
+    # split and distribution flags have been seen; its prices are never used).
+    today_rows: set[str] = field(default_factory=set)
     outside_session: int = 0  # intraday rows not inside a trading_sessions window (D5 iii)
 
 
@@ -399,24 +403,32 @@ def _parse_symbol(
         tuple[date, str], Decimal
     ] = {}  # the provider's split-adjusted amount
 
+    today = now.astimezone(NEW_YORK).date()
     for pos, values in enumerate(group.itertuples(index=False, name=None)):
         record = dict(zip(group.columns, values, strict=True))
         prices = [record[c] for c in PRICE_COLUMNS]
-        if all(pd.isna(v) for v in prices):
-            continue  # this ticker has no bar at this label (another ticker does)
         key: date | datetime = dates[pos] if interval == DAILY else instants[pos]
         day = dates[pos] if interval == DAILY else instants[pos].astimezone(NEW_YORK).date()
-        # Splits come from EVERY row, settled or not: a split on a session not yet settled still
-        # applies to the settled bars before it.
+        # Splits come from EVERY row, settled or not, and WITH OR WITHOUT prices (Kyle, 2026-11-20:
+        # a split row that carries no prices was skipped as price-less before its split was read).
+        # A split on a session not yet settled still applies to the settled bars before it.
+        acted = False
         ratio = record.get("Stock Splits")
         if ratio is not None and not pd.isna(ratio) and ratio != 0:
             frame_splits[day] = _decimal(ratio)
+            acted = True
         # Distributions too, from every row (step 5b): an ex-date is knowable at its open, whether
-        # or not that session's bar has settled.
+        # or not that session's bar has settled, and whether or not the row has prices.
         for column, kind in DISTRIBUTION_COLUMNS.items():
             amount = record.get(column)
             if amount is not None and not pd.isna(amount) and amount != 0:
                 frame_distributions[(day, kind)] = _decimal(amount)
+                acted = True
+        priced = not all(pd.isna(v) for v in prices)
+        if interval == DAILY and day == today and (priced or acted):
+            result.today_rows.add(ticker)
+        if not priced:
+            continue  # this ticker has no bar at this label (another ticker does)
         # F-a: an unsettled row is excluded by the CLOCK, BEFORE anything in it is judged. Its
         # contents are provisional by definition: MEASURED 2026-11-18, the day's own daily bar had
         # Close and Adj Close blank at about 20:15 ET (complete at 18:37). Judged first, that blank

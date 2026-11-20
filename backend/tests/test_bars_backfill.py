@@ -29,7 +29,7 @@ from app.ingest.runner import RetryPolicy
 from app.services.reference_seed import seed_reference
 from app.services.sessions import sync_sessions
 from app.tasks.names import BARS_BACKFILL
-from tests.yfixtures import load
+from tests.yfixtures import load, with_today_row
 
 SPLIT5 = ["XLB", "XLE", "XLK", "XLU", "XLY"]
 DEAD = "ZZZQXFAKE"
@@ -43,8 +43,10 @@ class Limiter:
         self.acquired += 1
 
 
-def fixture_download(name: str, tamper: Any = None) -> Any:
-    """A download serving one recorded batch, cut to the tickers asked for (as Yahoo would)."""
+def fixture_download(name: str, tamper: Any = None, today: date | None = date(2026, 11, 18)) -> Any:
+    """A download serving one recorded batch, cut to the tickers asked for (as Yahoo would), with a
+    row for `today` (RECORDED's New York date: Kyle's rule of 2026-11-20, no bar is accepted on a
+    session day without today's row; a fixture that already has that date is left as recorded)."""
 
     def download(tickers: Sequence[str], **kw: Any) -> tuple[Any, dict[str, str]]:
         frame, errors, _ = load(name)
@@ -53,6 +55,8 @@ def fixture_download(name: str, tamper: Any = None) -> Any:
         frame = frame.dropna(how="all")
         if tamper is not None:
             tamper(frame)
+        if today is not None:
+            frame = with_today_row(frame, today)
         return frame, {t: e for t, e in errors.items() if t in tickers}
 
     return download

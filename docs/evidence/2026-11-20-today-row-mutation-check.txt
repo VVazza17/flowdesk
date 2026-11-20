@@ -1,0 +1,62 @@
+Today's-row rule and the price-less split row (Kyle, 2026-11-20): mutation checks on the committed code.
+Step 6 re-run after the last formatting edit; steps 2 to 5b run on the same code (formatting edits after them changed no snippet they use).
+
+baseline: tests/test_bars_feed.py, tests/test_rate_budget.py, tests/test_yfinance_bars.py, tests/test_yfinance_client.py pass unmutated
+   1. caught                   a symbol without today's row is not held  [-k test_a_symbol_without_todays_row_is_held or test_the_15m_run_holds]  1 failed, 21 deselected, 4 warnings in 1.84s
+   2. caught                   one symbol without today's row holds the whole batch  [-k test_a_symbol_without_todays_row_is_held]  1 failed, 22 deselected, 4 warnings in 1.76s
+   3. caught                   the rule applies on a day with no session  [-k test_on_a_day_with_no_session]  1 failed, 22 deselected, 4 warnings in 1.84s
+   4. caught                   the daily batch is not checked for today's row  [-k test_a_symbol_without_todays_row_is_held]  1 failed, 22 deselected, 4 warnings in 2.08s
+   5. caught                   a held symbol's bars are written anyway  [-k test_a_symbol_without_todays_row_is_held or test_the_15m_run_holds]  1 failed, 21 deselected, 4 warnings in 1.84s
+   6. caught                   the 15m check writes a held symbol's split  [-k test_the_15m_run_holds]  1 failed, 22 deselected, 4 warnings in 1.96s
+   7. caught                   the backfill does not say when to re-run  [-k test_before_the_open]  1 failed, 22 deselected, 4 warnings in 1.74s
+   8. caught                   the polls run at 09:05 again  [-k test_enabled_both_polls_run_at_1005]  1 failed, 22 deselected in 0.73s
+   9. caught                   a price-less row is skipped before its split is read  [-k test_a_split_on_a_row_with_no_prices]  1 failed, 43 deselected, 4 warnings in 0.83s
+  10. caught                   a price-less split row is not today's row  [-k test_a_split_on_a_row_with_no_prices]  1 failed, 43 deselected, 4 warnings in 0.76s
+  11. caught                   the 15m window is 59 days again  [-k test_the_15m_window_is_inside_yahoos_60_x_24_h_at_the_worst_case]  1 failed, 20 deselected in 0.72s
+  12. caught                   the run computes its own floor, not the client's  [-k test_the_15m_backfill_checks_splits_first or test_the_15m_poll_records_a_gap]  1 failed, 21 deselected, 4 warnings in 1.82s
+  13. caught                   an all-refused batch reaches the timezone check  [-k test_a_batch_refused_for_every_ticker]  1 failed, 22 deselected, 4 warnings in 1.96s
+  14. caught                   an all-refused batch names only its first symbol  [-k test_a_batch_refused_for_every_ticker]  1 failed, 22 deselected, 4 warnings in 1.85s
+  15. caught                   the 15m run skips its own split check  [-k test_no_15m_bar_is_accepted_before_a_split]  1 failed, 22 deselected, 4 warnings in 2.02s
+  16. caught                   the split check fetches 15m instead of daily actions  [-k test_the_15m_backfill_checks_splits_first]  1 failed, 22 deselected, 4 warnings in 1.82s
+  17. caught                   the split check's events are not written  [-k test_no_15m_bar_is_accepted_before_a_split]  1 failed, 22 deselected, 4 warnings in 2.06s
+  18. caught                   a symbol whose check failed still gets 15m bars  [-k test_a_symbol_whose_split_check_fails]  1 failed, 22 deselected, 4 warnings in 2.13s
+  19. caught                   the second request takes no rate-budget slot  [-k test_the_15m_backfill_checks_splits_first]  1 failed, 22 deselected, 4 warnings in 2.03s
+  20. caught                   the poll starts after the last stored session  [-k test_the_daily_poll_starts_at_the_last_stored_session or test_the_15m_poll_starts]  1 failed, 21 deselected, 4 warnings in 2.07s
+  21. caught                   a symbol with no stored bar is polled anyway  [-k test_a_symbol_with_no_stored_bar]  1 failed, 22 deselected, 4 warnings in 1.94s
+  22. caught                   every symbol's last bar is the newest of any symbol  [-k test_the_15m_poll_records_a_gap]  1 failed, 22 deselected, 4 warnings in 2.09s
+  23. caught                   daily bars count as 15m history  [-k test_daily_bars_do_not_count_as_15m_history]  1 failed, 22 deselected, 4 warnings in 2.01s
+  24. caught                   15m re-fetches are compared with bars_daily  [-k test_the_15m_poll_starts_at_its_last_stored_session_and_counts]  1 failed, 22 deselected, 4 warnings in 2.23s
+  25. caught                   no gap is recorded beyond the look-back  [-k test_the_15m_poll_records_a_gap]  1 failed, 22 deselected, 4 warnings in 1.94s
+  26. caught                   the gap starts at the last stored bar itself  [-k test_the_15m_poll_records_a_gap]  1 failed, 22 deselected, 4 warnings in 2.19s
+  27. caught                   the gap ends a session late  [-k test_the_15m_poll_records_a_gap]  1 failed, 22 deselected, 4 warnings in 2.24s
+  28. caught                   polled rows are labelled backfill  [-k test_the_daily_poll_starts_at_the_last_stored_session]  1 failed, 22 deselected, 4 warnings in 2.02s
+  29. caught                   a batch reports none of its bars as written  [-k test_the_daily_poll_starts_at_the_last_stored_session]  1 failed, 22 deselected, 4 warnings in 2.06s
+  30. caught                   not backfilled reads as an empty batch  [-k test_a_symbol_with_no_stored_bar or test_run_failure_names]  1 failed, 21 deselected, 4 warnings in 2.01s
+  31. caught                   an unknown failure is dropped  [-k test_run_failure_names]  1 failed, 22 deselected in 0.74s
+  32. caught                   the wait bound is the floor, not two spacings  [-k test_a_second_slot_in_a_row or test_the_wait_bound]  1 failed, 5 deselected in 0.08s
+  33. caught                   the bars limiter uses the default bound  [-k test_the_wait_bound]  1 failed, 6 deselected in 0.48s
+  34. caught                   the polls are scheduled with the flag off  [-k test_beat_does_not_schedule_the_polls_unless_enabled]  1 failed, 19 deselected in 0.78s
+  35. caught                   any non-empty flag enables the polls  [-k test_beat_does_not_schedule_the_polls_unless_enabled]  1 failed, 1 passed, 19 deselected in 0.78s
+  36. caught                   the polls run at weekends  [-k test_enabled_both_polls_run_at_1005]  1 failed, 22 deselected in 0.73s
+  37. caught                   stale after three days  [-k test_both_bars_feeds_go_stale_after_four_days]  1 failed, 22 deselected in 0.73s
+37/37 mutations caught
+
+== m2-slice6-step3
+baseline: tests/test_ingest_errors.py, tests/test_license_audit.py, tests/test_reference_tables.py, tests/test_yfinance_bars.py, tests/test_yfinance_client.py pass unmutated
+34/34 mutations caught
+
+== m2-slice6-step4
+baseline: tests/test_bars_backfill.py, tests/test_fixture_universe.py pass unmutated
+13/13 mutations caught
+
+== m2-slice6-step5
+baseline: tests/test_bars_read.py pass unmutated
+13/13 mutations caught
+
+== m2-slice6-step5b
+baseline: tests/test_bars_backfill.py, tests/test_bars_read.py, tests/test_price_tables.py, tests/test_yfinance_bars.py pass unmutated
+23/23 mutations caught
+
+== m2-slice6-step2
+baseline: tests/test_price_tables.py pass unmutated
+35/35 mutations caught

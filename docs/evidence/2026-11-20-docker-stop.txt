@@ -31,9 +31,8 @@ FINDINGS
   1. The stack did not stop "at about 19:30". It went down at 03:19:06 EST on 11-19, when Docker Desktop's backend was terminated
      2 s before the machine went to sleep at a user-mode process's request. The machine slept until 18:20:27 EST (15 h).
   2. Docker Desktop stayed down after the wake until it was opened from the tray at 19:12:54 EST.
-  3. After that relaunch, the unless-stopped containers did NOT come back (they sat Exited until `docker compose up -d` at
-     01:34 EST on 11-20). Why: NOT DETERMINED. The engine's own log (vm/init.log) rotates about every 10 minutes (1 MB of apiproxy
-     request lines per file, 9 files kept), so 19:13 EST was already gone when read. Not guessed.
+  3. [CORRECTED 2026-11-20, see CORRECTION below] As first written: "After that relaunch, the unless-stopped containers did NOT
+     come back." That was wrong.
   4. WakeToRun on FlowDesk-settle-daily did not wake the machine for 09:00 (MEASURED: no wake between 03:19 and 18:20). Wake timers
      are enabled in the active power plan (AC and DC index 1). Why the timer did not fire: NOT DETERMINED (`powercfg /waketimers`
      needs an elevated prompt). The same applies to the three FlowDesk-today-row-* tasks.
@@ -46,3 +45,10 @@ CHANGES (2026-11-20 ~01:36 EST)
   - Restart check: after that clean Docker Desktop restart, all eight unless-stopped services came back by themselves within ~25 s
     and /health/ready returned ok. (research-scout's three containers, restart=no, were started by hand to leave them as found.)
     NOT checked: the case that failed on 11-19 (backend terminated before sleep, relaunched after wake). That needs a sleep cycle.
+
+CORRECTION (2026-11-20, MEASURED from task_runs row 8401)
+  Finding 3 above was wrong. The containers DID come back after the 19:12 EST relaunch: ingest.fred_poll (task_runs 8401) started at
+  2026-11-20T00:13:08Z (19:13:08 EST), so Beat and the worker were running. Every container then stopped cleanly (exit 0) at
+  00:13:09-12Z, 1 to 4 s later, and stayed Exited until `docker compose up -d` at 01:34 EST. What stopped them is NOT DETERMINED: the
+  engine's own log (vm/init.log) rotates about every 10 minutes and had lost that minute when read. Row 8401 stayed `running` until the
+  sweep failed it as Orphaned after 01:34.

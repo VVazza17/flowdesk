@@ -71,10 +71,12 @@ FEED_STALE_AFTER: dict[tuple[str, str], timedelta] = {}
 FRED_POLL_HOUR, FRED_POLL_MINUTE = 8, 0
 FRED_POLL_STALE_AFTER = timedelta(hours=72)  # three missed daily runs
 
-# The settled bars polls (M2 slice 6, step 6; Kyle, 2026-11-18): 09:05 America/New_York, Monday to
-# Friday, after both settle points (15m 09:00 on D+1, daily 09:00 on D+2). A holiday run finds
-# nothing new and succeeds with 0 rows.
-BARS_POLL_HOUR, BARS_POLL_MINUTE = 9, 5
+# The settled bars polls (M2 slice 6, step 6): 10:05 America/New_York, Monday to Friday (Kyle,
+# 2026-11-20; 09:05 from 2026-11-18). After both settle points (15m 09:00 on D+1, daily 09:00 on
+# D+2) AND after today's daily row exists, which every bar now requires (bars_feed, "Today's
+# row"): MEASURED 2026-11-20, absent at 09:05 for 24 of 24 symbols, present at 09:35. 10:05 is
+# DERIVED: one day measured, plus margin. A holiday run finds nothing new and succeeds with 0 rows.
+BARS_POLL_HOUR, BARS_POLL_MINUTE = 10, 5
 BARS_POLL_DAYS = "mon-fri"
 # DERIVED, not measured (Kyle, 2026-11-18): the longest normal gap between weekday runs (Friday to
 # Monday, 3 days) plus one day of margin. Poll health only; per-symbol data age is slice 7's.

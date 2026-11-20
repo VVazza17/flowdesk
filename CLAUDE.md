@@ -182,7 +182,7 @@ below).
   **Step 5b built (2026-11-18):** migration 0013, `bars_read.total_return_between(..., as_of=, include_backfill=)` (a ratio, never a level);
   dev stack: 119 distributions; computed 2-year returns match Yahoo's Adj Close ratio to <= 9.6e-8 relative on all 24 symbols
   (the MEASURED baseline for slice 7's tolerance). **General rule (Kyle, 2026-11-18): no 15m bar is accepted until splits for its window
-  are known in the same run** (backfill and poll alike fetch their own daily actions batch first). Step 6 polls: 09:05 ET Mon-Fri, behind
+  are known in the same run** (backfill and poll alike fetch their own daily actions batch first). Step 6 polls: 10:05 ET Mon-Fri (09:05 until 2026-11-20: no bar is accepted without today's daily row, held otherwise), behind
   `BARS_POLL_ENABLED=false` until IDEA-029's drill passes; stale after 4 days (DERIVED); inclusive start (counts late volume revisions).
   **Step 6 built (2026-11-19):** `app/ingest/bars_feed.run_bars` (backfill and poll, daily and 15m), tasks `ingest.bars_daily_poll` /
   `ingest.bars_15m_poll`; dev stack: 15m backfill 26,208 bars, one manual run of each poll (0 rows, 0 volume revisions at 00:11 ET).
