@@ -369,6 +369,19 @@ elaboration is the most comfortable way to avoid execution.*
     Bash tool's own shell** (MEASURED 2026-11-18: `set -euo pipefail; false; echo x` prints x), and bash also ignores it inside an `&&`
     list. Never judge a gate by piped output.
 
+## Shared Docker host (Kyle, 2026-11-20)
+
+Other projects' containers run on this machine alongside FlowDesk's (e.g. `research-scout-*`, `expense-tracker-*`).
+**Never stop, kill, remove, restart or prune containers, volumes or networks outside the `flowdesk` compose project**
+(the compose label `com.docker.compose.project=flowdesk`; a smoke's own throwaway containers, created and named by that
+script, are FlowDesk's). Use `docker compose -p flowdesk stop/down` or a named FlowDesk container. Never
+`docker stop $(docker ps -q)`, `docker kill` on another project's container, or `docker system/container/volume/network prune`.
+**`docker desktop stop/restart` and `wsl --shutdown` stop every project's containers: ask Kyle before running either**,
+and say in the request which other projects are running. Don't start another project's containers either. Leave them as you found them.
+**Why:** on 2026-11-20 at 01:37 ET a session ran `docker desktop stop` / `start` unasked, to check that FlowDesk's restart
+policy brings the stack back. That stopped `research-scout-*` as well. It restarted three of them with `docker start`, and its
+report never mentioned it.
+
 ## Commands
 
 ```
