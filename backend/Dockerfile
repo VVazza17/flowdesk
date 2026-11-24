@@ -6,19 +6,10 @@
 # is hard to tell apart. This is the ONE definition: the CI tooling container, lock-deps.sh and the
 # smokes read this line (infra/base-image.sh). The digest is the multi-arch index, so it covers amd64 and
 # arm64. Cost: the base no longer picks up fixes by itself. The daily image scan is the tripwire, and
-# docs/RUNBOOK-IMAGE-CVE.md says how to bump. Resolved from tag 3.12-slim on 2026-11-08 (Debian 13).
-FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
-
-# Base-image CVE patch, applied on top because the published python:3.12-slim lagged Debian's security
-# archive: two HIGH findings in zlib1g, fixed in 1:1.3.dfsg+really1.3.1-1+deb13u1 (trixie-security).
-# This upgrades that one package, not the whole image. The dpkg check fails the build if the fixed
-# version did not land, and passes once the base image ships it or anything newer. The base is pinned, so
-# that only happens when someone bumps the digest above; delete this block in the same change
-# (docs/RUNBOOK-IMAGE-CVE.md has the procedure and the removal check).
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends --only-upgrade zlib1g \
-    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' zlib1g)" ge "1:1.3.dfsg+really1.3.1-1+deb13u1" \
-    && rm -rf /var/lib/apt/lists/*
+# docs/RUNBOOK-IMAGE-CVE.md says how to bump. Resolved from tag 3.12-slim on 2026-11-24 (Debian 13;
+# libc6/libc-bin 2.41-12+deb13u5 for CVE-2026-19499 and CVE-2026-5435; zlib1g already +deb13u1, so the
+# zlib1g patch block of 2026-11-08 came out in this bump; Python 3.12.16, unchanged). First pin 2026-11-08.
+FROM python:3.12-slim@sha256:191083cdf6c7bda8c76158983163ead5d5cf7b77cf3033e805bb0f5296f51b4b
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

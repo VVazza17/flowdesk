@@ -4235,3 +4235,15 @@ a late period that appears in no vintage of the poll's window has no evidence th
 
 The audit column needs a migration on `macro_metrics` and is built with F3. **Still built together with the rolling-window fix, after
 Monday's F-6b rerun. Nothing is built now.** The draft `docs/adr/0003-addendum-2026-11-20-F3-DRAFT.md` carries the corrected rule.
+
+### 2026-11-24 — image scan red (libc): base digest bumped, the zlib1g patch block removed (runbook step 3a)
+
+- **Image scan red (CI `security` job, schedule runs 2026-11-22 and 2026-11-23, on `8ddeb23`).** Two HIGH findings in `libc6` and
+  `libc-bin` 2.41-12+deb13u4 (CVE-2026-19499, CVE-2026-5435), fixed in `2.41-12+deb13u5`. **Step 3a applied:** the published
+  `python:3.12-slim` (index digest `sha256:191083cd...`, pulled 2026-11-24) already carries `2.41-12+deb13u5` (`Installed` and `Candidate`),
+  so the pin in `backend/Dockerfile` moved to it. Python stays 3.12.16; `infra/lock-deps.sh` left every `*.lock` unchanged.
+- **Step 5:** the new base also ships `zlib1g 1:1.3.dfsg+really1.3.1-1+deb13u1`. With the block's install removed, its assertion passed on a
+  `--no-cache` build, so the whole 2026-11-08 zlib1g block and its comment came out in the same change.
+- **Verified (MEASURED 2026-11-24):** amd64 and arm64 (QEMU) images both show `libc6`/`libc-bin 2.41-12+deb13u5` and `zlib1g ...+deb13u1`;
+  Grype with CI's flags (`--only-fixed --fail-on high`) on the new image: exit 0, no High or Critical rows (Medium and Low remain in the
+  Python binary and pip, as before); `bash infra/smoke-slice2.sh` passed. No threshold change, no ignore entry.
