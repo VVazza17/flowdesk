@@ -7,3 +7,7 @@ A later snapshot is its own observation at its own time and does not stand in fo
                       at 18:26:25 EST; Docker Desktop's backend had been terminated at 08:19:06Z (exit 0x40010004) and was not
                       running, so after the 30-minute wait it logged at 2026-11-19T23:56:58Z: Docker unreachable. No snapshot.
                       run.sh exited 0 then.
+2026-11-21 09:00 EST  scheduled slot (FlowDesk-settle-daily). The machine was off: last System event 2026-11-20 19:46 EST, then an
+                      unclean reboot (Kernel-Power 41) at 2026-11-21 15:47 EST. No run.log entry for 11-21 at all: StartWhenAvailable
+                      did not run it after the boot, although the stack was up (the FRED poll ran at 15:48 EST). Why is not known: the
+                      TaskScheduler/Operational log is disabled on this machine. No snapshot. The 11-22 run (17:12Z) is that day's own.

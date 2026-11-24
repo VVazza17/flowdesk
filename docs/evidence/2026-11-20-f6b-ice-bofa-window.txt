@@ -62,3 +62,24 @@ vintage dates, last 4: ['2026-11-16', '2026-11-17', '2026-11-18', '2026-11-19']
   as of vintage 2026-11-12: FAILED ValueError
   as of vintage 2026-11-13: FAILED ValueError
 (the 'as of vintage' lines failed on the client's own argument check, before any request: not a FRED answer, and not needed)
+
+=== F-6b day 2: docs/evidence/f6b/probe.py rerun unchanged, same command (compose container create/created lines omitted)
+=== F-6b run 2026-11-24T16:25:28+00:00 (read-only)
+--- BAMLC0A0CM
+stored: periods 2023-11-14 .. 2026-11-12, 793 periods, 794 rows; state (captured_through, rule_version) = (datetime.date(2026, 11, 12), 1)
+stored rows for 2026-11-10: none
+latest vintage: 792 observations; EARLIEST 2023-11-24; latest 2026-11-20
+latest vintage at 2026-11-10: value=0.9 realtime_start=2026-11-23
+vintage dates: 782 total; last 6: ['2026-11-13', '2026-11-16', '2026-11-17', '2026-11-18', '2026-11-19', '2026-11-20']
+poll window (vintages >= 2026-11-12): 7 vintages ['2026-11-12', '2026-11-13', '2026-11-16', '2026-11-17', '2026-11-18', '2026-11-19', '2026-11-20']; rows 7; rows for 2026-11-10 with values: none
+output_type=4 over the window: 7 first prints; at 2026-11-10: absent
+window rows' periods: 2026-11-12 .. 2026-11-20
+--- BAMLH0A0HYM2
+stored: periods 2023-11-14 .. 2026-11-12, 793 periods, 793 rows; state (captured_through, rule_version) = (datetime.date(2026, 11, 12), 1)
+stored rows for 2026-11-10: none
+latest vintage: 792 observations; EARLIEST 2023-11-24; latest 2026-11-20
+latest vintage at 2026-11-10: value=3.3 realtime_start=2026-11-23
+vintage dates: 784 total; last 6: ['2026-11-13', '2026-11-16', '2026-11-17', '2026-11-18', '2026-11-19', '2026-11-20']
+poll window (vintages >= 2026-11-12): 7 vintages ['2026-11-12', '2026-11-13', '2026-11-16', '2026-11-17', '2026-11-18', '2026-11-19', '2026-11-20']; rows 7; rows for 2026-11-10 with values: none
+output_type=4 over the window: 7 first prints; at 2026-11-10: absent
+window rows' periods: 2026-11-12 .. 2026-11-20
