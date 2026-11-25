@@ -28,8 +28,13 @@ KEY = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"
 NO_RETRY = RetryPolicy(attempts=1)
 
 
+ROLLING: set[str] = set()  # series ids the helpers declare rolling_window (set per test)
+
+
 def item(series_id: str = "TESTSER") -> FredSeries:
-    return FredSeries(series_id, START + timedelta(days=1), START)
+    return FredSeries(
+        series_id, START + timedelta(days=1), START, rolling_window=series_id in ROLLING
+    )
 
 
 async def rows(engine: AsyncEngine, sql: str) -> list[dict[str, Any]]:
@@ -479,3 +484,156 @@ def test_a_bare_range_after_the_last_vintage_is_the_400_the_poll_avoids() -> Non
     with pytest.raises(NoVintageDates):
         asyncio.run(ask(False))  # a backfill-style caller: fatal
     assert asyncio.run(ask(True)) == []  # a caller that opts in reads it as a quiet day
+
+
+# --- F-6b, built 2026-11-24: F3 late arrivals and the rolled-off exemption, on a real Postgres ----
+
+
+def _late_fred() -> FakeFred:
+    """Periods 0..4 captured, except period 2, which FRED has not published at capture time."""
+    periods = simple(5)
+    del periods[START + timedelta(days=2)]
+    return FakeFred(periods)
+
+
+def test_a_late_arrival_is_dated_by_the_accepting_run_and_freds_date_kept_for_audit(
+    scratch_url: str,
+) -> None:
+    """Rule 9: in the same run a second new period (5, after captured_through) is dated by FRED.
+    A store that dated every new first print by the run, or none, fails one of the two rows."""
+    fred = _late_fred()
+    late_p, new_p = START + timedelta(days=2), START + timedelta(days=5)
+
+    async def fn(engine: AsyncEngine) -> tuple[FeedResult, list[dict[str, Any]], FeedResult]:
+        await capture(engine, fred)  # captured_through = START + 5
+        fred.periods = simple(6)  # FRED adds period 2 at its old vintage, and publishes period 5
+        result = await poll(engine, fred)
+        stored = await rows(
+            engine,
+            "SELECT m.effective_at, m.revision, m.available_at, m.provider_claimed_available_at, "
+            "r.started_at FROM macro_metrics m JOIN ingestion_runs r ON r.id = m.ingestion_run_id "
+            f"WHERE m.effective_at IN ('{late_p}', '{new_p}') ORDER BY m.effective_at",
+        )
+        again = await poll(engine, fred)  # the next day: quiet, and the late row reads back clean
+        return result, stored, again
+
+    result, stored, again = go(scratch_url, fn)
+    assert result.rows_written == 2
+    late_row, new_row = stored
+    assert late_row["revision"] == 0
+    assert late_row["available_at"] == late_row["started_at"]  # the accepting run's start
+    assert late_row["provider_claimed_available_at"] == available_at_for(late_p + timedelta(days=1))
+    assert new_row["available_at"] == available_at_for(new_p + timedelta(days=1))  # FRED's date
+    assert new_row["provider_claimed_available_at"] is None
+    # read_chains recovers the late row's vintage from the audit column, so the next poll's rule 5
+    # sees FRED's vintage, not the observation instant.
+    assert again.rows_written == 0
+    assert fred.period_requests == [late_p]  # one own fetch, first poll only
+
+
+def test_a_late_arrival_with_no_evidence_in_its_own_fetch_is_refused_and_nothing_written(
+    scratch_url: str,
+) -> None:
+    """Absence never counts as agreement: FRED lists the period in the latest values, but its own
+    fetch returns no column for it."""
+
+    class NoEvidence(FakeFred):
+        def __call__(self, request: httpx2.Request) -> httpx2.Response:
+            if "observation_start" in request.url.params:
+                asked = request.url.params["observation_start"]
+                self.period_requests.append(date.fromisoformat(asked))
+                return httpx2.Response(200, json={"count": 0, "observations": []})
+            return super().__call__(request)
+
+    fred = _late_fred()
+
+    async def fn(engine: AsyncEngine) -> tuple[str, int, list[date]]:
+        await capture(engine, fred)
+        later = NoEvidence(simple(6))
+        with pytest.raises(SchemaMismatch) as info:
+            await poll(engine, later)
+        n = (await rows(engine, "SELECT count(*) AS n FROM macro_metrics"))[0]["n"]
+        return str(info.value), int(n), later.period_requests
+
+    message, n, asked = go(scratch_url, fn)
+    assert "rule 4" in message and "late arrival" in message
+    assert n == 4  # neither the late period nor period 5 was written
+    assert asked == [START + timedelta(days=2)]
+
+
+def test_over_the_cap_no_late_period_is_fetched_and_all_refuse(scratch_url: str) -> None:
+    from app.ingest.fred_feed import LATE_FETCH_MAX
+
+    many = LATE_FETCH_MAX + 1
+    periods = simple(many + 3)
+    held = {START + timedelta(days=i) for i in range(1, many + 1)}
+    fred = FakeFred({p: c for p, c in periods.items() if p not in held})
+
+    async def fn(engine: AsyncEngine) -> str:
+        await capture(engine, fred)
+        fred.periods = periods
+        with pytest.raises(SchemaMismatch) as info:
+            await poll(engine, fred)
+        return str(info.value)
+
+    message = go(scratch_url, fn)
+    assert "late arrival" in message and f"{many} periods" in message
+    assert fred.period_requests == []
+
+
+def test_a_rolling_series_polls_past_its_rolled_off_periods_and_keeps_them(
+    scratch_url: str,
+) -> None:
+    """Rule 9: two series lose the same old periods; only the one declared rolling passes, and its
+    stored rows are exactly as they were."""
+    routed = Routed({"ROLL": FakeFred(simple(6)), "PLAIN": FakeFred(simple(6))})
+    ROLLING.add("ROLL")
+
+    async def fn(engine: AsyncEngine) -> tuple[FeedResult, str, list[dict[str, Any]], list[Any]]:
+        for sid in ("ROLL", "PLAIN"):
+            await capture(engine, routed.fakes[sid], sid=sid)
+        before = await rows(engine, "SELECT * FROM macro_metrics WHERE metric = 'ROLL' ORDER BY 2")
+        for sid in ("ROLL", "PLAIN"):
+            # FRED publishes period 6 and drops periods 0 and 1 with their vintages.
+            moved = simple(7)
+            del moved[START], moved[START + timedelta(days=1)]
+            routed.fakes[sid].periods = moved
+        result = await poll(engine, routed, sid="ROLL")
+        with pytest.raises(SchemaMismatch) as info:
+            await poll(engine, routed, sid="PLAIN")
+        after = await rows(
+            engine,
+            "SELECT * FROM macro_metrics WHERE metric = 'ROLL' AND effective_at <= "
+            f"'{START + timedelta(days=5)}' ORDER BY 2",
+        )
+        return result, str(info.value), before, after
+
+    try:
+        result, message, before, after = go(scratch_url, fn)
+    finally:
+        ROLLING.discard("ROLL")
+    assert result.rows_written == 1  # period 6 only
+    assert after == before  # the rolled-off rows, and every other stored row, untouched
+    assert "rule 3" in message and "rule 5" in message  # PLAIN, undeclared, refuses as before
+
+
+def test_a_rolling_series_still_refuses_a_stored_period_missing_in_the_middle(
+    scratch_url: str,
+) -> None:
+    fred = FakeFred(simple(6))
+    ROLLING.add("TESTSER")
+
+    async def fn(engine: AsyncEngine) -> str:
+        await capture(engine, fred)
+        moved = simple(6)
+        del moved[START], moved[START + timedelta(days=3)]  # an old one AND one in the middle
+        fred.periods = moved
+        with pytest.raises(SchemaMismatch) as info:
+            await poll(engine, fred)
+        return str(info.value)
+
+    try:
+        message = go(scratch_url, fn)
+    finally:
+        ROLLING.discard("TESTSER")
+    assert "rule 3" in message and str(START + timedelta(days=3)) in message

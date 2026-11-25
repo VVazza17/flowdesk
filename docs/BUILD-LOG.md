@@ -4247,3 +4247,94 @@ Monday's F-6b rerun. Nothing is built now.** The draft `docs/adr/0003-addendum-2
 - **Verified (MEASURED 2026-11-24):** amd64 and arm64 (QEMU) images both show `libc6`/`libc-bin 2.41-12+deb13u5` and `zlib1g ...+deb13u1`;
   Grype with CI's flags (`--only-fixed --fail-on high`) on the new image: exit 0, no High or Critical rows (Medium and Low remain in the
   Python binary and pip, as before); `bash infra/smoke-slice2.sh` passed. No threshold change, no ignore entry.
+
+### Addendum 2026-11-24 — Kyle's decisions: commit, the libc re-pin, F-6b cause (i) MEASURED, build F3 with the rolling-window fix
+
+1. **Commit** the three settle snapshots (11-22, 11-23, 11-24) and the two evidence appends (F-6b day 2; 11-21 in `missed.txt`) through
+   `commit-gated.sh` and push. Done: `b0ae797`.
+2. **CI (libc CVE-2026-19499, CVE-2026-5435):** follow `docs/RUNBOOK-IMAGE-CVE.md` exactly. Done: `b238bd7` (entry above); CI green.
+3. **F-6b cause (i): MEASURED 2026-11-24.** The earliest observation in the latest vintage moved forward from 2023-11-20 to 2023-11-24 in both
+   series between two probes (2026-11-20 06:54Z and 2026-11-24 16:25Z). "Exactly three years by calendar date" stays ASSUMED and is not used.
+4. **Build F3 and the rolling-window fix together**, as decided 2026-11-20 (the draft and the fourth addendum):
+   - **Rolling window, independent of window length:** for a series declared `rolling_window` (BAMLC0A0CM and BAMLH0A0HYM2 only), periods
+     missing from the latest vintage as an unbroken run at the old end, all older than its earliest observation, count as rolled off. That is
+     not a rule 3 failure, and the stored rows are untouched. A gap anywhere else still fails rule 3. No window length in code.
+   - **Rule 5 (Kyle, 2026-11-24, asked during the build).** MEASURED read-only (`docs/evidence/f6b/judge_check.py`): the 8 rolled-off periods
+     fail rule 5 too, because their vintages have left `series/vintagedates` (earliest listed now 2023-11-24). Decided: for a rolling-window
+     series, a stored column whose vintage FRED no longer lists is not a rule 5 failure only when its period is rolled off (the same test as
+     rule 3) and the vintage is older than FRED's earliest listed vintage. Any other unknown vintage still fails rule 5.
+   - **F3 as approved**, with rule (c)'s own per-period fetch, and the audit column migration on `macro_metrics`.
+   - **"First observed" for 2026-11-10 = the accepting run's start instant.** FlowDesk's refusals show it saw the value from
+     2026-11-16 15:51Z. The later instant is more cautious and needs no parsing of error text. Record both here (below).
+   - **No re-capture.** No `FRED_RULE_VERSION` bump that re-fetches these series; a version change, if needed, must leave stored history
+     untouched. Rule 9 tests, mutation-checked, a smoke through the real worker. Then run the FRED poll by hand.
+5. **Evidence protection tightened (CLAUDE.md):** stored BAMLC0A0CM and BAMLH0A0HYM2 history before FRED's current earliest observation exists
+   only in FlowDesk. No re-capture of either series, ever, without Kyle's explicit approval.
+
+### 2026-11-24 — built: F3 (late arrivals) and the rolled-off exemption; the FRED poll accepts both ICE BofA series
+
+**Built.** The final rule text is ADR-0003's Addendum 2026-11-24; the draft file is deleted.
+- `app/ingest/macro.py`: `FredSeries.rolling_window` (declared, never inferred) and `check_history(rolling_window=, late_since=,
+  late_evidence=)`.
+  - **Rolled off** = stored, older than the latest vintage's earliest observation, and the merged chain exactly the stored one. Exempt from
+    rule 3, and from rule 5 for vintages older than FRED's earliest listed date.
+  - **Late arrival** = a numbered latest value on or before `captured_through`, inside the record, with no chain. Accepted only on its own
+    evidence (at least one column, all known vintages, one value, equal to the latest); otherwise rule 4, named.
+  - New verdict fields: `HistoryVerdict.rolled_off` and `.late_arrivals`.
+- `app/ingest/fred.py`: `FredClient.period_history` (`output_type=3`, `observation_start = observation_end` = the period, vintages from the
+  period's date on; windowed and 504-halved like the history fetch).
+- `app/ingest/fred_feed.py`: the poll finds late candidates (`late_candidates`, from a read-only read of the stored chains), fetches each one
+  after the latest values, judges with the series' `rolling_window`, and passes `observed_at = ctx.started_at`.
+  - `LATE_FETCH_MAX = 10` (ASSUMED): over it nothing is fetched and all refuse.
+  - Logs `fred_late_arrival_accepted`, and `rolled_off` / `late_arrivals` on `fred_poll_series`.
+- `app/ingest/runner.py`: `FeedContext.started_at` (= `ingestion_runs.started_at`).
+- `app/services/macro_store.py`: a late row's `available_at` = `observed_at` and `provider_claimed_available_at` = `available_at_for(claimed
+  vintage)`; every other row is written as before. `read_chains` recovers a late row's vintage from the audit column (DECISION in the code:
+  these chains are compared with FRED's record; `macro_read.py` still reads only `available_at`).
+- Migration **0014**:
+  - `macro_metrics.provider_claimed_available_at` (nullable, commented);
+  - CHECK `ck_macro_metrics_provider_claimed_before_available` (claimed < `available_at`);
+  - the immutability trigger function replaced so the new column is covered. The old function compared an explicit column list, so the new
+    column would otherwise have been updatable. The downgrade restores 0005's function.
+- `settings.FRED_SERIES`: `rolling_window=True` on the two ICE BofA series only.
+- **`FRED_RULE_VERSION` stays 1.** Counted from data: both changes relax what refused, and no stored row of any series was written as a late
+  arrival (rule 4 always refused them), so nothing stored would store differently. A bump would re-capture every series.
+
+**Tests.**
+- `tests/test_macro_f3_rolling.py` (new, 20 tests): the pure rules, `late_candidates`, and the client's request shape.
+- `tests/test_fred_poll.py`: 5 new tests on a real Postgres.
+- `tests/test_macro_metrics.py`: the column list, the trigger over the new column, the CHECK, and the downgrade to 0013.
+- **Rule 9:** each exemption sits next to a key whose data would win:
+  - a stored period missing in the middle;
+  - a rolled-off period the fetch would extend;
+  - a second late period whose evidence disagrees, or is filed under the wrong period;
+  - a second new period in the same run, after `captured_through`, that must keep FRED's date;
+  - an undeclared series with the same data.
+- **Mutation:** new suite `bash infra/mutation-check.sh f3-rolling`, **27/27 caught** (`docs/evidence/2026-11-24-f3-rolling-mutation-check.txt`).
+- **Smoke through the real worker:** `bash infra/smoke-m2-f3-rolling.sh` (new). It pipes a probe into the worker container (the real image,
+  the Redis limiter, `run_recorded` and the task's `poll_all`) against a scratch database it migrates and then drops, with FRED stubbed in
+  F-6b's measured shape. PASS (`docs/evidence/2026-11-24-smoke-m2-f3-rolling.txt`).
+
+**The FRED poll by hand (2026-11-24 23:55Z, `celery -A app.worker call ingest.fred_poll`, after rebuilding the stack to migration 0014).**
+Task row 15070 **succeeded**, and all 17 series succeeded: the first fully successful poll since 2026-11-15.
+- **BAMLC0A0CM** (ingestion run 383) and **BAMLH0A0HYM2** (run 382) were accepted, with **8 rows each**: the late period 2026-11-10 and the seven
+  new periods 2026-11-13 to 2026-11-23 (dated by FRED, F1).
+  - `rolled_off = 9` on each, where the 16:47Z judge probe found 8. DERIVED: FRED's earliest observation moved again during the day (not
+    measured directly).
+  - `captured_through` is now 2026-11-23 for both, and both feeds are `fresh`.
+- **The 2026-11-10 rows:**
+
+  | Series | value | `available_at` (= run start) | `provider_claimed_available_at` (FRED's vintage 2026-11-10) |
+  |---|---|---|---|
+  | BAMLC0A0CM | 0.9 | 2026-11-24 23:55:48.260729Z | 2026-11-11 05:00Z |
+  | BAMLH0A0HYM2 | 3.3 | 2026-11-24 23:55:43.359017Z | 2026-11-11 05:00Z |
+
+- **Both instants, as decided:**
+  - FlowDesk first saw the value at the latest by **2026-11-16 15:51Z** (the first refusal naming the period).
+  - The stored `available_at` is the accepting run's start, **2026-11-24 23:55Z**: about 8 days later, the cautious choice.
+  - FRED's own claim, the end of 2026-11-10 New York, is 5 to 6 days earlier than anyone could have read the value there.
+- Every earlier row is untouched: 794 and 793 rows ingested before today, as before, and the history still starts 2023-11-14.
+- Rows written by the poll: 48 in all. BAMLC0A0CM 8, BAMLH0A0HYM2 8, CSUSHPINSA 24, and 1 each for DGS10, DGS2, T10Y2Y, VIXCLS, DFII10,
+  T10YIE and IORB; the rest 0.
+
+**F-6b is closed** by this build. Beat's 08:00 firing on an awake machine is still unobserved: every poll from 11-21 to 11-24 was a catch-up.

@@ -69,6 +69,13 @@ async def read_chains(conn: AsyncConnection, metric: str) -> dict[date, tuple[Re
     The publication date is recovered from `available_at` by the inverse of the rule that wrote it
     (`vintage_for`). A chain with a hole in its revision numbers raises: the store never writes one,
     so finding one means the table was repaired by hand and must be looked at, not extended.
+
+    DECISION (2026-11-24, F3): an F3 late arrival's vintage is recovered from
+    `provider_claimed_available_at`, not from `available_at`. These chains exist to be compared
+    with FRED's record (rules 1, 5 and 6), and FRED lists that row under its claimed vintage;
+    read from `available_at` (the observation instant, usually not a vintage date at all), the next
+    poll would refuse it under rule 5. This is not a point-in-time read: what was knowable when is
+    `available_at`, and `app/services/macro_read.py` reads only that.
     """
     rows = await conn.execute(
         select(
@@ -76,16 +83,17 @@ async def read_chains(conn: AsyncConnection, metric: str) -> dict[date, tuple[Re
             MacroMetric.revision,
             MacroMetric.value,
             MacroMetric.available_at,
+            MacroMetric.provider_claimed_available_at,
         )
         .where(MacroMetric.metric == metric)
         .order_by(MacroMetric.effective_at, MacroMetric.revision)
     )
     chains: dict[date, list[Revision]] = {}
-    for effective_at, revision, value, available_at in rows:
+    for effective_at, revision, value, available_at, claimed in rows:
         chain = chains.setdefault(effective_at, [])
         if revision != len(chain):
             raise SchemaMismatch(f"stored revisions of {metric} are not contiguous from 0")
-        chain.append(Revision(vintage_for(available_at), value))
+        chain.append(Revision(vintage_for(claimed if claimed is not None else available_at), value))
     return {period: tuple(chain) for period, chain in chains.items()}
 
 
@@ -105,6 +113,7 @@ async def commit_history(
     ingestion_run_id: int | None,
     exclusion_counts: bool = True,
     clock: Callable[[], datetime] = _utcnow,
+    observed_at: datetime | None = None,
 ) -> Committed:
     """Judge the fetched history against what is stored and, only if every rule holds, write it.
 
@@ -119,6 +128,12 @@ async def commit_history(
     the
     window happens to touch them, so the A and B counts and the duplicates count stay as the last
     full capture left them. They are not summed or guessed. The state row must already exist.
+
+    `observed_at` dates the verdict's F3 late arrivals (ADR-0003 addendum F3): such a row's
+    `available_at` is that instant, the accepting run's start, and FRED's claimed date goes to
+    `provider_claimed_available_at` for audit. Every other row is dated by its vintage, as before.
+    A verdict with late arrivals and no `observed_at` is refused: guessing the instant is the one
+    thing F3 exists to prevent.
     """
     now = clock()
     async with engine.begin() as conn:
@@ -130,16 +145,21 @@ async def commit_history(
         if not verdict.ok:
             # Rules, counts and dates only: the values came from a provider and stay out.
             raise SchemaMismatch(f"history of {metric} refused: {verdict.refusal_text()}")
+        if verdict.late_arrivals and observed_at is None:
+            raise ValueError("late arrivals need observed_at: the instant FlowDesk observed them")
         fresh: list[dict[str, object]] = []
         for period, chain in verdict.chains.items():
             for revision in range(len(stored.get(period, ())), len(chain)):
+                claimed = available_at_for(chain[revision].vintage)
+                late = revision == 0 and period in verdict.late_arrivals
                 fresh.append(
                     {
                         "metric": metric,
                         "effective_at": period,
                         "revision": revision,
                         "value": chain[revision].value,
-                        "available_at": available_at_for(chain[revision].vintage),
+                        "available_at": observed_at if late else claimed,
+                        "provider_claimed_available_at": claimed if late else None,
                         "ingested_at": now,
                         "source": SOURCE,
                         "ingestion_run_id": ingestion_run_id,

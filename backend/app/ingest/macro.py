@@ -11,7 +11,7 @@ meets the same rule again with prices. docs/adr/0003, addendum.)
 """
 
 from collections.abc import Collection, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -38,6 +38,14 @@ HISTORY_WINDOW = 100
 # if any would (ADR-0003 addendum, F2: the VIXCLS gap-first-print amendment changed nothing already
 # stored, checked from data, and did not bump). Leaving a stricter rule unbumped leaves history that
 # no longer satisfies the rules it is marked as satisfying.
+#
+# NOT bumped for the rolled-off exemption and F3 (2026-11-24), counted from data as the principle
+# requires. Both are RELAXATIONS of what refused: rolled-off periods are stored rows left as they
+# are, and a late arrival was always refused by rule 4, so no row of any of the 17 captured series
+# was ever written as one. Nothing already stored would store differently. And a bump would make the
+# backfill re-capture every series, which for BAMLC0A0CM and BAMLH0A0HYM2 would erase the history
+# FRED no longer serves and the 2026-11-10 measurement (Kyle, 2026-11-24: never without his
+# approval).
 FRED_RULE_VERSION = 1
 
 
@@ -57,6 +65,14 @@ class FredSeries:
     series_id: str
     first_vintage: date
     first_covered_period: date
+    # FRED serves this series only as a moving window: the oldest periods drop out of the latest
+    # vintage, and their vintage dates out of series/vintagedates, as time passes (F-6b cause (i),
+    # MEASURED 2026-11-20 and 2026-11-24: the earliest observation of BAMLC0A0CM and BAMLH0A0HYM2
+    # moved from 2023-11-20 to 2023-11-24). Declared per series, never inferred from data: a series
+    # not declared here that loses old periods still refuses. No window length is stated or used.
+    # `first_vintage` and `first_covered_period` stay what FlowDesk STORES, which FRED no longer
+    # serves (Kyle, 2026-11-24: that history exists only in FlowDesk).
+    rolling_window: bool = False
 
 
 def available_at_for(realtime_start: date) -> datetime:
@@ -164,6 +180,13 @@ class HistoryVerdict:
     gap_first_prints_without_o4_witness: int  # stored; see rule 2
     revised_pre_vintage_excluded: int
     duplicates_skipped: int
+    # Stored periods of a rolling-window series that FRED no longer serves: kept as stored, judged
+    # by no rule that compares them with FRED's current record (rules 3 and 5), never extended.
+    rolled_off: int = 0
+    # F3 late arrivals accepted by this verdict: period -> the vintage FRED claims first printed it.
+    # Their chain is that one value; the store dates it by FlowDesk's observation, never by this
+    # vintage, which goes only to the audit column (ADR-0003 addendum F3).
+    late_arrivals: Mapping[date, date] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -193,6 +216,9 @@ def check_history(
     first_prints: Mapping[date, FirstPrintRef],
     latest: Mapping[date, Decimal | None],
     stored: Mapping[date, Sequence[Revision]] | None = None,
+    rolling_window: bool = False,
+    late_since: date | None = None,
+    late_evidence: Mapping[date, FredVintageRow] | None = None,
 ) -> HistoryVerdict:
     """The six rules of the ADR-0003 addendum (2026-11-13). Nothing may be written unless `ok`.
 
@@ -202,12 +228,34 @@ def check_history(
             "." that `output_type=4` does not report (a gap first print: stored, counted apart as
             `gap_first_prints_without_o4_witness`). A chain beginning with a number and missing
             from `output_type=4` is a lost first print and refuses.
-    Rule 3  a chain ends at the latest value.
+    Rule 3  a chain ends at the latest value. Except, for a `rolling_window` series only, a stored
+            period that has ROLLED OFF (below).
     Rule 4  every latest value is explained: it has a chain, or it is pre-vintage and unrevised
-            (exclusion A), or it is a "." found in neither output (exclusion A).
+            (exclusion A), or it is a "." found in neither output (exclusion A), or it is a LATE
+            ARRIVAL confirmed by its own fetch (F3, below; only when `late_since` is given).
     Rule 5  structure: every column is a known vintage date, one period never has two values for one
             vintage, and a column equal to the one before it is not a revision (skipped, counted).
+            Except a rolled-off period's column whose vintage is older than FRED's earliest listed
+            vintage date (rolling-window series only).
     Rule 6  what is already stored is a prefix of what was fetched (`stored`, if given).
+
+    ROLLED OFF (F-6b cause (i); Kyle, 2026-11-24, rule 5 the same day). For a series declared
+    `rolling_window`, a stored period older than the latest vintage's EARLIEST observation, whose
+    merged chain is exactly the stored one, has rolled off FRED's window. Every such period is older
+    than the earliest observation, so they are by construction one unbroken run at the old end; a
+    stored period missing from the latest vintage anywhere else is a gap and still fails rule 3. The
+    stored rows are untouched: nothing new is written for a rolled-off period, and one that the
+    fetch tries to extend is not rolled off. No window length appears here.
+
+    LATE ARRIVAL (ADR-0003 addendum F3, rule (c) as corrected by Kyle 2026-11-20). With `late_since`
+    (the series' `captured_through`): a period in the latest values, with a number, on or before
+    `late_since`, inside the record, and with no chain (no stored history and nothing in the
+    window). It is accepted only if `late_evidence[period]` (that period's own fetch across the
+    vintages from the period on) holds at least one column, every column is a known vintage, all
+    agree on one value, and that value equals the latest. ABSENCE NEVER COUNTS AS AGREEMENT: no
+    evidence, or an empty fetch, refuses under rule 4, named. Accepted, its chain is that one value
+    at FRED's claimed vintage (the earliest column), reported in `late_arrivals`; the store dates it
+    by FlowDesk's observation instead.
 
     FRED's response never says what it left out, so none of this trusts completeness: it checks the
     outputs against each other. What it cannot see is a revision missing from the MIDDLE of a chain.
@@ -215,14 +263,14 @@ def check_history(
     known = set(vintage_dates)
     raw: dict[date, dict[date, Decimal | None]] = {}
     conflicts: set[date] = set()
-    unknown_vintage: set[date] = set()
+    unknown_columns: set[tuple[date, date]] = set()  # (period, vintage): judged after roll-off
     for row in rows:
         if not row.values:
             continue  # a period listed without a change in this window: no information
         per = raw.setdefault(row.effective_at, {})
         for vintage, value in row.values.items():
             if vintage not in known:
-                unknown_vintage.add(row.effective_at)
+                unknown_columns.add((row.effective_at, vintage))
             if vintage in per and per[vintage] != value:
                 conflicts.add(row.effective_at)
             per[vintage] = value
@@ -239,14 +287,6 @@ def check_history(
         chains[period] = tuple(built)
 
     refusals: list[Refusal] = []
-    if conflicts or unknown_vintage:
-        refusals.append(
-            _refusal(
-                5,
-                "a period has two values for one vintage, or a column is no vintage of the series",
-                conflicts | unknown_vintage,
-            )
-        )
 
     # Rule 1.
     bad1 = [
@@ -290,11 +330,66 @@ def check_history(
             )
         )
 
+    # Rolled off (rolling-window series only; see the docstring). Stored, older than the latest
+    # vintage's earliest observation, and not extended by the fetch.
+    rolled: set[date] = set()
+    if rolling_window and stored and latest:
+        oldest = min(latest)
+        rolled = {
+            period
+            for period, have in stored.items()
+            if period < oldest and period in kept and tuple(kept[period]) == tuple(have)
+        }
+
+    # Rule 5. A rolled-off period's column may name a vintage FRED no longer lists, provided that
+    # vintage is older than every date FRED does list (it rolled off with the period).
+    floor = min(known) if known else None
+    unknown_vintage = {
+        period
+        for period, vintage in unknown_columns
+        if not (period in rolled and floor is not None and vintage < floor)
+    }
+    if conflicts or unknown_vintage:
+        refusals.append(
+            _refusal(
+                5,
+                "a period has two values for one vintage, or a column is no vintage of the series",
+                conflicts | unknown_vintage,
+            )
+        )
+
+    # Late arrivals (F3): recognised here, judged on their own fetch, refused in rule 4 below.
+    late_accepted: dict[date, date] = {}
+    late_refused: set[date] = set()
+    if late_since is not None:
+        evidence = late_evidence or {}
+        for period, value in latest.items():
+            if period in chains or period > late_since or value is None:
+                continue
+            if earliest is not None and period < earliest:
+                continue  # pre-vintage and unrevised: exclusion A, as before
+            found = evidence.get(period)
+            columns = (
+                dict(found.values) if found is not None and found.effective_at == period else {}
+            )
+            agreed = set(columns.values())
+            if (
+                columns
+                and all(vintage in known for vintage in columns)
+                and len(agreed) == 1
+                and agreed == {value}
+            ):
+                claimed = min(columns)
+                kept[period] = (Revision(claimed, value),)
+                late_accepted[period] = claimed
+            else:
+                late_refused.add(period)
+
     # Rule 3.
     bad3 = [
         period
         for period, chain in kept.items()
-        if period not in latest or chain[-1].value != latest[period]
+        if period not in rolled and (period not in latest or chain[-1].value != latest[period])
     ]
     if bad3:
         refusals.append(_refusal(3, "a chain does not end at the latest value", bad3))
@@ -303,16 +398,25 @@ def check_history(
     no_vintage = gaps = 0
     unexplained: list[date] = []
     for period, value in latest.items():
-        if period in chains:
+        if period in chains or period in late_accepted:
             continue
         if earliest is not None and period < earliest:
             no_vintage += 1
         elif value is None:
             gaps += 1
-        else:
+        elif period not in late_refused:
             unexplained.append(period)
     if unexplained:
         refusals.append(_refusal(4, "a latest value has no history", unexplained))
+    if late_refused:
+        refusals.append(
+            _refusal(
+                4,
+                "a late arrival (on or before captured_through, no stored history) is not "
+                "confirmed by its own fetch",
+                late_refused,
+            )
+        )
 
     # Rule 6.
     if stored:
@@ -338,6 +442,8 @@ def check_history(
         gap_first_prints_without_o4_witness=len(gap_first_unwitnessed),
         revised_pre_vintage_excluded=len(revised_pre_vintage),
         duplicates_skipped=duplicates,
+        rolled_off=len(rolled),
+        late_arrivals=late_accepted,
     )
 
 

@@ -52,7 +52,227 @@ class Mutation:
     test_file: str | None = None  # when the catching tests live outside the suite's file
 
 
+MACRO = "app/ingest/macro.py"
+MSTORE = "app/services/macro_store.py"
+FFEED = "app/ingest/fred_feed.py"
+FCLIENT = "app/ingest/fred.py"
+M14 = "alembic/versions/0014_macro_metrics_provider_claimed.py"
+F3_POLL = "tests/test_fred_poll.py"
+F3_SCHEMA = "tests/test_macro_metrics.py"
+
 SUITES: dict[str, tuple[str, list[Mutation]]] = {
+    # F-6b, 2026-11-24: the rolled-off exemption (rules 3 and 5) and ADR-0003 addendum F3.
+    "f3-rolling": (
+        "tests/test_macro_f3_rolling.py",
+        [
+            # --- rolled off ---
+            Mutation(
+                "roll-off applies to a series not declared rolling",
+                MACRO,
+                "if rolling_window and stored and latest:",
+                "if stored and latest:",
+                "not_declared_rolling",
+            ),
+            Mutation(
+                "roll-off takes any stored period missing from latest (a middle gap)",
+                MACRO,
+                "if period < oldest and period in kept and tuple(kept[period]) == tuple(have)",
+                "if period not in latest and period in kept and tuple(kept[period]) == tuple(have)",
+                "missing_in_the_middle",
+            ),
+            Mutation(
+                "roll-off takes a period the fetch extends",
+                MACRO,
+                "if period < oldest and period in kept and tuple(kept[period]) == tuple(have)",
+                "if period < oldest and period in kept",
+                "fetch_would_extend",
+            ),
+            Mutation(
+                "rule 3 does not skip rolled-off periods",
+                MACRO,
+                "if period not in rolled and"
+                " (period not in latest or chain[-1].value != latest[period])",
+                "if (period not in latest or chain[-1].value != latest[period])",
+                "pass_rules_3_and_5",
+            ),
+            Mutation(
+                "rule 5 exempts a rolled-off column whatever its vintage",
+                MACRO,
+                "if not (period in rolled and floor is not None and vintage < floor)",
+                "if not (period in rolled)",
+                "inside_freds_list_range",
+            ),
+            Mutation(
+                "rule 5 exempts an old vintage on any period",
+                MACRO,
+                "if not (period in rolled and floor is not None and vintage < floor)",
+                "if not (floor is not None and vintage < floor)",
+                "did_not_roll_off",
+            ),
+            # --- F3 late arrivals ---
+            Mutation(
+                "a late arrival is accepted when its vintages disagree",
+                MACRO,
+                "                and len(agreed) == 1\n                and agreed == {value}\n",
+                "                and value in agreed\n",
+                "vintages_disagree",
+            ),
+            Mutation(
+                "a late arrival need not equal the latest value",
+                MACRO,
+                "                and agreed == {value}\n",
+                "",
+                "value_is_not_the_latest",
+            ),
+            Mutation(
+                "a late arrival's evidence may name unknown vintages",
+                MACRO,
+                "                and all(vintage in known for vintage in columns)\n",
+                "",
+                "unknown_vintage_is_refused",
+            ),
+            Mutation(
+                "evidence filed under one period confirms another",
+                MACRO,
+                "found is not None and found.effective_at == period",
+                "found is not None",
+                "its_own_period_only",
+            ),
+            Mutation(
+                "a period after captured_through is treated as late",
+                MACRO,
+                "if period in chains or period > late_since or value is None:",
+                "if period in chains or value is None:",
+                "after_captured_through",
+            ),
+            Mutation(
+                "an unconfirmed late arrival is not refused (absence counts as agreement)",
+                MACRO,
+                "    if late_refused:\n",
+                "    if False:\n",
+                "absence_never_counts",
+            ),
+            Mutation(
+                "late candidates include stored periods",
+                FFEED,
+                "        and period not in stored\n",
+                "",
+                "late_candidates_are",
+            ),
+            Mutation(
+                "late candidates include periods after captured_through",
+                FFEED,
+                "        and period <= captured_through\n",
+                "",
+                "late_candidates_are",
+            ),
+            # --- the per-period fetch ---
+            Mutation(
+                "the own fetch is not bounded to its period",
+                FCLIENT,
+                '        if observation is not None:\n            params["observation_start"]',
+                '        if False:\n            params["observation_start"]',
+                "one_period_across",
+            ),
+            Mutation(
+                "the own fetch starts at the series' first vintage, not the period",
+                FCLIENT,
+                "fetch = [d for d in vintage_dates if d >= period]",
+                "fetch = list(vintage_dates)",
+                "one_period_across",
+            ),
+            Mutation(
+                "the own fetch accepts an answer about another period",
+                FCLIENT,
+                "            if row.effective_at != period:\n",
+                "            if False:\n",
+                "another_period",
+            ),
+            # --- the store and the poll, on a real Postgres ---
+            Mutation(
+                "a late arrival is dated by FRED's vintage",
+                MSTORE,
+                '"available_at": observed_at if late else claimed,',
+                '"available_at": claimed,',
+                "dated_by_the_accepting_run",
+                F3_POLL,
+            ),
+            Mutation(
+                "every new first print is dated by the run (the second key wins)",
+                MSTORE,
+                "late = revision == 0 and period in verdict.late_arrivals",
+                "late = revision == 0",
+                "dated_by_the_accepting_run",
+                F3_POLL,
+            ),
+            Mutation(
+                "the audit column is not written",
+                MSTORE,
+                '"provider_claimed_available_at": claimed if late else None,',
+                '"provider_claimed_available_at": None,',
+                "dated_by_the_accepting_run",
+                F3_POLL,
+            ),
+            Mutation(
+                "read_chains reads a late row's vintage from available_at",
+                MSTORE,
+                "vintage_for(claimed if claimed is not None else available_at)",
+                "vintage_for(available_at)",
+                "dated_by_the_accepting_run",
+                F3_POLL,
+            ),
+            Mutation(
+                "the poll dates late arrivals by its own clock, not the run's start",
+                FFEED,
+                "observed_at=ctx.started_at,",
+                "observed_at=now,",
+                "dated_by_the_accepting_run",
+                F3_POLL,
+            ),
+            Mutation(
+                "the poll treats every series as rolling",
+                FFEED,
+                "rolling_window=series.rolling_window,",
+                "rolling_window=True,",
+                "polls_past_its_rolled_off",
+                F3_POLL,
+            ),
+            Mutation(
+                "the poll never recognises late arrivals",
+                FFEED,
+                "late_since=state.captured_through,",
+                "late_since=None,",
+                "dated_by_the_accepting_run",
+                F3_POLL,
+            ),
+            Mutation(
+                "the late-fetch cap is ignored",
+                FFEED,
+                "if len(candidates) > LATE_FETCH_MAX:",
+                "if False:",
+                "over_the_cap",
+                F3_POLL,
+            ),
+            # --- migration 0014 ---
+            Mutation(
+                "the trigger function does not cover the audit column",
+                M14,
+                '            new_extra=", NEW.provider_claimed_available_at",\n'
+                '            old_extra=", OLD.provider_claimed_available_at",\n',
+                '            new_extra="",\n            old_extra="",\n',
+                "no_stored_column and provider_claimed",
+                F3_SCHEMA,
+            ),
+            Mutation(
+                "the CHECK allows a claimed instant equal to available_at",
+                M14,
+                "provider_claimed_available_at < available_at",
+                "provider_claimed_available_at <= available_at",
+                "only_hold_an_instant_before",
+                F3_SCHEMA,
+            ),
+        ],
+    ),
     "m2-slice6-step6": (
         "tests/test_bars_feed.py",
         [

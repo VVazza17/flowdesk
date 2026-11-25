@@ -55,11 +55,14 @@ def utcnow() -> datetime:
 @dataclass(frozen=True)
 class FeedContext:
     """What a body is handed. `run_id` is the ingestion_run_id that §16 lists as a provenance
-    column on observations: the body writes it onto the rows it creates."""
+    column on observations: the body writes it onto the rows it creates. `started_at` is that
+    run's `ingestion_runs.started_at`, the same value: an F3 late arrival is dated by it (the
+    accepting run's start, Kyle 2026-11-24)."""
 
     run_id: int
     provider: str
     feed: str
+    started_at: datetime
 
 
 @dataclass(frozen=True)
@@ -167,7 +170,7 @@ async def run_feed(
                 .returning(IngestionRun.id)
             )
         ).scalar_one()
-    ctx = FeedContext(run_id=run_id, provider=provider, feed=feed)
+    ctx = FeedContext(run_id=run_id, provider=provider, feed=feed, started_at=started)
 
     async def attempt() -> FeedResult:
         await limiter.acquire(provider)

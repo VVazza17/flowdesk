@@ -41,6 +41,8 @@ COLUMNS = [
     ("ingested_at", "timestamp with time zone", "NO"),
     ("source", "text", "NO"),
     ("ingestion_run_id", "bigint", "YES"),
+    # 0014, ADR-0003 addendum F3: audit only, NULL on every ordinary row.
+    ("provider_claimed_available_at", "timestamp with time zone", "YES"),
 ]
 
 AVAILABLE = datetime(2025, 4, 30, 12, 30, tzinfo=UTC)
@@ -277,6 +279,8 @@ def test_the_immutability_triggers_exist_and_are_enabled(migrated_url: str) -> N
         ("available_at", "now()"),
         ("ingested_at", "now()"),
         ("source", "'other'"),
+        # 0014 replaced the trigger function so that the audit column is covered too.
+        ("provider_claimed_available_at", "'2000-01-01'"),
     ],
 )
 def test_no_stored_column_of_a_vintage_can_be_updated(
@@ -350,3 +354,46 @@ def test_the_documented_repair_procedure_works_and_leaves_the_triggers_enabled(
     assert _trigger_states(migrated_url) == {name: "O" for name in TRIGGERS}
     with pytest.raises(IntegrityError, match="immutable"):
         _run(migrated_url, "UPDATE macro_metrics SET value = 2")
+
+
+# --- 0014: the F3 audit column (ADR-0003 addendum F3) --------------------------------------------
+
+
+def test_the_audit_column_may_only_hold_an_instant_before_available_at(migrated_url: str) -> None:
+    """A non-NULL claimed instant means FRED claimed an EARLIER date than FlowDesk could observe."""
+    _insert(migrated_url, effective_at=date(2025, 1, 1))  # an ordinary row: NULL
+    _run(
+        migrated_url,
+        "INSERT INTO macro_metrics (metric, effective_at, value, available_at, source, "
+        "provider_claimed_available_at) VALUES ('GDPC1', '2025-02-01', 1, :a, 'fred', :c)",
+        a=AVAILABLE,
+        c=datetime(2025, 4, 20, tzinfo=UTC),
+    )
+    for claimed in (AVAILABLE, datetime(2025, 5, 1, tzinfo=UTC)):  # equal, and later
+        with pytest.raises(IntegrityError, match="provider_claimed_before_available"):
+            _run(
+                migrated_url,
+                "INSERT INTO macro_metrics (metric, effective_at, value, available_at, source, "
+                "provider_claimed_available_at) VALUES ('GDPC1', '2025-03-01', 1, :a, 'fred', :c)",
+                a=AVAILABLE,
+                c=claimed,
+            )
+    assert _run(migrated_url, "SELECT count(*) FROM macro_metrics")[0][0] == 2
+
+
+def test_downgrade_to_0013_drops_the_audit_column_and_keeps_the_table_immutable(
+    migrated_url: str,
+) -> None:
+    cfg = Config(str(ALEMBIC_INI))
+    command.downgrade(cfg, "0013")
+    got = _run(
+        migrated_url,
+        "SELECT column_name FROM information_schema.columns WHERE table_name = 'macro_metrics'",
+    )
+    cols = [r[0] for r in got]
+    assert "provider_claimed_available_at" not in cols
+    _insert(migrated_url)  # 0005's function, restored, must not name the dropped column
+    with pytest.raises(IntegrityError, match="immutable"):
+        _run(migrated_url, "UPDATE macro_metrics SET value = 2")
+    command.upgrade(cfg, "head")
+    assert _trigger_states(migrated_url) == {name: "O" for name in TRIGGERS}

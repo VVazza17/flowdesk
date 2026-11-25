@@ -1,6 +1,6 @@
 # ADR-0003: Point-in-Time Observation Model
 
-**Status:** Accepted. **Decision 3's rationale is falsified** (Addendum 2026-11-13, F1); decision 4 is amended by the same addendum; **a claim of the 2026-11-12 addendum about `"."` observations is corrected** (Addendum 2026-11-13, F2). Decisions 1, 2 and 5 to 8 stand.
+**Status:** Accepted. **Decision 3's rationale is falsified** (Addendum 2026-11-13, F1); decision 4 is amended by the same addendum; **a claim of the 2026-11-12 addendum about `"."` observations is corrected** (Addendum 2026-11-13, F2); **decision 3 as rewritten by F1 is amended for late arrivals, and rules 3 and 5 exempt rolled-off periods of a declared rolling-window series** (Addendum 2026-11-24, F3). Decisions 1, 2 and 5 to 8 stand.
 **Date:** 2026-08-15
 **Source:** M0 spike 3 and 3b (2026-07-31), §6.4
 
@@ -297,7 +297,9 @@ print, and each later column is revision 1, 2, ... in vintage-date order, each w
 `available_at = available_at_for(that vintage's date)`, the same end-of-day-in-New-York rule as a first print. The
 daily poll fetches `output_type=3` over a short window since the last successful poll and appends the revisions it
 finds with the same rule. **A revision is therefore dated by FRED, not by the poll, and a rebuild from FRED
-reproduces the table exactly.**
+reproduces the table exactly.** **[Amended: Addendum 2026-11-24, F3: a period FRED adds at a vintage dated before FlowDesk had
+captured past it is dated by FlowDesk's observation (the accepting run's start), FRED's date kept for audit only; a rebuild
+from FRED no longer reproduces such rows.]**
 
 **Superseded in the 2026-11-11 addendum:** "For a revision it is the instant the poll first saw the change", and
 the bullet "Not a bias on revisions, whose `available_at` is the poll instant". A revision now carries the same
@@ -456,3 +458,94 @@ store and read through `app/services/macro_read.py`. GDPC1 is deliberately not o
 sentence is the spike's own date**: the same period now reads 23,650.213, revised by the 2026-09-30 annual update, so the assertion is pinned to
 2026-07-31 and not to the present. The end-of-day rule shows too: the print was published on 2025-04-30 and is invisible at 23:59:59 New York that day,
 visible at 00:00 on 2025-05-01.
+
+## Addendum, 2026-11-24 (M2 slice 6, F-6b; Kyle): F3, and rolled-off periods
+
+Drafted 2026-11-20 (`docs/BUILD-LOG.md`, addendum 2026-11-20 second, item 3(ii)), approved in principle the same day with answers (a) to (c)
+(addendum third), rule (c) corrected the same day (addendum fourth: absence never counts as agreement), built 2026-11-24 together with the
+rolling-window fix (addendum 2026-11-24). The draft file is deleted; this is its final text. It follows the falsification mechanism of the
+2026-11-13 addendum.
+
+### F3. "A revision is dated by FRED, and a rebuild from FRED reproduces the table exactly"
+
+**The assumption, quoted** (addendum of 2026-11-13, F1, "Decision 3 becomes"): each column is stored "with
+`available_at = available_at_for(that vintage's date)`", and "a revision is therefore dated by FRED, not by the poll, and a rebuild from FRED
+reproduces the table exactly." This holds only if **FRED's vintage record does not change after it is read**: a vintage date says when a value
+became public only if that value was in FRED's record from that date on. The ADR never stated this, but the design depends on it.
+
+**What the evidence covered.** F1's measurements (2026-11-12 and 11-13) compared `output_type=3` with `output_type=4` and the latest values *at
+one moment*. Nothing re-read the same vintages later to see whether FRED's past record moves.
+
+**The measurement** (BAMLC0A0CM and BAMLH0A0HYM2; evidence `docs/evidence/2026-11-20-f6b-ice-bofa-window.txt`):
+- FlowDesk captured both series' history on 2026-11-12 07:00Z (`captured_through` 2026-11-12). The poll then succeeded at 2026-11-13 08:06Z,
+  11-13 23:22Z, 11-14 18:34Z and **2026-11-15 13:00Z**, each time running the six rules against FRED's latest values. Rule 4 refuses any latest
+  value with no chain, so (DERIVED) FRED's record at each of those times held **no period 2026-11-10**. The stored history goes 11-09, 11-11,
+  11-12.
+- The first poll to refuse, at **2026-11-16 15:51Z**, did so under rule 4: "a latest value has no history: 2026-11-10".
+- On 2026-11-20 (MEASURED, read-only), FRED's latest values, `output_type=4` (whole record) and `output_type=3` (vintages 11-06 to 11-13) all
+  hold 2026-11-10: 0.9 and 3.3, **first printed in vintage 2026-11-10**.
+- So FRED added a period to a vintage dated **5 to 6 days before** anyone could read it there: between 11-15 13:00Z and 11-16 15:51Z. Dated by
+  FRED, the value would be visible to a replay at the end of 2026-11-10 New York time. Nobody could have seen it before 2026-11-15 13:00Z.
+- Side finding (MEASURED 2026-11-20): the latest values' `realtime_start` for that period is **not a publication date**. With no real-time
+  window, `output_type=1` stamps every observation with the request's real-time date.
+
+**Rule 4 refusing was correct.** Storing the period under FRED's date would have put a value into the past that no live observer saw.
+
+**What survives.** Decisions 1 and 2. F1's decision 3 for the normal case: a column whose vintage FlowDesk had not yet captured past when it
+first read it is dated by FRED's vintage (`available_at_for(vintage)`). That is what nearly every revision is, and it is unchanged.
+
+**What is superseded: the rule (Kyle, 2026-11-20; built 2026-11-24).** *A period that arrives after FlowDesk has already captured past it
+takes `available_at` = when FlowDesk first observed it, never FRED's earlier date.*
+- **(a) "First observed" is an instant: the start of the ingestion run that accepts it** (`ingestion_runs.started_at`; Kyle, 2026-11-24).
+  FlowDesk's own refusals show it saw such a value earlier (for 2026-11-10, from the 11-16 15:51Z refusal), but that instant comes only from
+  parsing error text. The accepting run's start is later, so more cautious, and needs no parsing. Both are recorded in `docs/BUILD-LOG.md`.
+- **(b) FRED's claimed date is kept in `macro_metrics.provider_claimed_available_at`** (migration 0014), for audit only: `available_at_for`
+  of the claimed vintage, NULL on every ordinary row, with a CHECK that it is earlier than `available_at`. **No point-in-time read uses it**
+  (`app/services/macro_read.py` filters on `available_at`). The store's own comparison with FRED (`macro_store.read_chains`, rules 1, 5 and 6)
+  reads it back as the vintage, because that comparison is with FRED's record; read from `available_at`, the next poll would refuse the row
+  under rule 5. The immutability trigger covers the column.
+- **(c) Recognition (rule 4). Absence never counts as agreement.** A **late arrival** is a new period whose `effective_at` is on or before the
+  series' `captured_through`, with a number, inside the record, and with no stored history and nothing in the poll's window. It **triggers its
+  own fetch** (`FredClient.period_history`): `output_type=3` with `observation_start = observation_end` = the period, across every vintage from
+  the period's own date on. The claimed vintage is not known until it answers. ASSUMED: no value of a period is published before the
+  period's date (true of all 17 series). It is windowed and 504-halved like the history fetch, it is one request for a period a few days
+  old, and every request takes a rate-budget slot. It is **accepted only if** that fetch returns at least one column, every column is a
+  known vintage, all agree on one value, and that value equals the latest. Otherwise it is **refused under rule 4, named** ("a late arrival
+  ... is not confirmed by its own fetch"). More than `LATE_FETCH_MAX` (10, ASSUMED) late periods in one poll of one series: nothing is
+  fetched and all refuse.
+- Periods after `captured_through` are unchanged (dated by FRED, F1).
+- "A rebuild from FRED reproduces the table exactly" no longer holds for such rows. A rebuild reproduces FRED's record. Only FlowDesk's own
+  observations reproduce what was knowable.
+
+**A re-capture erases the evidence.** `python -m app.backfill --force`, or a `FRED_RULE_VERSION` bump, rebuilds from FRED's current record,
+which dates 2026-11-10 to vintage 2026-11-10. **Evidence protection (Kyle, 2026-11-20, tightened 2026-11-24, CLAUDE.md): no re-capture of
+BAMLC0A0CM or BAMLH0A0HYM2, ever, without Kyle's explicit approval.** `FRED_RULE_VERSION` was NOT bumped for this addendum. Counted from data,
+nothing stored would store differently: late arrivals were always refused, so none was ever written. How a later re-capture would keep
+FlowDesk-observed dates is not built; until it is, the protection is the only safeguard.
+
+**Known limit, not built:** a later revision of a late period, published in a vintage dated before the late row's `available_at`, is dated
+by FRED (F1) and so would read as knowable before its revision 0. Not seen; it is the same back-dating as F3, on a revision.
+
+### Rolled-off periods (F-6b cause (i)): an exemption from rules 3 and 5
+
+**The assumption:** rule 3 ("a chain ends at the latest value") and rule 5 ("every column is a known vintage date") assumed that FRED keeps
+every period, and every vintage date, it has ever served. **MEASURED false for BAMLC0A0CM and BAMLH0A0HYM2.** The earliest observation in
+their latest vintage moved from 2023-11-20 (read 2026-11-20) to 2023-11-24 (read 2026-11-24) in both series (Kyle: cause (i) MEASURED
+2026-11-24). FRED serves them as a moving window, and the vintage dates leave `series/vintagedates` with them (MEASURED 2026-11-24 by
+`docs/evidence/f6b/judge_check.py`: the 8 stored periods 2023-11-14 to 11-23 failed rule 3 AND rule 5, their vintages no longer listed).
+"Exactly three years by calendar date" fits both measurements and stays ASSUMED. It is not used anywhere.
+
+**The rule (Kyle, 2026-11-24; rule 5 the same day).** For a series **declared** `rolling_window` (`FredSeries`; BAMLC0A0CM and BAMLH0A0HYM2
+only, never inferred from data), a stored period older than the latest vintage's **earliest observation**, whose merged chain is exactly the
+stored one, has **rolled off**. Such periods are by construction one unbroken run at the old end.
+- A rolled-off period is not a rule 3 failure.
+- A rolled-off period's column whose vintage is older than FRED's earliest listed vintage date is not a rule 5 failure.
+- **The stored rows are untouched.** Nothing is written for a rolled-off period, and one the fetch would extend is not rolled off.
+- A stored period missing anywhere else still fails rule 3. An unknown vintage anywhere else still fails rule 5. An undeclared series that
+  loses old periods still refuses.
+- **No window length appears in code.**
+
+**What this means for the data.** The stored history of the two series before FRED's current earliest observation **exists only in
+FlowDesk** (Kyle, 2026-11-24), and that span grows every day. `first_vintage` and `first_covered_period` in `settings.FRED_SERIES` stay what
+FlowDesk stores. A backfill re-capture would also refuse (rule 6: the stored history is not a prefix of what FRED now serves), but the
+protection above is the rule regardless.

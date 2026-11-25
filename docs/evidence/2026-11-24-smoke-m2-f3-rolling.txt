@@ -1,0 +1,26 @@
+# bash infra/smoke-m2-f3-rolling.sh, run 2026-11-24 23:54Z on the rebuilt dev stack (migration 0014); exit 0
+== the probe, in the worker container
+{"check": "alembic upgrade head on the scratch database", "ok": true}
+{"scratch_database": "flowdesk_smoke_f3_5925e2ff"}
+2026-11-24 23:54:47 [info     ] fred_history_series            created=9 duplicates_skipped=0 final_window=100 first_prints=9 gap_first_prints_without_o4_witness=0 gaps_without_o4_first_print_skipped=0 no_vintage_excluded=0 revised_pre_vintage_excluded=0 revisions=0 series=SMOKE_ROLL windows_split=0
+2026-11-24 23:54:51 [info     ] fred_history_series            created=9 duplicates_skipped=0 final_window=100 first_prints=9 gap_first_prints_without_o4_witness=0 gaps_without_o4_first_print_skipped=0 no_vintage_excluded=0 revised_pre_vintage_excluded=0 revisions=0 series=SMOKE_PLAIN windows_split=0
+{"check": "captured 9 periods of SMOKE_ROLL", "ok": true}
+2026-11-24 23:54:56 [info     ] fred_late_arrival_accepted     available_at=2026-11-24T23:54:51.299835+00:00 fred_claimed_vintage=2023-11-20 period=2023-11-19 series=SMOKE_ROLL
+2026-11-24 23:54:56 [info     ] fred_poll_series               created=2 first_prints=11 late_arrivals=1 revisions=0 rolled_off=3 series=SMOKE_ROLL since=2023-11-23 vintages_fetched=2 window_gap_first_prints=0 window_revised_pre_vintage=0 windows_split=0
+2026-11-24 23:55:01 [warning  ] ingest_run_failed              feed=SMOKE_PLAIN kind=schema_mismatch provider=fred
+2026-11-24 23:55:01 [error    ] fred_poll_series_failed        series=SMOKE_PLAIN
+{"check": "SMOKE_ROLL accepted, SMOKE_PLAIN (not declared rolling) refused", "ok": true}
+{"poll_runs": [{"feed": "SMOKE_ROLL", "status": "succeeded", "rows_written": 2, "error": null}, {"feed": "SMOKE_PLAIN", "status": "failed", "rows_written": null, "error": "schema_mismatch:SchemaMismatch: history of SMOKE_PLAIN refused: rule 3 (a chain does not end at the latest value): 3 periods, from ['2023-11-13', '2023-11-14', '2023-11-15']; rule 5 (a period has two values for one vintage, or a column is no vintage of the series): 3 periods, from ['2023-11-13', '2023-11-14', '2023-11-15']"}]}
+{"check": "SMOKE_ROLL wrote 2 rows (the late period 6 and the new period 10)", "ok": true}
+{"check": "SMOKE_PLAIN failed schema_mismatch", "ok": true}
+{"late_row": {"effective_at": "2023-11-19", "available_at": "2026-11-24 23:54:51.299835+00:00", "provider_claimed_available_at": "2023-11-21 05:00:00+00:00", "ingestion_run_id": 3}, "new_row": {"effective_at": "2023-11-23", "available_at": "2023-11-25 05:00:00+00:00", "provider_claimed_available_at": null, "ingestion_run_id": 3}, "run_started_at": "2026-11-24 23:54:51.299835+00:00"}
+{"check": "late row: available_at = the accepting run's start", "ok": true}
+{"check": "late row: FRED's claimed date kept in the audit column", "ok": true}
+{"check": "new period after captured_through: dated by FRED, audit column NULL", "ok": true}
+{"check": "exactly one own fetch, for the late period", "ok": true}
+{"check": "every stored SMOKE_ROLL row, rolled-off ones included, is exactly as it was", "ok": true}
+2026-11-24 23:55:05 [info     ] fred_poll_series               created=0 first_prints=11 late_arrivals=0 revisions=0 rolled_off=3 series=SMOKE_ROLL since=2023-11-24 vintages_fetched=1 window_gap_first_prints=0 window_revised_pre_vintage=0 windows_split=0
+{"check": "the next poll is quiet: the late row reads back as FRED's vintage", "ok": true}
+{"result": "PASS"}
+{"dropped": "flowdesk_smoke_f3_5925e2ff"}
+PASS: F3 late arrival and rolled-off exemption through the real worker; dev database untouched

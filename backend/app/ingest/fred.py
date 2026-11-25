@@ -285,15 +285,62 @@ class FredClient:
         dates = await self.vintage_dates(series_id)
         return await self._history_over(series_id, dates, [d for d in dates if d >= since], window)
 
+    async def period_history(
+        self,
+        series_id: str,
+        period: date,
+        vintage_dates: Sequence[date],
+        *,
+        window: int = HISTORY_WINDOW,
+    ) -> FredVintageRow:
+        """One period's own revision history (F3 rule (c)): `output_type=3` with
+        `observation_start = observation_end = period`, across every vintage date from the period
+        on. The columns are the vintages in which its value changed, so the earliest is FRED's
+        claimed first print.
+
+        The real-time window starts at the period itself, because FRED's claimed vintage date is not
+        known until this answers. ASSUMED, not verified for every series: no value of a period is
+        published before the period's own date (true of all 17 series of 6.4, none of which is a
+        forecast). The same windowing and 504 halving as `revision_history`; for a late period a few
+        days old that is ONE request, and every request takes a rate-budget slot. `vintage_dates`
+        is the series' list the poll has just read (no second read). No vintage on or after the
+        period, or FRED listing no row for it, returns a row with no columns: no evidence, which
+        the rules refuse.
+        """
+        _check_window(window)
+        fetch = [d for d in vintage_dates if d >= period]
+        found = await self._history_over(
+            series_id, vintage_dates, fetch, window, observation=period
+        )
+        columns: dict[date, Decimal | None] = {}
+        for row in found.rows:
+            if row.effective_at != period:
+                raise SchemaMismatch("FRED answered a one-period request with another period")
+            for vintage, value in row.values.items():
+                if vintage in columns and columns[vintage] != value:
+                    raise SchemaMismatch("FRED gave one period two values for one vintage")
+                columns[vintage] = value
+        return FredVintageRow(period, columns)
+
     async def _history_over(
-        self, series_id: str, all_dates: Sequence[date], fetch_dates: Sequence[date], window: int
+        self,
+        series_id: str,
+        all_dates: Sequence[date],
+        fetch_dates: Sequence[date],
+        window: int,
+        *,
+        observation: date | None = None,
     ) -> RevisionHistory:
         rows: list[FredVintageRow] = []
         size, splits, i = window, 0, 0
         while i < len(fetch_dates):
             chunk = fetch_dates[i : i + size]
             try:
-                rows.extend(await self._revision_window(series_id, chunk[0], chunk[-1]))
+                rows.extend(
+                    await self._revision_window(
+                        series_id, chunk[0], chunk[-1], observation=observation
+                    )
+                )
             except GatewayTimeout:
                 if len(chunk) == 1:
                     raise
@@ -307,11 +354,11 @@ class FredClient:
         return RevisionHistory(tuple(all_dates), tuple(rows), splits, size, tuple(fetch_dates))
 
     async def _revision_window(
-        self, series_id: str, start: date, end: date
+        self, series_id: str, start: date, end: date, *, observation: date | None = None
     ) -> list[FredVintageRow]:
         """`output_type=3` for one real-time window, all pages. A window built from the series' own
         vintage dates always holds one, so "No vintage dates exist" here is NOT a quiet day: it is
-        raised (NoVintageDates), and it fails the run."""
+        raised (NoVintageDates), and it fails the run. `observation` limits it to one period."""
         if not _SERIES_ID.fullmatch(series_id):
             raise ValueError("invalid FRED series id")
         params = {
@@ -323,6 +370,9 @@ class FredClient:
             "realtime_end": end.isoformat(),
             "limit": str(self._page_size),
         }
+        if observation is not None:
+            params["observation_start"] = observation.isoformat()
+            params["observation_end"] = observation.isoformat()
         rows: list[FredVintageRow] = []
         offset = 0
         for _ in range(MAX_PAGES):

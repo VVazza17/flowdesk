@@ -16,6 +16,16 @@ from app.models.base import Base
 
 TZ = TIMESTAMP(timezone=True)
 
+# Migration 0014 has the same literal, and `alembic check` fails if they differ.
+PROVIDER_CLAIMED_COMMENT = (
+    "AUDIT ONLY; no point-in-time read uses it. NULL on every ordinary row. Set only on an F3 late "
+    "arrival (ADR-0003 addendum F3): a period FRED added to a vintage dated before FlowDesk could "
+    "observe it there. Such a row's available_at is when FlowDesk first observed it (the accepting "
+    "run's start); this column is the instant FRED's claimed vintage date would have given it "
+    "(available_at_for(vintage)). The ingest's own comparison with FRED reads it back as that "
+    "vintage; nothing else reads it."
+)
+
 
 class MacroMetric(Base):
     __tablename__ = "macro_metrics"
@@ -34,6 +44,10 @@ class MacroMetric(Base):
     source: Mapped[str] = mapped_column(Text)
     ingestion_run_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("ingestion_runs.id", ondelete="SET NULL")
+    )
+    # Migration 0014 (ADR-0003 addendum F3). AUDIT ONLY: no point-in-time read uses it.
+    provider_claimed_available_at: Mapped[datetime | None] = mapped_column(
+        TZ, comment=PROVIDER_CLAIMED_COMMENT
     )
 
 

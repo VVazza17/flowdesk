@@ -57,6 +57,7 @@ class FakeFred:
         self.pre_plain, self.gaps, self.hide, self.o3_limit = pre_plain, gaps, set(hide), o3_limit
         self.calls: list[str] = []
         self.windows_asked: list[tuple[str, date, date]] = []
+        self.period_requests: list[date] = []  # observation_start of each one-period o3 request
 
     def chains(self) -> dict[date, Chain]:
         return {**self.pre_revised, **self.periods}
@@ -131,7 +132,14 @@ class FakeFred:
         if len(held) > self.o3_limit:
             return httpx2.Response(504, text="<html>504 Gateway Time-out</html>")
         rows3: list[dict[str, str]] = []
+        # A one-period request (F3's own fetch) bounds the periods, as FRED does.
+        lo = date.fromisoformat(q["observation_start"]) if "observation_start" in q else None
+        hi = date.fromisoformat(q["observation_end"]) if "observation_end" in q else None
+        if lo is not None:
+            self.period_requests.append(lo)
         for p, ch in sorted(self.chains().items()):
+            if (lo is not None and p < lo) or (hi is not None and p > hi):
+                continue
             cols = {f"{sid}_{v:%Y%m%d}": text_of(val) for v, val in ch if start <= v <= end}
             if cols:
                 rows3.append({"date": p.isoformat(), **cols})

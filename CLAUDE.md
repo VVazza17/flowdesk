@@ -187,8 +187,17 @@ below).
   **Step 6 built (2026-11-19):** `app/ingest/bars_feed.run_bars` (backfill and poll, daily and 15m), tasks `ingest.bars_daily_poll` /
   `ingest.bars_15m_poll`; dev stack: 15m backfill 26,208 bars, one manual run of each poll (0 rows, 0 volume revisions at 00:11 ET).
   Bars entry points use `yfinance_limiter` (wait bound two spacings: a 60 s bound refused the 15m run's second slot, MEASURED). F-6a
-  closed 2026-11-20: 58 days (`intraday_floor`), and an all-refused batch is named per symbol. Open: F-6b (two FRED ICE series
-  refused since 11-16; day 1 measured 2026-11-20, repeat Monday), BUILD-LOG 2026-11-20.
+  closed 2026-11-20: 58 days (`intraday_floor`), and an all-refused batch is named per symbol. F-6b closed 2026-11-24 (next bullet).
+- **F-6b closed: F3 late arrivals and the rolled-off exemption are built (2026-11-24; ADR-0003, Addendum 2026-11-24).** The two ICE BofA
+  series are declared `rolling_window` in `settings.FRED_SERIES` (only they). Their stored periods older than the latest vintage's earliest
+  observation are **rolled off**: exempt from rule 3, and from rule 5 for vintages older than FRED's earliest listed date. The stored rows are
+  never touched, and a gap anywhere else still fails. **No window length in code** ("three years" is ASSUMED, unused). A **late arrival**
+  (a latest value on or before `captured_through` with no history) gets its own one-period fetch (`FredClient.period_history`). It is
+  accepted only if that fetch agrees on one value equal to the latest; **absence never counts as agreement**. It is stored with
+  `available_at` = the accepting run's start and FRED's date in `macro_metrics.provider_claimed_available_at` (migration 0014, audit only).
+  **No point-in-time read uses that column**; `read_chains` does, to compare with FRED. `FRED_RULE_VERSION` stays 1 (counted: nothing
+  stored changes). Mutation suite `f3-rolling`; smoke `infra/smoke-m2-f3-rolling.sh`. The manual poll of 2026-11-24 accepted both series
+  (8 rows each, 2026-11-10 included) and all 17 succeeded.
 - **The base image is pinned by digest** (M2 slice 0, 2026-11-08). The `FROM` line in `backend/Dockerfile` is
   the one definition. The CI tooling container, `lock-deps.sh` and the smokes read it through
   `infra/base-image.sh`, and lint fails on a second definition. The base no longer updates itself: the daily
@@ -271,10 +280,15 @@ intraday, and **M4 planning must decide whether `compute_rotation`'s 30-minute i
 
 Do not resolve these unilaterally. Flag and wait.
 
-**Evidence protection (Kyle, 2026-11-20): no `python -m app.backfill --force` re-capture and no `FRED_RULE_VERSION` bump that
-touches BAMLC0A0CM or BAMLH0A0HYM2 without Kyle's approval.** Both rebuild from FRED's current record, which back-dates period
-2026-11-10 to vintage 2026-11-10; FlowDesk measured that it was not in FRED's record until after 2026-11-15 13:00Z (F-6b, ADR-0003 F3
-draft). A re-capture would store FRED's claimed date and erase the measurement. **Pre-flag checklist** for `BARS_POLL_ENABLED`:
+**Evidence protection (Kyle, 2026-11-20; tightened 2026-11-24): no re-capture of BAMLC0A0CM or BAMLH0A0HYM2, ever, without Kyle's
+explicit approval.** That covers `python -m app.backfill --force` on either series, a `FRED_RULE_VERSION` bump (it re-captures every
+series), and anything else that rebuilds them from FRED. Two reasons:
+- **Their stored history before FRED's current earliest observation exists only in FlowDesk.** FRED serves both as a moving window
+  (MEASURED 2026-11-24: the earliest moved from 2023-11-20 to 2023-11-24); FlowDesk holds them from 2023-11-14. That span grows every day.
+- **The 2026-11-10 measurement.** FRED back-dates period 2026-11-10 to vintage 2026-11-10; FlowDesk measured it absent until after
+  2026-11-15 13:00Z, and stores it with `available_at` = the accepting run's start (ADR-0003 F3). A re-capture would store FRED's date.
+
+**Pre-flag checklist** for `BARS_POLL_ENABLED`:
 `docs/BUILD-LOG.md`, addendum 2026-11-20 (third).
 
 ## Hard rules (§17.1 — follow literally)
@@ -406,6 +420,7 @@ bash infra/smoke-m2-slice3.sh     # M2 slice 3: migrate + seed (24 symbols, 5 un
 bash infra/smoke-m2-slice5-step0.sh # M2 slice 5 step 0: two workers on two queues; ingest saturation never delays the ops canary; each worker wedged degrades ready
 bash infra/smoke-m2-slice5-step3-sweep.sh # M2 slice 5 step 3 part C: SIGKILL the ingest worker mid-task -> busy, then stale, then the sweep fails both rows (~5 min)
 bash infra/smoke-m2-slice5-fred-failures.sh # M2 slice 5: FRED 500/423/429 via a URL-echoing stub through the real worker; the api_key is in no stored or served text
+bash infra/smoke-m2-f3-rolling.sh # F-6b: F3 late arrival + rolled-off exemption through the real worker, on a scratch database it creates and drops
 bash infra/smoke-m2-beat-schedule.sh # IDEA-043: image owns /var/lib/beat, compose volume, a recreated Beat catches up a missed firing with the volume and not without it (~9 min)
 bash infra/smoke-m2-slice2.sh     # M2 slice 2: encrypt, SFTP copy to stand-in sshd (3 permission policies), restore with the private key only
 docker compose run --rm worker python -m app.backfill   # FRED revision history, every series not yet captured; --series A,B [--force]

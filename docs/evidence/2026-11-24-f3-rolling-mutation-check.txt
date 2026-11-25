@@ -1,0 +1,30 @@
+# bash infra/mutation-check.sh f3-rolling, run 2026-11-24 on the F3 + rolled-off build (uncommitted tree at the time)
+baseline: tests/test_fred_poll.py, tests/test_macro_f3_rolling.py, tests/test_macro_metrics.py pass unmutated
+   1. caught                   roll-off applies to a series not declared rolling  [-k not_declared_rolling]  1 failed, 17 deselected in 0.24s
+   2. caught                   roll-off takes any stored period missing from latest (a middle gap)  [-k missing_in_the_middle]  1 failed, 17 deselected in 0.23s
+   3. caught                   roll-off takes a period the fetch extends  [-k fetch_would_extend]  1 failed, 17 deselected in 0.23s
+   4. caught                   rule 3 does not skip rolled-off periods  [-k pass_rules_3_and_5]  1 failed, 17 deselected in 0.22s
+   5. caught                   rule 5 exempts a rolled-off column whatever its vintage  [-k inside_freds_list_range]  1 failed, 17 deselected in 0.22s
+   6. caught                   rule 5 exempts an old vintage on any period  [-k did_not_roll_off]  1 failed, 17 deselected in 0.26s
+   7. caught                   a late arrival is accepted when its vintages disagree  [-k vintages_disagree]  1 failed, 17 deselected in 0.24s
+   8. caught                   a late arrival need not equal the latest value  [-k value_is_not_the_latest]  1 failed, 17 deselected in 0.23s
+   9. caught                   a late arrival's evidence may name unknown vintages  [-k unknown_vintage_is_refused]  1 failed, 17 deselected in 0.24s
+  10. caught                   evidence filed under one period confirms another  [-k its_own_period_only]  1 failed, 17 deselected in 0.24s
+  11. caught                   a period after captured_through is treated as late  [-k after_captured_through]  1 failed, 17 deselected in 0.24s
+  12. caught                   an unconfirmed late arrival is not refused (absence counts as agreement)  [-k absence_never_counts]  1 failed, 17 deselected in 0.23s
+  13. caught                   late candidates include stored periods  [-k late_candidates_are]  1 failed, 17 deselected in 0.23s
+  14. caught                   late candidates include periods after captured_through  [-k late_candidates_are]  1 failed, 17 deselected in 0.23s
+  15. caught                   the own fetch is not bounded to its period  [-k one_period_across]  1 failed, 17 deselected in 0.24s
+  16. caught                   the own fetch starts at the series' first vintage, not the period  [-k one_period_across]  1 failed, 17 deselected in 0.23s
+  17. caught                   the own fetch accepts an answer about another period  [-k another_period]  1 failed, 17 deselected in 0.24s
+  18. caught                   a late arrival is dated by FRED's vintage  [-k dated_by_the_accepting_run]  1 failed, 21 deselected in 1.27s
+  19. caught                   every new first print is dated by the run (the second key wins)  [-k dated_by_the_accepting_run]  1 failed, 21 deselected in 1.19s
+  20. caught                   the audit column is not written  [-k dated_by_the_accepting_run]  1 failed, 21 deselected in 1.03s
+  21. caught                   read_chains reads a late row's vintage from available_at  [-k dated_by_the_accepting_run]  1 failed, 21 deselected in 1.06s
+  22. caught                   the poll dates late arrivals by its own clock, not the run's start  [-k dated_by_the_accepting_run]  1 failed, 21 deselected in 0.96s
+  23. caught                   the poll treats every series as rolling  [-k polls_past_its_rolled_off]  1 failed, 21 deselected in 1.06s
+  24. caught                   the poll never recognises late arrivals  [-k dated_by_the_accepting_run]  1 failed, 21 deselected in 1.05s
+  25. caught                   the late-fetch cap is ignored  [-k over_the_cap]  1 failed, 21 deselected in 1.20s
+  26. caught                   the trigger function does not cover the audit column  [-k no_stored_column and provider_claimed]  1 failed, 27 deselected in 0.69s
+  27. caught                   the CHECK allows a claimed instant equal to available_at  [-k only_hold_an_instant_before]  1 failed, 27 deselected in 0.83s
+27/27 mutations caught

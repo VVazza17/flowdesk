@@ -420,13 +420,17 @@ def data_stale_after_all() -> dict[str, timedelta]:
 # looking at a value that predates the vintage record, which is not the same as no value existing.
 # The boundary differs by decades between series. Adding a series is one row; the backfill warns
 # if what it observes no longer matches.
+# `rolling_window=True` (the two ICE BofA spreads only; F-6b cause (i), MEASURED 2026-11-24): FRED
+# serves them as a moving window, so their two dates above are what FlowDesk STORES, which FRED no
+# longer serves. That stored history exists only in FlowDesk: never re-capture either series without
+# Kyle's explicit approval (CLAUDE.md, evidence protection).
 FRED_SERIES: tuple[FredSeries, ...] = (
     FredSeries("DGS10", date(2005, 6, 28), date(2005, 6, 27)),
     FredSeries("DGS2", date(2005, 6, 28), date(2005, 6, 27)),
     FredSeries("T10Y2Y", date(2014, 1, 27), date(2014, 1, 27)),
     FredSeries("MORTGAGE30US", date(2010, 6, 17), date(2010, 6, 24)),
-    FredSeries("BAMLH0A0HYM2", date(2023, 11, 13), date(2023, 11, 14)),
-    FredSeries("BAMLC0A0CM", date(2023, 11, 13), date(2023, 11, 14)),
+    FredSeries("BAMLH0A0HYM2", date(2023, 11, 13), date(2023, 11, 14), rolling_window=True),
+    FredSeries("BAMLC0A0CM", date(2023, 11, 13), date(2023, 11, 14), rolling_window=True),
     FredSeries("CPIAUCSL", date(1972, 7, 21), date(1972, 7, 1)),
     FredSeries("UNRATE", date(1960, 3, 15), date(1960, 3, 1)),
     FredSeries("HOUST", date(1960, 7, 21), date(1960, 7, 1)),
