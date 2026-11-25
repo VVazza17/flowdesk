@@ -4725,3 +4725,10 @@ Kyle's steps use the b2 tool's documented syntax and **were not run by Claude**:
 2026-11-21 to 11-24). With `HEARTBEAT_URL` armed (5-minute period, 40-minute grace) every such night pages. The steps say so (A12).
 
 **Not done:** Kyle's steps (Part A), the real-bucket probe, the drill (Parts B and C). In that order, after this commit.
+
+**One ledger row closed by hand (2026-11-25, after `97dd30e`).** The stand-in smoke's `docker compose up -d --build` (07:31Z) restarted
+this PC's `backup` service on the new image before migration 0015 existed. Its run failed `NoRecipient` as usual, but its final write
+(`output_bytes`) failed, leaving `task_runs` row 15663 at `running`. Backup rows are not swept, so nothing would have closed it. It was set
+to `failed` / `NoRecipient` with an `error_message` saying why: one `UPDATE ... WHERE id = 15663 AND status = 'running'`. The stack is now
+at 0015, and the 08:00Z run wrote its row normally. Lesson: a smoke that rebuilds the stack runs new code against the dev database's
+current schema. Run the migration first when a build adds one.
