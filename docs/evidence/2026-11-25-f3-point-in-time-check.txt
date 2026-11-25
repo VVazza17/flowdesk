@@ -1,0 +1,18 @@
+# docs/evidence/f6b/pit_check.py, run 2026-11-25T05:58:10Z, read-only through app/services/macro_read.py; exit 0
+--- BAMLH0A0HYM2 as of 2026-11-20T23:59:59.999999-05:00
+  series_as_of 11-06..11-13: 2026-11-06=3.42 (rev 0, available 2026-11-07T05:00:00+00:00), 2026-11-09=3.34 (rev 0, available 2026-11-10T05:00:00+00:00), 2026-11-11=3.3 (rev 0, available 2026-11-12T05:00:00+00:00), 2026-11-12=3.2 (rev 0, available 2026-11-13T05:00:00+00:00), 2026-11-13=3.23 (rev 0, available 2026-11-14T05:00:00+00:00)
+  value_as_of 2026-11-10: Missing(reason=<Reason.NOT_PUBLISHED_AS_OF: 'not_published_as_of'>, detail='BAMLH0A0HYM2 2026-11-10: known, but no revision was published at or before 2026-11-20 23:59:59.999999-05:00')
+  PASS: 2026-11-10 absent
+--- BAMLH0A0HYM2 as of 2026-11-25T23:59:59.999999-05:00
+  series_as_of 11-06..11-13: 2026-11-06=3.42 (rev 0, available 2026-11-07T05:00:00+00:00), 2026-11-09=3.34 (rev 0, available 2026-11-10T05:00:00+00:00), 2026-11-10=3.3 (rev 0, available 2026-11-24T23:55:43.359017+00:00), 2026-11-11=3.3 (rev 0, available 2026-11-12T05:00:00+00:00), 2026-11-12=3.2 (rev 0, available 2026-11-13T05:00:00+00:00), 2026-11-13=3.23 (rev 0, available 2026-11-14T05:00:00+00:00)
+  value_as_of 2026-11-10: Observation(metric='BAMLH0A0HYM2', effective_at=datetime.date(2026, 11, 10), value=Decimal('3.3'), revision=0, available_at=datetime.datetime(2026, 11, 24, 23, 55, 43, 359017, tzinfo=datetime.timezone.utc))
+  PASS: 2026-11-10 present, value 3.3
+--- BAMLC0A0CM as of 2026-11-20T23:59:59.999999-05:00
+  series_as_of 11-06..11-13: 2026-11-06=0.93 (rev 0, available 2026-11-07T05:00:00+00:00), 2026-11-09=0.91 (rev 0, available 2026-11-10T05:00:00+00:00), 2026-11-11=0.9 (rev 0, available 2026-11-12T05:00:00+00:00), 2026-11-12=0.89 (rev 0, available 2026-11-13T05:00:00+00:00), 2026-11-13=0.89 (rev 0, available 2026-11-14T05:00:00+00:00)
+  value_as_of 2026-11-10: Missing(reason=<Reason.NOT_PUBLISHED_AS_OF: 'not_published_as_of'>, detail='BAMLC0A0CM 2026-11-10: known, but no revision was published at or before 2026-11-20 23:59:59.999999-05:00')
+  PASS: 2026-11-10 absent
+--- BAMLC0A0CM as of 2026-11-25T23:59:59.999999-05:00
+  series_as_of 11-06..11-13: 2026-11-06=0.93 (rev 0, available 2026-11-07T05:00:00+00:00), 2026-11-09=0.91 (rev 0, available 2026-11-10T05:00:00+00:00), 2026-11-10=0.9 (rev 0, available 2026-11-24T23:55:48.260729+00:00), 2026-11-11=0.9 (rev 0, available 2026-11-12T05:00:00+00:00), 2026-11-12=0.89 (rev 0, available 2026-11-13T05:00:00+00:00), 2026-11-13=0.89 (rev 0, available 2026-11-14T05:00:00+00:00)
+  value_as_of 2026-11-10: Observation(metric='BAMLC0A0CM', effective_at=datetime.date(2026, 11, 10), value=Decimal('0.9'), revision=0, available_at=datetime.datetime(2026, 11, 24, 23, 55, 48, 260729, tzinfo=datetime.timezone.utc))
+  PASS: 2026-11-10 present, value 0.9
+RESULT: PASS

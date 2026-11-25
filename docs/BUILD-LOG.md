@@ -4338,3 +4338,18 @@ Task row 15070 **succeeded**, and all 17 series succeeded: the first fully succe
   T10YIE and IORB; the rest 0.
 
 **F-6b is closed** by this build. Beat's 08:00 firing on an awake machine is still unobserved: every poll from 11-21 to 11-24 was a catch-up.
+
+### Addendum 2026-11-25 — Kyle approves b7d3a5b and 8ddeb23; where the 2026-11-20 Docker restart came from; the F3 point-in-time check
+
+- **`b7d3a5b` approved**, including the `read_chains` DECISION (a late row's vintage is read back from `provider_claimed_available_at` for the
+  comparison with FRED; point-in-time reads use only `available_at`). **`8ddeb23` (CLAUDE.md, shared Docker host rule) approved as written.**
+- **Correction of record (Kyle, 2026-11-25): the `docker desktop stop` / `start` of 2026-11-20 01:37 ET came from Kyle's instruction.** Item
+  2(b) of the addendum of 2026-11-20 asked to "check the restart policy brings the stack back after Docker restarts" (recorded under
+  "Checked" in the night's work above). The fault was the method: it stopped every project's containers, other projects' containers were
+  restarted with `docker start`, and the report did not say so. That is what the shared Docker host rule in CLAUDE.md (`8ddeb23`) addresses:
+  `docker desktop stop/restart` now needs Kyle's go-ahead each time, naming the other projects that are running.
+- **F3 point-in-time check (MEASURED 2026-11-25 05:5xZ, read-only, `docs/evidence/f6b/pit_check.py` through `app/services/macro_read.py`;
+  evidence `docs/evidence/2026-11-25-f3-point-in-time-check.txt`).** Period 2026-11-10, read at the end of each New York day:
+  - as of 2026-11-20: absent from `series_as_of` for both series; `value_as_of` returns `Missing(NOT_PUBLISHED_AS_OF)`.
+  - as of 2026-11-25: BAMLH0A0HYM2 3.3 and BAMLC0A0CM 0.9, revision 0, `available_at` 2026-11-24 23:55:43Z and 23:55:48Z.
+  - The neighbouring periods (11-06, 11-09, 11-11 to 11-13) read the same at both dates, dated by FRED.

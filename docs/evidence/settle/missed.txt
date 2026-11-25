@@ -11,3 +11,7 @@ A later snapshot is its own observation at its own time and does not stand in fo
                       unclean reboot (Kernel-Power 41) at 2026-11-21 15:47 EST. No run.log entry for 11-21 at all: StartWhenAvailable
                       did not run it after the boot, although the stack was up (the FRED poll ran at 15:48 EST). Why is not known: the
                       TaskScheduler/Operational log is disabled on this machine. No snapshot. The 11-22 run (17:12Z) is that day's own.
+CORRECTION 2026-11-25 to the 2026-11-21 entry above (appended; the entry itself is unchanged): the last System event before the crash
+                      was 2026-11-20 22:53:09 EST (Hyper-V-VmSwitch), not 19:46 (that came from a query filtered to power events).
+                      EventLog 6008 records the unexpected shutdown at 2026-11-20 22:49:54 EST; Kernel-Power 41 was logged at the
+                      next boot, 2026-11-21 15:47:26 EST.
