@@ -762,6 +762,19 @@ Resolve before the first premium-module template is written (§7.5).
 **Status:** Open. Design settled 2026-11-08 and built in M2 slice 2 (the `backup` service, `docs/BACKUP.md`), but **not closed**: it closes when a real unattended dump lands on the real desktop and restores from there. Must be closed before M2 slice 6 persists its first scheduled bar (corrected 2026-11-08: this line said "before M2 writes its first persistent observation"; see the section below). **The drill, step by step for Kyle** (2026-11-19): `docs/BACKUP.md`, "The restore drill, step by step"; the bars polls stay behind `BARS_POLL_ENABLED=false` until it passes.
 **Correction 2026-11-20 (Kyle; MEASURED the same day): off-box backup is currently impossible.** The machine that runs the stack is `DESKTOP-GHDCBPQ`, a desktop, and it is not a backup destination; the "laptop runs the stack, desktop receives the copy" premise above and in `docs/BACKUP.md` has the machines the wrong way round, and no second machine is set up to receive a copy. This entry cannot close until Kyle chooses a new destination (likely an Oracle Cloud Always Free VM: a Linux SFTP target, the restore drill run on the laptop). Nothing is built for that yet, and the drill guide's fixes are held until the choice (`docs/BUILD-LOG.md`, addendum 2026-11-20).
 **Raised:** 2026-11-04 (M1 slice 9)
+**Decision 2026-11-25 (Kyle): the off-box destination is Backblaze B2.** It replaces the 2026-11-20 note that the destination was undecided.
+- The dump is `age`-encrypted on the stack machine before upload; B2 holds ciphertext only.
+- **No mandatory recurring cost:** the dump grows about 1 GB a year (Kyle's figure), inside B2's always-free 10 GB, and a check keeps
+  the bucket under 10 GB. B2's spending caps are set to $0 above the free tier, if the UI accepts $0: Backblaze's docs do not say.
+  The plan records that the bound is (copies kept) x (dump size), MEASURED 1.72 MB today.
+- The key ID and key live in `.env` only, created by Kyle.
+- The machine's key is bucket-scoped with no delete or `bypassGovernance` capability, plus governance-mode Object Lock for
+  30 days (Kyle, addendum 2026-11-25 third; governance, not compliance, so a wrong setting stays recoverable with the master
+  key), proved by a probe.
+- The restore drill runs on the laptop with a separate read-only key, with the same fingerprint comparison.
+
+Plan, not built: `docs/BUILD-LOG.md`, addendum 2026-11-25 (second). **This entry closes when a backup the scheduler took and uploaded
+unattended restores on the laptop with matching fingerprints.** The bars polls stay behind `BARS_POLL_ENABLED=false` until then.
 
 ### The proposal
 §13 says "Nightly `pg_dump` to a local disk path or free-tier object storage". No slice or milestone owns

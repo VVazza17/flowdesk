@@ -4353,3 +4353,274 @@ Task row 15070 **succeeded**, and all 17 series succeeded: the first fully succe
   - as of 2026-11-20: absent from `series_as_of` for both series; `value_as_of` returns `Missing(NOT_PUBLISHED_AS_OF)`.
   - as of 2026-11-25: BAMLH0A0HYM2 3.3 and BAMLC0A0CM 0.9, revision 0, `available_at` 2026-11-24 23:55:43Z and 23:55:48Z.
   - The neighbouring periods (11-06, 11-09, 11-11 to 11-13) read the same at both dates, dated by FRED.
+
+### Addendum 2026-11-25 (second) — Kyle's decision: the off-box backup destination is Backblaze B2. PLAN, NOT BUILT
+
+**Decided (Kyle, 2026-11-25), fixed, not open for the plan to change:**
+- **Encryption stays on the stack machine.** Each backup is `age`-encrypted before upload; B2 only ever holds ciphertext.
+- **No mandatory recurring cost.** Kyle's reasoning: FlowDesk's dump grows about 1 GB a year, inside B2's always-free 10 GB. A check keeps the
+  bucket under 10 GB; if B2 offers a spending cap, it is set to $0 above the free tier (verified from Backblaze's own docs).
+- **Credentials:** the B2 key ID and application key are secrets: `.env` only, never in chat, logs or stored errors (the `HEARTBEAT_URL`
+  rule). Kyle creates them himself.
+- **Write-once equivalent:** the key on the stack machine cannot delete or overwrite a backup: a bucket-scoped application key without delete
+  capability, plus server-side protection (B2 Object Lock), so even a stolen key cannot erase history inside the retention period. Proved by a
+  probe like `verify-destination.sh`: an upload succeeds, a delete or overwrite is refused.
+- **The restore drill runs on the laptop**, downloading with a separate read-only key, with the same fingerprint comparison as before.
+
+**What Backblaze's documentation says (read 2026-11-25; the pages are listed at the end of this entry).**
+
+| Fact | Status |
+|---|---|
+| "First 10GB storage is always free"; storage is billed "per byte-hour over the last month" | Documented (pricing) |
+| Sign-up: "No credit card required" | Documented (sign-up page) |
+| Egress free "up to 3x their average monthly storage" | Documented (pricing) |
+| Transaction classes A, B, C: "Cost: Free". Class D: first 2,500 a day free | Documented (transaction pricing). **Which of our calls, if any, are class D: not established (ASSUMED none)** |
+| Caps: daily dollar limits on storage and on Class A, B and C; reset 00:00 GMT; alerts at 75% and 100% | Documented (caps pages) |
+| **Whether a cap can be $0, and what happens when one is reached** (refused requests? which error?) | **Not documented.** Kyle reports what the web UI accepts; the behaviour at the cap is ASSUMED to be refusals and is not tested |
+| Whether hidden and old versions are billed | **Not documented.** `b2 bucket get --show-size` counts every version. **ASSUMED billed**; the budget counts every version |
+| Object Lock: compliance retention "cannot be removed by any user"; locked versions cannot be deleted (`401 access_denied`); a lifecycle rule "does not" delete a locked version | Documented (Object Lock, lifecycle, `b2_delete_file_version`) |
+| Default bucket retention (mode + period, 1 to 3,000 days) applies to every new upload | Documented. The web UI guide shows no mode selector, so the default is set with the CLI. The docs conflict on whether Object Lock must be on at bucket creation; the CLI says `--file-lock-enabled` "cannot be changed after bucket creation". **Plan: enable it at creation** |
+| "Setting file retention mode to 'compliance' is irreversible"; "If you locked your file for longer than you intended, you need to close your Backblaze B2 account" | Documented. **Pick the period once, carefully** |
+| `writeFiles` covers uploads **and `b2_hide_file`** (an S3 delete without `versionId` = a delete marker). Deleting a version needs `deleteFiles` (+ `bypassGovernance` for governance locks) | Documented. **A key that can upload can also hide.** Hiding leaves the locked version stored. Whether a hide of a locked version is refused: not documented |
+| Same-name upload = a new version; "Previous versions of the file are still stored"; buckets "are versioned by default" | Documented. **B2 cannot refuse a same-name upload; it keeps the old version.** "Overwrite refused" therefore means: the old version is still there, byte for byte |
+| Web UI key dialog: Read and Write / Read Only / Write Only. **Which capabilities "Write Only" grants (deleteFiles or not): not documented** | Hence: keys are made with the CLI's explicit capability list |
+| S3-compatible API: `https://s3.<region>.backblazeb2.com`; access key = key ID; the master key "is not supported"; a bucket-restricted key needs `listAllBucketNames` "for compatibility with SDKs" | Documented (S3 app-keys page). That capabilities are *enforced* on S3 calls is inferred from the page's mapping (ASSUMED; the real-bucket probe proves it) |
+
+**What this changes in Kyle's cost reasoning (MEASURED 2026-11-25 and DERIVED; recorded, not a change to the decision).** The free tier holds
+when **(copies kept) × (dump size) < 10 GB**, not when one year's growth is under 10 GB. MEASURED today: the compressed dump is **1.72 MB**
+(`pg_dump -Fc | wc -c`, 2026-11-25; the database is 30 MB). With 32 copies on B2 (30 days locked plus up to 2 days hidden, below), the bucket holds about **55 MB**.
+If the dump grew 1 GB a year (Kyle's figure; the growth rate is not measured), 32 copies would cross 10 GB when one dump passes about
+**310 MB**, roughly four months in (DERIVED). The bucket-size check is the tripwire. The answer when it nears is fewer copies, not a
+higher bill: weekly instead of daily uploads, or a shorter lock.
+
+#### The plan (nothing is built; each part says what it replaces)
+
+**1. Client: rclone, its S3 backend, pointed at B2's S3-compatible endpoint.**
+- **Why rclone:** one static binary in the backup image, which is shell plus Postgres tools and has no Python. The b2 CLI (MIT) and an S3
+  library (boto3, Apache-2.0) would both bring a Python runtime into that image.
+- **Why its S3 backend and not its native `b2` backend:** CI needs a stand-in, and stand-ins speak S3. The native B2 API has none. The
+  native backend also has no Object Lock options; the S3 backend has them, though we rely on the bucket's default retention and do not need them.
+  - Rclone's docs do not list Backblaze among the S3 providers. The generic "Other" provider is **ASSUMED** to work against B2's S3
+    endpoint; the real-bucket probe is the test.
+- **Licence: MIT** (rclone's README and GitHub; Alpine lists MIT).
+  - `license_audit.py` audits pip packages only, so rclone is not covered by it. It gets its own entry in IDEA-027's record, plus a lint
+    check that the pinned version line in `infra/backup/Dockerfile` is the one definition.
+- **Pinning:** the release zip for linux amd64 and arm64 at an exact version (v1.76.0 today), checked in the Dockerfile against SHA256 values
+  written there.
+  - Those values are taken once from the release's `SHA256SUMS` after checking its PGP signature against rclone's published key
+    (fingerprint `FBF737ECE9F8AB18604BD2AC93935E02FF3B54FA`, `rclone.org/release_signing`).
+  - Not Alpine's package: it is only in `edge` (1.75.2, MEASURED on pkgs.alpinelinux.org 2026-11-25), not in the stable branch the
+    Timescale base uses (ASSUMED, check at build).
+- **Image size:** Alpine's package installs at 112.3 MiB (documented). The release binary's size was not found in the docs and is
+  **ASSUMED 60 to 110 MB**, to be measured at build.
+- **Kept up to date:** this slice also **adds the backup image to CI's `security` job** (Grype scans Go binaries), which closes the hole
+  `docs/RUNBOOK-IMAGE-CVE.md` records. A bump follows that runbook, with a new section for rclone: new version, new hashes from the signed
+  `SHA256SUMS`, then re-run the stand-in smoke and the real-bucket probe.
+- **Secrets:** the remote is configured entirely by environment variables (`RCLONE_CONFIG_B2_*`), with no config file.
+  - Rclone's docs say env-set backend config is visible at `-vv`, and `--dump` "may still contain sensitive information". So the scripts
+    never pass `-vv` or `--dump`.
+  - As with ssh today, failures are classified from rclone's output, and only the class is stored. A test greps every stored and served
+    text for a canary key (as `smoke-m2-slice5-fred-failures.sh` does for FRED).
+- The capability check (part 4) uses `curl` against `b2_authorize_account`. The response's token is never printed.
+
+**2. SFTP: remove it (recommended).**
+- **Reasons:**
+  - **No SFTP destination exists.** The desktop is the stack machine (2026-11-20 correction).
+  - The SFTP path was built for Windows OpenSSH and NTFS (`acl-experiment.ps1`, `acl-survey.ps1`, the `sshd_config`), and **none of that
+    has ever run against a real server**.
+  - Its account is not chrooted (a known gap).
+  - A second transport would double the smoke and retry matrix for a path nobody uses.
+- **What changes:**
+  - Removed: `run-copy.sh`'s SFTP body, `verify-destination.sh` (rewritten for B2), the ssh error classes, `smoke-m2-slice2.sh`'s sshd
+    stand-ins, and BACKUP.md's Windows-destination sections.
+  - Kept: the git history, and a paragraph in BACKUP.md naming the commit that removed SFTP.
+  - **IDEA-039** (Tailscale for the backup copy) has no transport left to serve, and is marked obsolete.
+- **Alternative, not recommended:** keep SFTP behind a flag. It costs a second set of tests for a path that would rot untested.
+
+**3. Retention.**
+- **Local:** unchanged, 14 dailies plus 8 weeklies (`prune.sh`).
+- **Off-box:**
+  - Every successful daily backup is uploaded once, under a unique name (`flowdesk/<db>_<UTC>.tar.age`). It is never re-uploaded under the
+    same name; rclone also runs with `--immutable`, which refuses client-side to change an existing object.
+  - **Bucket default retention: compliance, R days.**
+  - **Lifecycle rule:** prefix `flowdesk/`, `daysFromUploadingToHiding` = R+1, `daysFromHidingToDeleting` = 1. A second rule for the probe
+    prefix `probe/` is the same.
+  - **How the two interact (documented):** the lock expires at day R; lifecycle hides the version at day R+1 and deletes it a day later,
+    and it never deletes a locked version, so a misconfigured rule cannot cut history short. Storage is about (R+2) × dump size.
+- **R: proposed 30 days (ASSUMED adequate; Kyle decides before the bucket is made, because compliance cannot be shortened).** The longer
+  history (8 weeklies) stays local.
+- **Prune is server-side only.** The machine's key cannot delete, so nothing on the machine prunes B2. This replaces "Retention on the
+  destination: not enforced yet".
+
+**4. What a stolen write key can still do, and how each is caught.**
+
+| Attack | Effect | Caught by |
+|---|---|---|
+| Delete a version | Refused (no `deleteFiles`; compliance lock in any case) | Probe step 4 proves it |
+| Overwrite | Creates a new version; the original stays | Probe step 5 proves it |
+| Hide (delete marker), allowed by `writeFiles` | The locked version stays for R days, then lifecycle deletes it. **So a stolen key can shorten history to R days and no shorter** | Each copy run lists versions. Any delete marker under `flowdesk/` it did not create sets `tampered` and pings `/fail` at once |
+| Upload junk to run up the bill | Storage grows | The budget check and B2's caps |
+
+- **The write key's capabilities:** `listBuckets, listAllBucketNames, listFiles, writeFiles, readFileRetentions`.
+  - It has **no** `readFiles`: a stolen key cannot download the ciphertext either.
+  - It has no `deleteFiles`, `bypassGovernance`, `writeFileRetentions`, `writeBucketRetentions`, `writeBuckets`, `writeFileLegalHolds`,
+    `shareFiles` or `writeKeys`.
+- **The read key's capabilities (laptop, restore only):** `listBuckets, listAllBucketNames, listFiles, readFiles, readFileRetentions`.
+- **Checked by the machine.** Every copy run calls `b2_authorize_account` and refuses (`CapabilityTooBroad`, paged at once) if the key holds
+  any capability outside its list, or is not restricted to the bucket. So a key that gained `deleteFiles` cannot pass unnoticed.
+- **After every upload, the object is verified:** its listed size equals the local file, and its retention is `COMPLIANCE` with
+  retain-until at least now + R − 1 days. Otherwise `NotLocked`, paged at once. This proves Object Lock on every backup, not once.
+
+**5. Health and paging.**
+- **`/health/data`, `backups.copy`:** the same states as today (`ok` / `stale` / `never_succeeded` / `not_configured` / `no_runs`; stale
+  after 36 h). New fields:
+  - `destination: "b2"`, `bucket`, `last_success_at`, `last_object`;
+  - `bucket_bytes` (every version, hidden included), `budget_bytes` (10 GB);
+  - `budget_state`: `ok`, or `warn` at 8 GB, or `over` at 9.5 GB, where new uploads are refused and paged (the thresholds are ASSUMED);
+  - `tampered` (true/false).
+- **Never degrades `/health/ready`** (unchanged rule).
+- **Paging (unchanged mechanism):** `BACKUP_PING_URL` is pinged only after an upload is verified (size, lock), the bucket is under budget
+  and nothing is tampered.
+  - `/fail` is sent at once on `AuthRefused`, `CapabilityTooBroad`, `NotLocked`, `tampered` and `over`.
+  - Otherwise the monitor alerts when pings stop: period 1 day, grace 24 h, kept (ASSUMED still right; it was sized for a LAN that is
+    no longer involved, and may shorten later).
+- **Retry classes:**
+  - network failure: `Unreachable` (75), up to 30 min;
+  - configuration: `AuthRefused`, `CapabilityTooBroad`, `NotLocked`, `NotConfigured` (78), not before the next slot;
+  - the rest (1): up to 6 h.
+
+**6. Tests and smokes.**
+- **In CI, no B2:**
+  - `infra/backup/selftest.sh`: the output classifier, the capability-check parser (fed recorded `b2_authorize_account` JSON, with the
+    secrets stripped), the budget arithmetic, and tamper detection.
+  - `smoke-m2-slice2.sh`, rewritten: the stack plus a **stand-in S3 container** with versioning, Object Lock and a policy that denies
+    version deletes. It runs fail closed (no recipient, no bucket), upload, verify, never-overwrite, `--immutable`, the retry classes, the
+    health states, the budget states, a planted delete marker (→ `tampered`), and a restore with the private key only.
+  - **The stand-in is chosen at build:**
+    - versitygw (Apache-2.0; Object Lock and per-user policy ASSUMED, verify);
+    - MinIO (AGPL-3.0, used only as a test container and never shipped; its community image distribution changed in 2025, ASSUMED, verify).
+  - The stand-in proves FlowDesk's logic, never B2's semantics.
+- **Once against the real bucket** (then quarterly, and after any rclone bump): `infra/backup/verify-destination.sh`, rewritten for B2. Run
+  with the write key from `.env`, it checks:
+  1. the key's capabilities are exactly the list in part 4, and it is restricted to the bucket;
+  2. a probe upload to `probe/` succeeds;
+  3. its retention is COMPLIANCE for R days;
+  4. a delete of that **version** is refused;
+  5. a same-name upload leaves the original version listed at its size, and `--immutable` refuses it client-side;
+  6. a hide (delete without `versionId`) is recorded as **allowed** (expected, documented), and the locked version is still listed;
+  7. the bucket is under budget.
+
+  Then `RESULT: OK`. A second mode, run with the read key on the laptop, checks that a download works and that an upload is refused. Probe
+  objects are tiny and stay locked for R days; that is expected.
+- **Rule 9:** the copy keys on object names. A test with two backups whose names share a prefix shows that verifying one never counts as the
+  other, checked by mutation.
+
+**7. For Kyle: creating the account, bucket, keys and caps.** This is the guide's Part A, written out when built. Everything runs in **Git
+Bash** unless it says browser or PowerShell. One command per step; no `&&`. Never paste a key ID or key into chat.
+
+1. **Browser:** sign up at `https://www.backblaze.com/sign-up/cloud-storage` (documented: "No credit card required"). Choose a region.
+   Success: the B2 web console shows "Buckets".
+2. **Browser:** download `b2-windows.exe` (v5.0.3, MIT) and `b2-windows.exe_hashes.txt` from
+   `https://github.com/Backblaze/B2_Command_Line_Tool/releases` into `C:\Tools\b2\`.
+3. **PowerShell:** `Get-FileHash C:\Tools\b2\b2-windows.exe -Algorithm SHA256`. Success: the hash equals the SHA256 line in the hashes file.
+4. **Browser:** Application Keys → master application key. Store the key ID and key in the password manager (the key is shown once).
+5. **Git Bash:** `cd /c/Tools/b2`, then `./b2-windows.exe account authorize`. It prompts for the key ID and key; paste the master key there,
+   never on the command line. Success: account details print, with no error.
+6. **Git Bash:** `./b2-windows.exe bucket create --file-lock-enabled flowdesk-backups-<something-random> allPrivate`. Bucket names are
+   global. Success: a bucket ID prints.
+7. **Git Bash** (irreversible; R as decided):
+   `./b2-windows.exe bucket update --default-retention-mode compliance --default-retention-period "30 days" flowdesk-backups-<...>`.
+   Success: the bucket's JSON prints, with a default retention of mode compliance and 30 days.
+8. **Git Bash:**
+   `./b2-windows.exe bucket update --lifecycle-rule '{"fileNamePrefix": "flowdesk/", "daysFromUploadingToHiding": 31, "daysFromHidingToDeleting": 1}' --lifecycle-rule '{"fileNamePrefix": "probe/", "daysFromUploadingToHiding": 31, "daysFromHidingToDeleting": 1}' flowdesk-backups-<...>`.
+   Both rules go in one command: "All bucket lifecycle rules are set at once". Success: the JSON lists both rules.
+9. **Git Bash:** `./b2-windows.exe bucket get flowdesk-backups-<...>`. Success: file lock enabled, compliance 30 days, the two lifecycle rules.
+10. **Git Bash** (the write key):
+    `./b2-windows.exe key create --bucket flowdesk-backups-<...> flowdesk-backup-write listBuckets,listAllBucketNames,listFiles,writeFiles,readFileRetentions`.
+    It prints the key ID and key **once**. Put them straight into `.env` on DESKTOP-GHDCBPQ (`B2_KEY_ID=`, `B2_APPLICATION_KEY=`), and into
+    the password manager.
+11. **Git Bash** (the read key):
+    `./b2-windows.exe key create --bucket flowdesk-backups-<...> flowdesk-backup-read listBuckets,listAllBucketNames,listFiles,readFiles,readFileRetentions`.
+    Put it in the password manager only. It goes into the laptop's `.env` at the drill.
+12. **Git Bash:** `./b2-windows.exe key list -l`. Success: both keys, each restricted to the bucket, with exactly those capabilities.
+13. **Browser:** Caps & Alerts. For Storage, Class A, Class B and Class C, clear "No Cap" and enter **0**. If the UI refuses 0, enter the
+    smallest amount it accepts and note it. Add your email for the alerts.
+14. **Git Bash:** remove the master key from the CLI's local credential store. The command is **ASSUMED** to be
+    `./b2-windows.exe account clear`, checked at build before this guide is final.
+15. **Send back:** the region (the endpoint's `us-west-004`-style part); the bucket name; step 9's file-lock and lifecycle section; step
+    12's output **with every key ID deleted**; what step 13 accepted per cap; and whether step 3's hash matched. **Never a key or key ID.**
+
+Then: **a real `age` key, made on the laptop** (the restore machine; the stack machine must never hold the private half), kept in the password
+manager, with its public half committed in `infra/backup/recipients.txt`. Today every scheduled backup fails closed with `NoRecipient` (task
+runs 2026-11-22 to 11-24).
+
+**8. The rewritten drill guide (outline, replacing "The restore drill, step by step").**
+- **Part A, setup:**
+  - section 7 above;
+  - the `.env` entries on the stack machine (`B2_BUCKET`, `B2_ENDPOINT`, `B2_KEY_ID`, `B2_APPLICATION_KEY`, `BACKUP_PING_URL`);
+  - the age key;
+  - `docker compose -p flowdesk up -d --build backup`;
+  - `verify-destination.sh` (write-key mode) ending `RESULT: OK`;
+  - a second monitor check for `BACKUP_PING_URL`.
+- **Part B, one unattended backup (run nothing by hand):** leave the stack machine on, or let catch-up run it on wake. The next morning:
+  - `ops.backup` and `ops.backup_copy` succeeded, started at or after 03:00 ET by the scheduler;
+  - `/health/data` `backups.copy` is `ok`, `budget_state` is `ok`, `tampered` is false;
+  - the monitor check is green.
+- **Part C, the restore, on the laptop:**
+  - clone the repo; put the read key in the laptop's `.env`; run `verify-destination.sh` in read-key mode;
+  - download the newest `flowdesk/` object through the backup image (a new `--from-b2` option on `infra/restore-backup.sh`, version-aware,
+    so a hidden object is still found);
+  - restore into a fresh database with the age private key from the password manager;
+  - run `infra/drill-fingerprint.sql` on both sides with the same cutoff, and compare;
+  - send back what is listed there. No keys.
+- **What closes IDEA-029:** Part C's fingerprints match, on a backup the scheduler took and uploaded unattended.
+
+**Order of work when approved:**
+1. Kyle's Part A steps 1 to 15.
+2. Build: client, copy, checks, health, the stand-in smoke, the CI scan of the backup image, the SFTP removal.
+3. Commit through the gate.
+4. Run `verify-destination.sh` against the real bucket.
+5. Kyle's Parts B and C.
+
+**Pages read 2026-11-25** (all Backblaze, rclone or Alpine official):
+- Backblaze: pricing; transaction pricing; data-caps-and-alerts; create-and-manage-caps-and-alerts; sign-up; object-lock; enable Object Lock
+  (web UI, native API, S3); application-keys; application-key-capabilities; create-and-manage-app-keys; S3-compatible app keys;
+  lifecycle-rules; file-versions; `b2_create_key`; `b2_hide_file`; `b2_delete_file_version`; the S3 DeleteObject page (marked stale, 2023).
+- The B2 CLI README, releases and subcommand pages (account authorize, key create and list, bucket create, update and get).
+- rclone: b2; s3; docs; downloads; release_signing; commands/rclone_size; GitHub.
+- Alpine: pkgs.alpinelinux.org (rclone).
+
+### Addendum 2026-11-25 (third) — Kyle approves the B2 plan, with decisions
+
+1. **Object Lock: GOVERNANCE mode, not compliance.** This supersedes "compliance" everywhere in the plan above.
+   - DERIVED (Kyle): the realistic threat is the stack machine's write key being stolen. That key never has `bypassGovernance`, so
+     governance protects against it exactly as compliance would, while a wrong setting stays recoverable with the master key.
+   - The master key lives only in Kyle's password manager and is cleared from the tool after setup.
+   - The probe checks that the write key lacks `bypassGovernance`, and that every upload is locked in governance mode for R days.
+   - The copy's own per-upload check reads `GOVERNANCE`, not `COMPLIANCE`.
+2. **R = 30 days.** DERIVED: one month of protection. The budget check covers growth.
+   - **Kyle's "1 GB a year" was a projection for 500 symbols, and is ASSUMED, not measured.**
+   - Record the real dump size weekly in health. MEASURED so far: 1.72 MB on 2026-11-25.
+3. **Remove SFTP**, and mark IDEA-039 obsolete. Git history keeps both.
+4. **Test stand-in: versitygw (Apache-2.0) first.** MinIO (AGPL) only if versitygw cannot do Object Lock, and Kyle is told before it is
+   adopted, even for tests only.
+5. **Order:**
+   1. Build first: code, CI with the stand-in, the gate commit.
+   2. Kyle's setup steps, run once with the final, tested commands.
+   3. The real-bucket probe.
+   4. The drill.
+6. **The age key is generated on the laptop.** The private key is stored in the password manager, and is on the laptop's disk only during a
+   restore. Kyle commits the public key to `recipients.txt`. The stack machine never holds the private key.
+7. **Dead-man monitor.** If no monitor account exists yet for `BACKUP_PING_URL` and `HEARTBEAT_URL`, Kyle's steps include creating it.
+   **This PC (DESKTOP-GHDCBPQ) is now the deployed instance**, so both URLs get set here, in `.env` only.
+   - MEASURED 2026-11-25: both are blank in this machine's `.env` (checked without printing values).
+   - The heartbeat drill of 2026-11-05 used a healthchecks.io account. Kyle's steps create the two checks, and the account only if it is gone.
+   - This replaces CLAUDE.md's "`HEARTBEAT_URL` stays blank on development machines" for this machine. Re-run the heartbeat drill here
+     once it is set (`docs/HEARTBEAT.md`).
+8. **Kyle's steps** apply decision 1: the governance retention command, and an irreversibility warning reworded to match. **Every step that
+   is still irreversible is marked.** Still irreversible:
+   - enabling Object Lock on the bucket (it cannot be disabled);
+   - the bucket name;
+   - a key's capabilities (a key cannot be edited, only deleted and replaced).
+
+   No longer irreversible: governance retention, which the master key can shorten or remove.

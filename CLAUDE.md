@@ -49,14 +49,16 @@ below).
   external heartbeat sender (ADR-0008, `docs/HEARTBEAT.md`).
 - **The external heartbeat is proven end to end** (drill passed, recorded 2026-11-05 in `docs/BUILD-LOG.md`): the real
   provider took the pings, the DOWN alert arrived 44 minutes after the stack stopped, and the UP notice followed.
-  `HEARTBEAT_URL` stays blank on development machines; a sleeping laptop would page constantly. Re-run the drill
-  on any deployed instance (quarterly, and after a provider notice).
+  `HEARTBEAT_URL` stays blank on development machines; a sleeping laptop would page constantly. **This PC
+  (DESKTOP-GHDCBPQ) is the deployed instance (Kyle, 2026-11-25)**: `HEARTBEAT_URL` and `BACKUP_PING_URL` are set here, in
+  `.env` only (both blank as of 2026-11-25). Re-run the drill on any deployed instance (quarterly, and after a provider notice).
 - **Any new `degraded` condition on `/health/ready` also pages the owner** (ADR-0008 section 4). The sender
   pings only on exactly `ok`.
 - **Scheduled backups are built (M2 slice 2) but the slice is not closed** (IDEA-029). **Correction 2026-11-20 (Kyle, MEASURED):
   the stack runs on `DESKTOP-GHDCBPQ`, a desktop that is NOT a backup destination; off-box backup is currently impossible, and the
-  "laptop runs it, desktop receives it" text below has the machines the wrong way round. Drill-guide fixes are held until Kyle
-  picks a new destination (likely an Oracle Cloud Always Free VM: Linux SFTP).** The `backup` compose
+  "laptop runs it, desktop receives it" text below has the machines the wrong way round. Destination decided 2026-11-25 (Kyle):
+  Backblaze B2, governance Object Lock 30 days, SFTP removed; being built (`docs/BUILD-LOG.md`, addenda 2026-11-25 second and
+  third). The SFTP text below is superseded by that build.** The `backup` compose
   service dumps nightly (03:00 `America/New_York`, with catch-up after sleep), encrypts with `age` to the
   public key in `infra/backup/recipients.txt`, keeps 14 dailies plus 8 weeklies locally, and then copies to
   Kyle's Windows desktop over SFTP (Windows OpenSSH Server, a dedicated non-admin account, restricted by NTFS

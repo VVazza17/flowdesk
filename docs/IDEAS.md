@@ -559,7 +559,8 @@ this as a formal prerequisite for IDEA-012.
 
 ## IDEA-039: Tailscale as the backup copy's path off the home network
 
-**Status:** Parked
+**Status:** Obsolete (Kyle, 2026-11-25). The off-box copy goes to Backblaze B2 over HTTPS and the SFTP path is removed, so there is no SSH destination for a tailnet to reach (`docs/BUILD-LOG.md`, addendum 2026-11-25 third). Git history keeps the SFTP code. Kept below as written.
+**Was:** Parked
 **Raised:** 2026-11-10
 
 ### The proposal

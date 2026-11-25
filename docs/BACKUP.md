@@ -174,6 +174,11 @@ runbook says so); the dump is how a bad repair is undone.
 **Status: built, smoke-tested against stand-ins, not closed.** The slice closes when a real unattended dump
 lands on the real desktop and restores from there ([Closing the slice](#closing-the-slice)).
 
+**Destination: Backblaze B2 (Kyle, 2026-11-25); not built.** What follows describes the SFTP copy as built for a
+Windows desktop destination that does not exist (correction 2026-11-20). The B2 copy replaces it: encrypted on the
+stack machine, uploaded with a no-delete key under governance-mode Object Lock (30 days), restored on the laptop with a read-only key.
+Plan: `docs/BUILD-LOG.md`, addendum 2026-11-25 (second).
+
 What has been run, and what has not:
 
 | | Where | State |
@@ -623,7 +628,7 @@ That tests the configuration. It does not satisfy step 3.
 
 ### The restore drill, step by step (IDEA-029; for Kyle to run)
 
-> **Correction 2026-11-20 (Kyle; MEASURED the same day): this drill cannot be run as written, and off-box backup is currently impossible.** The stack runs on `DESKTOP-GHDCBPQ`, a desktop (no battery, no `sshd`, no `C:\FlowdeskBackups`), which is **not** a backup destination. Everything below that says "laptop" for the stack machine and "desktop" for the destination has the two the wrong way round. **The guide's known fixes are held, not made, until Kyle chooses a new destination** (likely an Oracle Cloud Always Free VM, which would make the target Linux SFTP rather than Windows OpenSSH Server, and the restore drill run on the laptop). The text below is kept as written on 2026-11-19 until then. `docs/BUILD-LOG.md`, addendum 2026-11-20.
+> **Destination decided 2026-11-25 (Kyle): Backblaze B2.** This replaces the 2026-11-20 note that the destination was undecided. Its finding stands: the stack runs on `DESKTOP-GHDCBPQ`, a desktop, and no machine on the home network is a destination. The off-box copy will go to a B2 bucket, `age`-encrypted on the stack machine first, so B2 holds ciphertext only. It uses a bucket-scoped key with no delete or `bypassGovernance` capability, plus governance-mode Object Lock for 30 days (addendum 2026-11-25 third). The restore drill runs on the laptop with a separate read-only key. **Nothing of it is built yet**: the plan is in `docs/BUILD-LOG.md`, addendum 2026-11-25 (second). It recommends removing the SFTP path. **The drill below is the SFTP version and cannot be run.** It is kept as written on 2026-11-19 until the B2 build replaces it.
 
 This is the drill that closes IDEA-029 and lets the bars polls be scheduled (`BARS_POLL_ENABLED`, M2 slice 6 step 6). It covers the six
 points of [Closing the slice](#closing-the-slice), in order. **You hold the age identity (private) key. It is never sent to Claude, never
