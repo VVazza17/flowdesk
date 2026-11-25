@@ -55,6 +55,17 @@ jobs:
       - run: cp .env.example .env
       - run: bash infra/smoke-slice9.sh
 
+  # The scheduled backups and their off-box copy to B2 (IDEA-029), against a STAND-IN (versitygw with Object Lock and a
+  # no-delete writer). Never touches Backblaze: the real bucket is checked by hand with verify-destination.sh.
+  backup-offbox:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: cp .env.example .env
+      - run: bash infra/smoke-m2-slice2.sh
+
   # DECISION: QEMU, because native arm64 runners aren't free on private repos. See check_arm64 in
   # ci-checks.sh for what this does and does not prove.
   arm64:
@@ -82,6 +93,21 @@ jobs:
         with:
           image: flowdesk-api:scan
           fail-build: true
+          severity-cutoff: high
+          only-fixed: true
+          output-format: table
+      # The backup image (rclone, age, and the Timescale base it shares with the stack's Postgres), scanned since
+      # 2026-11-25. DECISION: REPORT-ONLY for now (fail-build: false), flagged to Kyle: its first scan (MEASURED
+      # 2026-11-25) had fixable HIGH/CRITICAL findings in the Timescale base (postgresql16 16.15, fixed in 16.16; krb5,
+      # openssl, ...) and in Alpine's age package (old golang.org/x/crypto), none in rclone. Fixing the base is a
+      # Timescale image bump, a version decision with restore consequences (docs/BACKUP.md, the version trap), not
+      # this slice's. When the findings are cleared, set fail-build: true like the step above.
+      - run: cp .env.example .env
+      - run: docker compose -p flowdesk build backup
+      - uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        with:
+          image: flowdesk-backup
+          fail-build: false
           severity-cutoff: high
           only-fixed: true
           output-format: table

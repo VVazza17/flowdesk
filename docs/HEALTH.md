@@ -194,7 +194,7 @@ exit path of `run_recorded` (return, exception, `SystemExit`, a failing final wr
   resume is correct, not orphaned; "has anything picked this up recently" depends on the resume design (slice 10).
   Pinned by a test. (Kyle, 2026-11-12.)
 - **`ops.backup` and `ops.backup_copy`** (`UNSWEPT_TASKS`). The backup container writes their rows with psql, not
-  through `run_recorded`, so nothing beats their heartbeat: a healthy dump or SFTP copy longer than 120 s would be
+  through `run_recorded`, so nothing beats their heartbeat: a healthy dump or B2 upload longer than 120 s would be
   failed as orphaned, and the script's unconditional final `UPDATE` would then overwrite the verdict. Their
   staleness is read from `/health/data` (`backups`) and the external monitor's missed-run signal. Found while
   building part C; revisit if the backup scripts ever heartbeat. Pinned by a test. **Two writers of `task_runs`,
@@ -356,50 +356,49 @@ a fact worth stating:
 | `ok` | A run succeeded within `stale_after_seconds` (36 h, `BACKUP_STALE_AFTER_HOURS`) |
 | `stale` | It did, but longer ago than that |
 | `never_succeeded` | It has run and failed, and has never succeeded (e.g. `last_error_class` = `NoRecipient`) |
-| `not_configured` | The newest run was `skipped`: no off-box destination is set. Never a success. |
+| `not_configured` | The newest run was `skipped`: no B2 bucket is set (`B2_BUCKET`). Never a success. |
 | `no_runs` | No row at all: the container has not tried yet |
 
-`backups.backup` is the dump, encrypt and keep-locally step. `backups.copy` is the off-box copy. They are
-separate so that a sleeping desktop reads as `copy.last_attempt_failed: true` with `last_error_class:
-Unreachable` while `backup` stays `ok`. A copy whose last attempt failed is still `ok` while an earlier copy is
-recent enough. Error classes: `NoRecipient`, `DumpFailed`, `DumpUnreadable`, `EncryptFailed`, `ReadFailed`
-(backup); `Unreachable`, `AuthRefused`, `HostKeyChanged`, `SftpFailed`, `SizeMismatch`, `ConfigInvalid`,
-`NothingToCopy` (copy). An interrupted upload is not an error class: it is stepped over (`docs/BACKUP.md`).
+`backups.backup` is the dump, encrypt and keep-locally step. `backups.copy` is the off-box copy to Backblaze B2
+(2026-11-25; the SFTP copy it replaced is in git history). They are separate so that B2 or the network being
+away reads as `copy.last_attempt_failed: true` with `last_error_class: Unreachable` while `backup` stays `ok`. A
+copy whose last attempt failed is still `ok` while an earlier copy is recent enough.
 
-**The expected state while the laptop is away from the destination.** The destination is on the home LAN, so
-on a weekday daytime every copy attempt fails and retries every 30 minutes (`BACKUP_RETRY_CAP_MINUTES`): about
-twenty failed `ops.backup_copy` rows a day. `/health/data` shows `copy.state: ok` (the last success is recent),
-`last_attempt_failed: true` and `last_error_class: Unreachable`. That combination, on a weekday, is normal.
-`tasks[]` carries only the newest row per task, so the many failed rows do not bury or crowd anything in this
-response. `copy.state` going `stale` (36 h) is the real signal here, and the page behind it is the monitor.
+**Fields added with the B2 copy (migration 0015, `task_runs.output_bytes`):**
 
-**Reading the copy's `last_error_class`.** `run-copy.sh` reads ssh's own error text, so the failures that all
-used to be `Unreachable` are told apart:
+| Field | Meaning |
+|---|---|
+| `backup.sizes_weekly` | The newest successful backup's size in each of the last 8 weeks, newest first (`[{week_start, bytes}]`). Kyle, 2026-11-25: the dump's growth is ASSUMED (the "1 GB a year" figure was a projection for 500 symbols) until this shows it. MEASURED 2026-11-25: 1.72 MB. |
+| `copy.destination` | `b2` |
+| `copy.bucket_bytes` | Every version in the bucket, hidden ones included, as the latest copy run measured it. Also set on a failed run that got as far as listing (`OverBudget`). `null` until something was measured. |
+| `copy.budget_bytes` | 10,000,000,000: B2's always-free 10 GB (ASSUMED decimal). |
+| `copy.budget_state` | `ok`; `warn` from 80%; `over` from 95%, where the copy refuses new uploads and pages. `null` with nothing measured. |
+| `copy.copied_through` | The newest backup the bucket held, from its name (`task_runs.output_watermark`). |
+| `copy.tampered` | The latest copy run found a delete marker under `flowdesk/`. FlowDesk never makes one. |
 
-| `last_error_class` | What ssh said | What it means |
-|---|---|---|
-| `Unreachable` | name does not resolve, timed out, no route, connection refused or closed, **or any text not recognised** | The destination is away or asleep. Expected on a weekday. Also the fallback: OpenSSH's wording is not a stable interface, so an unrecognised message never becomes a confident class. |
-| `AuthRefused` | `Permission denied (...)` | The server answered and refused the key. Never a normal Tuesday. |
-| `HostKeyChanged` | `REMOTE HOST IDENTIFICATION HAS CHANGED`, `Host key for <host> has changed`, or `No <type> host key is known for ...` when `known_hosts` DOES hold a key for the host (the server offered a different key type) | A pinned host key did not match. Treat it as a security signal until you know why: the desktop was reinstalled, or something else answered. |
-| `ConfigInvalid` (from ssh) | `No <type> host key is known for ...` and nothing is pinned for the host | Setup state: the key was never pinned (`docs/BACKUP.md`), so nothing can be impersonating it. Does not page. |
+**Error classes.** Backup: `NoRecipient`, `DumpFailed`, `DumpUnreadable`, `EncryptFailed`, `ReadFailed`,
+`NoTimescale`. Copy:
 
-**`AuthRefused` is visible here and in the container's logs; nothing pages on it sooner than the monitor does**
-(48 hours). A refused key is misconfiguration and fires legitimately while the desktop is being set up.
+| `last_error_class` | What it means | Retried | Pages at once |
+|---|---|---|---|
+| `Unreachable` | Nothing answered, a 429 or 5xx, a timeout, or an rclone network error. Also the fallback for network-shaped text not recognised. | up to 30 min | no (the monitor alerts if copies stop for 48 h) |
+| `AuthRefused` | B2 refused the key (401/403), or a wrong secret | up to 6 h | **yes** |
+| `CapabilityTooBroad` | The key holds a capability outside its list (e.g. `deleteFiles`, `bypassGovernance`), or is not restricted to the bucket | up to 6 h | **yes** |
+| `NotLocked` | An upload is not locked GOVERNANCE for the full period: the bucket's default retention is wrong or gone | up to 6 h | **yes** |
+| `Tampered` | A delete marker under `flowdesk/` that FlowDesk did not make. The uploads of that run still went up. | up to 6 h | **yes** |
+| `OverBudget` | The bucket would pass 95% of 10 GB; nothing was uploaded | up to 6 h | **yes** |
+| `ConfigInvalid` | A setting is missing or wrong, the key is for another bucket or lacks a required capability, or b2_authorize_account answered in an unexpected shape | not before the next slot | no |
+| `UploadFailed`, `S3Failed`, `SizeMismatch`, `NothingToCopy` | Everything else | up to 6 h | no |
 
-**`HostKeyChanged` pages at once, through the monitor and not through `/health/ready`.** The copy step POSTs to
-`BACKUP_PING_URL` + `/fail` (the monitor's failure endpoint) when the scheduler sees one, so the alert does not
-wait out the 48 hours. **At most once per occurrence:** the scheduler remembers it has told the monitor and does
-not depend on the provider to deduplicate; the next successful copy ends the occurrence, and a container restart
-forgets it. A signal the monitor did not accept is retried on the next attempt. Readiness is about serving
-requests, and degrading it pages (ADR-0008 section 4), so `/health/ready` is untouched. The log lines are
-`copy_fail_signalled` and `copy_fail_signal_failed`. An unpinned host is not this class (table above), so setting
-up the desktop does not page.
+No provider text is ever stored or served for any of these: B2's error bodies echo the key ID, which is itself a
+secret, so `error_message` holds only FlowDesk's own words.
 
-**That makes `BACKUP_SSH_HOST` a name, never a bare IP, and the code enforces it.** On another network the same
-private IP can belong to someone else's machine, which would read as a changed host key and page for going to
-work. `run-copy.sh` and `verify-destination.sh` refuse a bare IP (`ConfigInvalid`, exit 78). With a name that
-resolves only at home, being away is `Unreachable` and the signal stays trustworthy. A hosts-file or `extra_hosts`
-entry that maps the name to the IP brings the problem back.
+**The alert classes page at once, through the monitor and not through `/health/ready`.** The scheduler POSTs the
+class to `BACKUP_PING_URL` + `/fail` (the monitor's failure endpoint) when the copy exits 76, so the alert does
+not wait out the 48 hours. **At most once per occurrence:** the scheduler remembers it has told the monitor and
+does not depend on the provider to deduplicate; the next successful copy ends the occurrence, and a container
+restart forgets it. A signal the monitor did not accept is retried on the next attempt. The log lines are
+`copy_fail_signalled` and `copy_fail_signal_failed`, each with the `error_class`.
 
 **This never touches `/health/ready` or the HTTP status.** A stale backup can wait until morning, and anything
 that degrades `ready` pages (ADR-0008 section 4). The page comes from the external monitor noticing the copy's

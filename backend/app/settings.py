@@ -255,6 +255,16 @@ def fake_provider_interval_seconds() -> int:
     return value
 
 
+# The B2 bucket's budget (Kyle, 2026-11-25): B2's always-free storage, 10 GB. ASSUMED decimal (10**9
+# bytes a GB, as storage is usually sold; Backblaze's pages do not say). The copy warns at 80% and
+# refuses new uploads at 95%, paging at once (infra/backup/lib.sh `budget_state`, the same numbers,
+# pinned equal by tests/test_backup_budget.py). Every version counts, hidden ones included: whether
+# B2 bills hidden versions is not documented, so they are ASSUMED billed.
+BACKUP_BUDGET_BYTES = 10_000_000_000
+BACKUP_BUDGET_WARN_PERCENT = 80
+BACKUP_BUDGET_OVER_PERCENT = 95
+
+
 def backup_stale_after() -> timedelta:
     """How old the last successful backup (or copy) may be before /health/data calls it stale.
 

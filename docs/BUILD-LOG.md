@@ -4624,3 +4624,104 @@ runs 2026-11-22 to 11-24).
    - a key's capabilities (a key cannot be edited, only deleted and replaced).
 
    No longer irreversible: governance retention, which the master key can shorten or remove.
+
+### 2026-11-25 — built: the off-box copy to Backblaze B2 (SFTP removed); tested against a stand-in, not yet against Backblaze
+
+**Built** (plan: addendum 2026-11-25 second; Kyle's decisions: third). `docs/BACKUP.md` "Scheduled backups" is rewritten and is
+the reference.
+- **`infra/backup/`:**
+  - `run-copy.sh` rewritten for B2;
+  - `verify-destination.sh` rewritten as the real-bucket probe (write mode, and `--read`);
+  - `fetch-b2.sh`, new (the laptop's download, version-aware);
+  - `lib.sh`: the ssh classifier and the bare-IP rule are out. In: `s3_region`, `s3_request` (curl `--aws-sigv4`, credentials on
+    stdin), `classify_http`, `classify_rclone`, `parse_versions`, `list_all_versions` (paged), `bucket_bytes`, `delete_markers`,
+    `budget_state`, `retention_ok`, `judge_capabilities` / `check_key` (`b2_authorize_account`, v2), `upload_wanted`;
+  - `EX_HOSTKEY` became `EX_ALERT` (76), for `AuthRefused`, `CapabilityTooBroad`, `NotLocked`, `Tampered` and `OverBudget`;
+  - `task_finish` writes `output_bytes` and `output_watermark`;
+  - `backup-loop.sh` signals the monitor once per occurrence, with the class;
+  - removed: `acl-experiment.ps1`, `acl-survey.ps1`, `prune.sh`, `unset`; `entrypoint.sh` is simplified (no key files).
+- **`infra/backup/Dockerfile`:** rclone 1.76.0 pinned (release zip plus SHA256 per architecture); `jq` added; `openssh-client` removed.
+- **`infra/restore-backup.sh --from-b2 [name]`**, with the read key from `.env`, handed to the container by name.
+- **Compose:** `B2_BUCKET`, `B2_ENDPOINT`, `B2_KEY_ID`, `B2_APPLICATION_KEY`, `B2_LOCK_DAYS` replace the `BACKUP_SSH_*` settings and the
+  key-file binds. `.env.example` is rewritten to match.
+- **Migration 0015:** `task_runs.output_bytes` (commented).
+  - The probe's `data_state()` adds `output_bytes` / `output_watermark` per task, and `backup_sizes`: the newest successful backup of
+    each of the last 8 weeks.
+  - `/health/data` `backups` adds `backup.sizes_weekly`, and on the copy `destination`, `bucket_bytes`, `budget_bytes`,
+    `budget_state`, `copied_through` and `tampered`.
+  - `settings.BACKUP_BUDGET_*`: 10 GB, 80%, 95%.
+- **CI:**
+  - a new `backup-offbox` job runs `infra/smoke-m2-slice2.sh`;
+  - `security` also builds and scans the backup image, **report-only** (below).
+- **Docs:** `docs/BACKUP.md` (the section, the drill Parts A to C, Kyle's steps); `docs/HEALTH.md` (the fields and error classes);
+  `docs/RUNBOOK-IMAGE-CVE.md` (the backup image's scan, the rclone bump); IDEA-027 addendum (licences outside the pip gate);
+  `CLAUDE.md`.
+
+**MEASURED 2026-11-25:**
+- **rclone 1.76.0:** "Good signature" on `SHA256SUMS` from the key with fingerprint `FBF737EC...54FA`. The zips are 32.2 MB (amd64) and
+  29.2 MB (arm64); the binary is 85.8 MB (amd64), which replaces the plan's ASSUMED 60 to 110 MB. The backup image grew from 2.57 GB to
+  2.68 GB.
+- **versitygw v1.11.0 (Apache-2.0) can do it all**, so MinIO was not needed:
+  - a bucket with Object Lock and a GOVERNANCE 30-day default;
+  - version delete refused to the writer, with or without bypass; root's delete refused "because object protected by object lock";
+  - a same-name upload keeps the old version;
+  - per-user policies (the writer cannot read objects or change the lock).
+- **rclone** uploads into the locked bucket only when told not to HEAD (`--no-check-dest --s3-no-head`): a HEAD needs read, which the
+  write key does not have. Multipart (210 MB) works, and every object got GOVERNANCE for 30 days.
+- **curl's `--aws-sigv4`** reads retention and the version listing (with delete markers), with credentials on stdin.
+- **S3 error bodies echo the access key ID** (`<AWSAccessKeyId>`). That is why only class names are stored.
+- **rclone reads every `RCLONE_*` environment variable as a flag:** the build argument `RCLONE_VERSION=1.76.0` became `--version` and
+  failed the build. The build arguments are `PIN_*`, pinned by a test.
+- **versitygw requires `Content-MD5` on the lock configuration**, as AWS does. The smoke computes it with `md5sum` and `base64`.
+- **The backup image's first Grype scan** (CI's flags) exits 2. Its fixable HIGH and CRITICAL findings:
+  - in the Timescale base: `postgresql16` 16.15 (38, fixed in 16.16), `libpq`, `krb5-libs`, `libssl3` / `libcrypto3`, `libexpat`,
+    `libxslt`, `musl`, `python3`, `zlib`, and the base's own `timescaledb-parallel-copy`;
+  - in Alpine's `age` (`golang.org/x/crypto` v0.24.0, go1.25.10);
+  - **none in rclone.**
+- **arm64** (QEMU): the backup image builds with the pinned arm64 hash, and rclone, jq and age run there.
+
+**Tests:**
+- `infra/backup/selftest.sh`: 124 assertions, in the image.
+- `infra/smoke-m2-slice2.sh`, rewritten against the stand-in: PASS on the first full run (2026-11-25 07:31Z).
+  - Uploaded once, locked, and restored with the read key through `--from-b2`. The write key cannot download.
+  - The probe passes with both keys and fails an open bucket ("the version was DELETED").
+  - Each alert class (capabilities, unrestricted key, 401, no lock, wrong secret, budget, tampering) exits as documented.
+  - The scheduler's catch-up and ping work. An alert signals the monitor exactly once in 11 failures; a transient failure never does.
+  - The retry classes hold: 1, 9 and 4 attempts in 16 s.
+  - `not_configured` is reported, and no key or key ID appears in `task_runs` or `/health/data`.
+- Python tests: `test_backup_health.py` (6 new; rule 9: the backup row carries larger numbers than the copy's, and the backup row says
+  `Tampered`); `test_backup_sizes_db.py` (new, real Postgres; rule 9: a copy row, a failed backup and a size-less backup in the same
+  week would each win if the query lost a filter); `test_backup_budget.py` (new: the shell and the API share the budget lines; the
+  rclone pin is one definition; no `RCLONE_*` build argument; the capability lists).
+- **Mutation:** new suite `bash infra/mutation-check.sh b2-backup`, **10/10 caught** (`docs/evidence/2026-11-25-b2-backup-mutation-check.txt`).
+  The shell scripts' keyed lookups are covered by the smoke and the self-test, not by a mutation harness (`tools/mutate.py` mutates
+  `backend/` only). That is a recorded limit.
+
+**Changed from the plan, recorded:**
+1. **rclone's `--immutable` is not used.** It needs a HEAD, and the key has no read. "Never upload a name twice" comes from the version
+   listing; B2 keeps the old version in any case.
+2. **`AuthRefused`, `CapabilityTooBroad` and `NotLocked` page and retry at the long cap (exit 76).** The plan had them under
+   configuration (78, not before the next slot). That way a key fixed in Backblaze's console is picked up within hours without a restart.
+3. **The backup image's scan is report-only** (`fail-build: false`), not failing. **FLAGGED FOR KYLE:**
+   - Its fixable HIGH and CRITICAL findings are in the Timescale base, which is the stack's own Postgres (16.15, fixed in 16.16), and
+     in Alpine's `age`.
+   - A failing scan would keep CI red until the Timescale image is bumped, a version decision with restore consequences.
+   - Set `fail-build: true` when they are cleared.
+4. **The same-name probe (step 6) records the upload and checks the original survives.** B2 cannot refuse the upload. This was
+   already stated in the plan; noted here because Kyle's wording was "an overwrite is refused".
+
+**ASSUMED until `verify-destination.sh` runs against the real bucket:**
+- the v2 `b2_authorize_account` shape;
+- capabilities enforced on S3 calls;
+- path-style requests to `https://s3.<region>.backblazeb2.com/<bucket>`;
+- the bucket's default retention applying to S3 uploads (rclone sends `Content-MD5`; whether B2 requires it is not known);
+- what a $0 cap does;
+- that hidden versions are billed;
+- the b2 tool's `account clear` (Kyle's step A10).
+
+Kyle's steps use the b2 tool's documented syntax and **were not run by Claude**: the first real run is their test.
+
+**FLAGGED FOR KYLE: the heartbeat on this PC.** This PC sleeps or is off for 10 to 13 hours most nights (MEASURED from its event log,
+2026-11-21 to 11-24). With `HEARTBEAT_URL` armed (5-minute period, 40-minute grace) every such night pages. The steps say so (A12).
+
+**Not done:** Kyle's steps (Part A), the real-bucket probe, the drill (Parts B and C). In that order, after this commit.

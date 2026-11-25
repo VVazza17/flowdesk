@@ -66,6 +66,8 @@ SPEC = {
             ("error_message", "text"),
             ("input_watermark", "timestamp with time zone"),
             ("output_watermark", "timestamp with time zone"),
+            # 0015 (the B2 off-box copy): bytes the run measured.
+            ("output_bytes", "bigint"),
         ],
         ["id"],
     ),

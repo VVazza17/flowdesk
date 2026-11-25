@@ -1,0 +1,13 @@
+# bash infra/mutation-check.sh b2-backup, run 2026-11-25 on the final B2 build (uncommitted tree at the time)
+baseline: tests/test_backup_health.py, tests/test_backup_sizes_db.py pass unmutated
+   1. caught                   the copy's fields come from the backup's row  [-k its_own_measurement]  1 failed, 18 deselected in 0.49s
+   2. caught                   tampered is read from any task's row  [-k tampered_is_the_copys]  1 failed, 18 deselected in 0.48s
+   3. caught                   the over line is strict  [-k budget_states]  1 failed, 18 deselected in 0.47s
+   4. caught                   the warn line is ignored  [-k budget_states]  1 failed, 18 deselected in 0.45s
+   5. caught                   weekly sizes are not shown  [-k weekly_sizes]  1 failed, 18 deselected in 0.46s
+   6. caught                   the weekly query loses its task name  [-k newest_successful_backup]  1 failed, 1 deselected in 1.14s
+   7. caught                   the weekly query loses its status  [-k newest_successful_backup]  1 failed, 1 deselected in 1.05s
+   8. caught                   the weekly query keeps rows with no size  [-k newest_successful_backup]  1 failed, 1 deselected in 1.09s
+   9. caught                   the weekly query takes the oldest success of a week  [-k newest_successful_backup]  1 failed, 1 deselected in 0.96s
+  10. caught                   the weekly query is unbounded  [-k at_most_eight]  1 failed, 1 deselected in 1.00s
+10/10 mutations caught

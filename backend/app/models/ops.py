@@ -15,6 +15,13 @@ from app.models.base import Base
 # DECISION: every timestamp is TIMESTAMPTZ (matches bars.ts); §8 leaves them untyped.
 TZ = TIMESTAMP(timezone=True)
 
+# Migration 0015 has the same literal; `alembic check` fails if they differ.
+TASK_OUTPUT_BYTES_COMMENT = (
+    "Bytes this run measured, NULL for tasks that measure nothing. ops.backup: the encrypted "
+    "backup's size. ops.backup_copy: every version in the B2 bucket, hidden ones included, "
+    "whenever the run listed the bucket (also on a failed run, e.g. OverBudget)."
+)
+
 
 class ProvidersHealth(Base):
     __tablename__ = "providers_health"
@@ -68,6 +75,8 @@ class TaskRun(Base):
     # feed watermarks temporally; a feed needing a sequence number or cursor breaks it (IDEA-022).
     input_watermark: Mapped[datetime | None] = mapped_column(TZ)
     output_watermark: Mapped[datetime | None] = mapped_column(TZ)
+    # Migration 0015 (the B2 off-box copy, 2026-11-25).
+    output_bytes: Mapped[int | None] = mapped_column(BigInteger, comment=TASK_OUTPUT_BYTES_COMMENT)
 
 
 class BackfillRun(Base):

@@ -78,5 +78,6 @@ mv "$partial" "$final"
 prune_dir "$BACKUP_DIR" "$KEEP_DAILY" "$KEEP_WEEKLY"
 
 size=$(wc -c < "$final" | tr -d ' ')
-task_finish "$id" succeeded || jlog warning backup_bookkeeping_failed "detail=backup is written but task_runs was not updated"
+# The size goes to task_runs.output_bytes (migration 0015): /health/data shows it weekly (Kyle, 2026-11-25).
+TASK_OUTPUT_BYTES=$size TASK_OUTPUT_WATERMARK=$(name_epoch "$final") task_finish "$id" succeeded || jlog warning backup_bookkeeping_failed "detail=backup is written but task_runs was not updated"
 jlog info backup_succeeded "file=$name.tar.age" "bytes=$size"

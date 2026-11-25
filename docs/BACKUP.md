@@ -171,775 +171,338 @@ runbook says so); the dump is how a bad repair is undone.
 
 ## Scheduled backups (M2 slice 2, IDEA-029)
 
-**Status: built, smoke-tested against stand-ins, not closed.** The slice closes when a real unattended dump
-lands on the real desktop and restores from there ([Closing the slice](#closing-the-slice)).
-
-**Destination: Backblaze B2 (Kyle, 2026-11-25); not built.** What follows describes the SFTP copy as built for a
-Windows desktop destination that does not exist (correction 2026-11-20). The B2 copy replaces it: encrypted on the
-stack machine, uploaded with a no-delete key under governance-mode Object Lock (30 days), restored on the laptop with a read-only key.
-Plan: `docs/BUILD-LOG.md`, addendum 2026-11-25 (second).
-
-What has been run, and what has not:
+**Status: built, tested against a stand-in, not closed.** The off-box copy goes to **Backblaze B2** (Kyle,
+2026-11-25; `docs/BUILD-LOG.md`, addenda 2026-11-25 second and third). The slice closes when a backup the scheduler
+took and uploaded unattended restores on the laptop with matching fingerprints ([the drill](#the-restore-drill-step-by-step)).
+The SFTP copy to a Windows desktop that this section used to describe was removed the same day: no such destination
+exists (the stack runs on the desktop). Git history keeps it.
 
 | | Where | State |
 |---|---|---|
-| Scheduling, encryption, the copy, restore with the private key, fail-closed, catch-up, health states | `infra/smoke-m2-slice2.sh`, against throwaway Linux sshd containers that speak SFTP only | **Run** |
-| What each NTFS permission variant allows (commands below) | The exact commands, on a throwaway folder on a Windows machine, with a stand-in account | **Run** |
-| `prune.sh` under Git Bash on Windows | A Windows 10 machine, 45 files | **Run** |
-| Windows OpenSSH Server accepting the `sshd_config` below, the key file location, the `/C:/...` path form, how `sftp-server.exe` behaves under these permissions | The real desktop | **Not run.** Written from Microsoft's documentation. Treat the first real attempt as the test, and `verify-destination.sh` as the instrument |
+| Scheduling, encryption, upload, lock check, key check, tamper and budget checks, restore with the read key, fail-closed, catch-up, alerts, health | `infra/smoke-m2-slice2.sh` against versitygw (an S3 stand-in with Object Lock), in CI (`backup-offbox`) | **Run** |
+| Backblaze itself: capabilities enforced on S3 calls, default retention, lifecycle, caps, the v2 `b2_authorize_account` shape, path-style requests | `infra/backup/verify-destination.sh` against the real bucket | **Not run yet** (Kyle's setup steps first) |
 
 ### What runs, and where
 
-A compose service, `backup`, built from `infra/backup/` on top of the same Postgres image the stack runs (so
-its `pg_dump` is the server's own version). It is a container, not a host job, so that what it does is written
-to `task_runs` and visible on `/health/data`. A host scheduler would be a second system nothing else sees.
+A compose service, `backup`, built from `infra/backup/` on top of the same Postgres image the stack runs (so its
+`pg_dump` is the server's own version). It is a container, not a host job, so that what it does is written to
+`task_runs` and visible on `/health/data`.
 
 Every 30 seconds it asks two questions:
 
-1. **Is a backup due?** One is due when the newest one is older than the most recent `BACKUP_AT` slot
-   (default 03:00 `America/New_York`). That one rule is also the catch-up: a laptop that slept through 03:00
-   is due the moment it wakes, once, and not again until the next slot.
-2. **Is an off-box copy pending?** Yes after every new backup and after every start, and again on a retry
-   timer after a failure.
+1. **Is a backup due?** One is due when the newest one is older than the most recent `BACKUP_AT` slot (default 03:00
+   `America/New_York`). That one rule is also the catch-up: a machine that slept through 03:00 is due the moment it
+   wakes, once, and not again until the next slot.
+2. **Is an off-box copy pending?** Yes after every new backup and after every start, and again on a retry timer after
+   a failure.
 
-They are **two independent steps**, recorded as two tasks (`ops.backup`, `ops.backup_copy`). A backup
-succeeds when it is dumped, checked, encrypted and kept in the `backups` volume. The copy is attempted
-afterwards, so **a sleeping desktop is a failed copy and never a failed backup**, and the copy catches up by
-itself when the desktop is back. Failures back off (15 min, doubling, capped at 6 h) so a missing key does not
-write a failed row every few minutes.
-
-| Step | What | Local result |
+| Step | What | Result |
 |---|---|---|
-| `ops.backup` | `pg_dump -Fc`, `pg_restore --list` check, manifest, `tar` of both, `age` to the recipients | `/backups/<db>_<UTC>.tar.age` |
-| `ops.backup_copy` | Over SFTP: list the destination; for each backup with no object of the right size, `put` a new object (never overwriting); then list again and compare sizes | none |
+| `ops.backup` | `pg_dump -Fc`, `pg_restore --list` check, manifest, `tar` of both, `age` to the recipients | `/backups/<db>_<UTC>.tar.age`; its size in `task_runs.output_bytes` |
+| `ops.backup_copy` | Check the key; list the bucket; upload each local backup younger than 30 days that the bucket lacks; check each upload's size and lock; check for delete markers and the budget | `flowdesk/<db>_<UTC>.tar.age` in the bucket; the bucket's bytes in `output_bytes` |
 
-The archive is the `.dump` and `.manifest` pair that `backup.sh` writes, so `restore.sh` takes them
-unchanged. The plaintext exists only in a private directory on tmpfs for the length of one backup.
+The plaintext exists only in a private directory on tmpfs for the length of one backup. **B2 only ever holds
+ciphertext.**
 
-**Fails closed.** With no real age key in `infra/backup/recipients.txt`, the backup records `NoRecipient` and
-writes nothing. It never falls back to an unencrypted copy. The same goes for the copy: with no
-`BACKUP_SSH_PATH` it refuses, because a default would put the files somewhere the permissions were not set on.
+**Fails closed.** With no real age key in `infra/backup/recipients.txt`, the backup records `NoRecipient` and writes
+nothing. It never falls back to an unencrypted copy. With no `B2_BUCKET` the copy records `skipped` / `NotConfigured`,
+shown as `not_configured`, never a success.
 
-**Retention** keeps the newest backup of each of the last 14 days, plus the newest of each of the last 8
-seven-day buckets (`BACKUP_KEEP_DAILY`, `BACKUP_KEEP_WEEKLY`). **It applies to the local `backups` volume
-only.** See [Retention on the destination](#retention-on-the-destination-not-enforced-yet).
+**Retention, local:** the newest backup of each of the last 14 days, plus the newest of each of the last 8 seven-day
+buckets (`BACKUP_KEEP_DAILY`, `BACKUP_KEEP_WEEKLY`). **Off-box:** see [Retention on B2](#retention-on-b2).
+`docker compose down -v` wipes the local backups along with the database; the B2 copies survive that.
 
-**`docker compose down -v` wipes the local backups along with the database.** The off-box copies are what
-survive that.
+### What protects the copies: on B2's side, not in the script
 
-### Two keys, kept apart
+The machine's key is the realistic thing to lose. So the protection is server-side, where a stolen key cannot reach
+it (Kyle, 2026-11-25):
 
-| | age key | SSH key |
+- **Object Lock, GOVERNANCE mode, a default retention of 30 days** on the bucket. Every upload is locked without the
+  uploader asking. A locked version cannot be deleted by any key without `bypassGovernance`, and the machine's key never
+  has it. Governance, not compliance, because a wrong setting stays recoverable with the master key, which lives only in
+  the password manager.
+- **The write key** (on this machine) is restricted to the bucket and holds exactly `listBuckets, listAllBucketNames,
+  listFiles, writeFiles, readFileRetentions`:
+  - no `deleteFiles`, `bypassGovernance`, `writeFileRetentions`, `writeBucketRetentions` or `writeBuckets`;
+  - no `readFiles` either, so a stolen key cannot even download the ciphertext.
+- **The read key** (on the laptop, for restores only): `listBuckets, listAllBucketNames, listFiles, readFiles,
+  readFileRetentions`.
+
+The keys are made with the b2 command-line tool and an explicit list. The web UI's "Write Only" is not used, because
+Backblaze does not document which capabilities it grants.
+
+**What a stolen write key can still do, and how each is caught:**
+
+| Attack | Effect | Caught by |
 |---|---|---|
-| For | Encrypting the dump | The transport to the desktop |
-| Public half | `infra/backup/recipients.txt`, **committed** | On the desktop, in a key file only administrators can edit |
-| Private half | **Never on the laptop.** Made on the desktop, kept in the password manager | On the laptop (the container needs it), path in `.env`, never in git |
-| What it protects | Anyone who gets the files cannot read them | SFTP into one folder; what it may do there is set by NTFS on the desktop |
+| Delete a version | Refused: no `deleteFiles`, and the lock | `verify-destination.sh` steps 4 and 5 |
+| Overwrite | B2 cannot refuse a same-name upload; it keeps the old version | Step 6. The copy never re-uses a name |
+| Hide (a delete marker, allowed by `writeFiles`) | The locked version stays for its 30 days, then lifecycle removes it. A stolen key can shorten history to 30 days, never less | Every copy run lists versions: a delete marker under `flowdesk/` is `Tampered`, paged at once |
+| Upload junk to run up a bill | Storage grows | The budget check (`OverBudget`) and B2's caps |
 
-The rule: the key and the backups never share a single point of failure. The age private key must exist
-somewhere other than the machine that holds the backups.
+**Checked every run, not once.** The copy asks `b2_authorize_account` what the key may do and refuses
+(`CapabilityTooBroad`, paged) if it holds anything else or is not restricted to the bucket. After every upload it reads
+the object's retention and refuses (`NotLocked`, paged) unless it is GOVERNANCE for the full period.
 
-Make the age key **on the desktop**:
+### The two clients
 
-```powershell
-age-keygen -o flowdesk-age.key        # prints "Public key: age1..."
-```
-
-(`age` for Windows: `winget install FiloSottile.age`, or use the copy inside the backup image through
-`infra/restore-backup.sh`, which needs only Docker.) Put the whole file in the password manager. Paste the
-`age1...` line into `infra/backup/recipients.txt` (replacing the commented example) and commit it. Rotating
-later means adding the new public key as a second line: old backups stay readable with the old key.
-
-Make the SSH key **on the laptop, in Git Bash**, with no passphrase (the container cannot type one). Git Bash
-and not PowerShell, because empty arguments are passed differently by different PowerShell versions:
-
-```bash
-ssh-keygen -t ed25519 -N "" -C flowdesk-backup -f ~/.ssh/flowdesk_backup
-```
+- **rclone** (MIT) uploads: one static binary, pinned by version and SHA256 in the Dockerfile
+  ([RUNBOOK-IMAGE-CVE.md](RUNBOOK-IMAGE-CVE.md#rclone-the-b2-uploader-the-bump)). It uses its S3 backend against B2's
+  S3-compatible endpoint, so a stand-in S3 can test it in CI.
+  - It is told not to HEAD the object before or after (`--no-check-dest --s3-no-head`), because the write key
+    deliberately has no `readFiles`.
+  - Its own `--immutable` is not used: that check needs a HEAD. The copy's "never upload a name twice" comes from the
+    version listing instead.
+- **curl** (`--aws-sigv4`) reads what rclone does not expose: an object's retention, and the version listing with its
+  delete markers.
+- **Secrets.** Neither client ever sees a secret on its command line: rclone takes it from `RCLONE_CONFIG_*` in its own
+  environment, curl from a config on stdin. **Nothing a provider returns is logged or stored**, because B2's (and
+  S3's) error bodies echo the key ID, itself a secret here. Only class names reach `task_runs`. The smoke greps
+  `task_runs` and `/health/data` for the keys and key IDs.
 
 ### Configuration (`.env`, all gitignored)
 
-```
-BACKUP_SSH_HOST=<desktop hostname that resolves only on the home network; a bare IP is refused>
-BACKUP_SSH_USER=flowdesk-backup
-BACKUP_SSH_PORT=22
-BACKUP_SSH_PATH=/C:/FlowdeskBackups
-BACKUP_SSH_KEY_FILE=C:/Users/Kyle/.ssh/flowdesk_backup
-BACKUP_SSH_KNOWN_HOSTS_FILE=C:/Users/Kyle/.ssh/flowdesk_backup_known_hosts
-BACKUP_PING_URL=<the external monitor's ping URL for the backup check>
-```
-
-`BACKUP_SSH_PATH` is the folder on the desktop, in the form the native Windows OpenSSH server uses for a drive:
-`/C:/FlowdeskBackups` (the leading slash and the colon are part of it; WinSCP's FAQ documents this form). It has
-no default on purpose. `verify-destination.sh` fails with a clear message if the path does not resolve.
-
-With `BACKUP_SSH_HOST` blank the copy step records `skipped` / `NotConfigured`, which `/health/data` shows as
-`not_configured`. It is visible and never counts as a success.
-
-Host-key checking is strict (`StrictHostKeyChecking=yes` against your `known_hosts` file only), so the file
-must exist. Make it from the laptop, then **compare the fingerprint with the desktop's own** before trusting
-it, so you are not pinning whoever answered first:
-
-```bash
-# On the laptop, in Git Bash (PowerShell 5.1's > writes UTF-16, which ssh cannot read):
-ssh-keyscan -t ed25519 <HOST> > ~/.ssh/flowdesk_backup_known_hosts     # use the same HOST string as in .env
-ssh-keygen -lf ~/.ssh/flowdesk_backup_known_hosts
-```
-
-```powershell
-# On the desktop: the fingerprint must match the one above.
-ssh-keygen -lf C:\ProgramData\ssh\ssh_host_ed25519_key.pub
-```
-
-### The destination: Windows OpenSSH Server and NTFS
-
-**Why this shape.** The desktop is Windows, which has no rsync, so the copy is SFTP. OpenSSH Server is a native
-Windows service with start type Automatic, so it comes back by itself after a reboot. (Running sshd inside WSL2
-was rejected: it needs a Task Scheduler entry to start after a reboot, and a destination that silently stops
-accepting backups after a reboot is the failure you find out about when you need the backup.)
-
-**Two layers, and which does what.**
-- `sshd_config` makes the account **SFTP-only**: no shell, no tunnels.
-- **NTFS permissions** decide what the account can do inside the backup folder. The restriction on deleting is
-  not enforced by the backup code or by sshd; it is the ACL, which is why `verify-destination.sh` exists.
-
-**Not used: `ChrootDirectory`.** Windows supports it for SFTP sessions only, and there are reports of Windows
-`Match User` + `ChrootDirectory` setups behaving unpredictably, including the service refusing to start. A
-restriction that can stop sshd is the wrong place to put one. The consequence is in [Limits](#limits).
-
-**Not possible as asked: "home is the backup folder".** A Windows local account's SFTP start directory is its
-profile, and I found nothing in Microsoft's documentation for changing that. So the copy names the folder
-explicitly (`BACKUP_SSH_PATH`), and the permissions are on that folder.
-
-Run these in an **elevated PowerShell on the desktop**. Do them in order and stop at the first error.
-
-**1. OpenSSH Server running and automatic.**
-
-```powershell
-Get-WindowsCapability -Online -Name OpenSSH.Server*                  # State should be Installed
-Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0        # only if it says NotPresent
-Set-Service -Name sshd -StartupType Automatic
-Start-Service sshd
-Get-Service sshd                                                      # Status Running, StartType Automatic
-Get-NetFirewallRule -Name *ssh* | Format-Table Name, Enabled, Profile, Direction, Action
-```
-
-The firewall rule must be enabled for the network profile your LAN uses (usually Private).
-
-**2. A dedicated, non-administrator account.** Its password is random, never used and not stored: sign-in is by
-key only.
-
-```powershell
-$pw = ConvertTo-SecureString ([guid]::NewGuid().ToString('N') + 'Aa1!') -AsPlainText -Force
-New-LocalUser -Name 'flowdesk-backup' -Password $pw -PasswordNeverExpires -UserMayNotChangePassword -AccountNeverExpires -Description 'FlowDesk backup receiver (SFTP only)'
-Get-LocalGroupMember -Group 'Users' | Where-Object Name -like '*flowdesk-backup'     # shows the account if it is in Users
-Remove-LocalGroupMember -Group 'Users' -Member 'flowdesk-backup' -ErrorAction SilentlyContinue
-```
-
-It must **not** be in Administrators (administrators' keys are read from a different file, and it would defeat the
-point). It is also kept **out of `Users`**, which removes its read access to `C:\Windows`, the Program Files
-folders and `ProgramData`. Whether Windows OpenSSH lets an account that is not in `Users` sign in is **untested**;
-it is checked in step 7, with a fallback. Read [What the account can reach](#what-the-account-can-reach) before
-deciding that is enough.
-
-**3. The folder and its permissions.** Create it, remove inherited permissions, and give the administrators and
-SYSTEM control (so an administrator can prune and clean up). Then choose **one** of the two variants.
-
-```powershell
-New-Item -ItemType Directory C:\FlowdeskBackups
-icacls C:\FlowdeskBackups /inheritance:r
-icacls C:\FlowdeskBackups /grant "SYSTEM:(OI)(CI)F" "BUILTIN\Administrators:(OI)(CI)F"
-```
-
-**Variant W, write-once. The default.** The account can add a new backup and read what is there. It cannot
-overwrite, truncate, append to, rename or delete anything, and cannot make subfolders. This is the default
-because of a tested finding about Variant D, below, and not as a matter of taste.
-
-```powershell
-icacls C:\FlowdeskBackups /grant "flowdesk-backup:(RX,WD)"
-icacls C:\FlowdeskBackups /grant "flowdesk-backup:(OI)(IO)(RX)"
-icacls C:\FlowdeskBackups /deny  "flowdesk-backup:(OI)(IO)(WD,AD,WEA,WA,DE)"
-icacls C:\FlowdeskBackups /deny  "flowdesk-backup:(DC)"
-```
-
-**Variant D, no-delete. The original specification, and not append-only. Do not use it as the default.** The
-account can create and write files and read; Delete and Delete-subfolders-and-files are denied.
-
-```powershell
-icacls C:\FlowdeskBackups /grant "flowdesk-backup:(OI)(CI)(RX,WD,WEA,WA)"
-icacls C:\FlowdeskBackups /deny  "flowdesk-backup:(OI)(CI)(DE,DC)"
-```
-
-Write `DE`, not `D`. In a deny entry icacls's `D` shorthand also sets Synchronize, which blocks almost every file
-open (listing and reading stopped working when I first tried it). `DE` is exactly Delete.
-
-What each variant allowed, measured by running the commands above on a throwaway folder on Windows with a
-stand-in account (not elevated, so permissions applied):
-
-| Operation | Variant W | Variant D |
-|---|---|---|
-| List; read a backup | allowed | allowed |
-| Create a new file and fill it in one open (what an upload does) | allowed | allowed |
-| Delete; rename (so no temp-name-then-rename) | denied | denied |
-| Create a subfolder | denied | denied |
-| Append; truncating overwrite, asking for generic write (what most runtimes ask) | denied | denied |
-| **Open an existing file asking only for the data-write right, write in place or truncate** | **denied** | **ALLOWED** |
-
-**The finding: denying Delete does not make a destination append-only.** Under Variant D, an open on an existing
-backup that asked only for the data-write right wrote into it in place, and a truncating overwrite with the same
-right **cut a 24-byte backup to 1 byte**. Delete and rename were refused, exactly as specified. Writing into an
-existing file is a different permission from deleting it, and D grants it. Under Variant W every overwrite,
-truncate, append, delete and rename was refused, whatever access the open asked for.
-
-Opens that ask for generic write (which also includes append) are denied under D, so whether a stolen key could
-do this through Windows' `sftp-server.exe` depends on the exact access it requests, which I could not observe
-from here. That uncertainty is the reason not to rely on D: under D a stolen key *may* be able to destroy every
-backup without deleting one, and under W it cannot.
-
-Reproduce it yourself, before trusting either variant, in an ordinary (not elevated) PowerShell on the desktop.
-It runs the exact commands above on a throwaway folder, with your own account standing in for the backup account,
-and removes the folder afterwards:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File infra\backup\acl-experiment.ps1
-```
-
-It prints the table above and ends `RESULT: as documented` or says what differs.
-
-**What W costs, and why it does not stall the copy.** An upload interrupted halfway (a sleeping laptop makes
-that routine) leaves a short file under the real name, and under W nothing can reopen it to finish it. So the
-copy never tries to: it **steps over** it. A backup counts as copied when the destination holds an object of that
-backup at the same size as the local file. If none does, the next attempt creates a **new object**,
-`<db>_<stamp>.r<N>.tar.age` (N one higher than any already there), and leaves the short one where it is. W forbids
-reopening a file, not creating one, so this is allowed, and no administrator has to do anything for copies to
-resume. The same single code path is used under every policy; the copy never overwrites.
-
-What it leaves behind is litter: short objects, at most one per interrupted attempt, which nothing removes until
-`prune.sh` runs on the desktop (below). Two safeguards make the litter harmless:
-
-- **A short object can never be restored by mistake.** `age` authenticates the whole file, so decrypting a
-  truncated one fails before anything reaches a database. Tested: a 50-byte object is refused and no database is
-  created.
-- **Retention knows about retry objects.** It keeps the highest-numbered object of each backup and deletes the
-  lower ones, which is correct because a retry is only ever made when every lower object is short.
-
-To restore a backup that has several files, use the highest `r<N>` (or the one whose size matches what the
-copy logged). Tested on a stand-in where the plain object was 50 bytes and `r1` was 80 bytes: the complete copy
-was `r2`, and it restored.
-
-**4. The account's key.** Keep it in a file only administrators can edit, so the account cannot change its own
-key. Put the single line from `flowdesk_backup.pub` into it:
-
-```powershell
-$line = '<paste the one line from flowdesk_backup.pub>'
-Set-Content -Path C:\ProgramData\ssh\flowdesk-backup.authorized_keys -Value $line -Encoding ascii
-icacls C:\ProgramData\ssh\flowdesk-backup.authorized_keys /inheritance:r /grant "SYSTEM:F" /grant "BUILTIN\Administrators:F"
-```
-
-If sshd refuses the key from that location, check its log (`Get-WinEvent -LogName 'OpenSSH/Operational' -MaxEvents 20`)
-and fall back to the standard place, `C:\Users\flowdesk-backup\.ssh\authorized_keys`, which exists only after the
-account's first sign-in. Do not create `C:\Users\flowdesk-backup` by hand: Windows may then give the real profile
-a different folder name.
-
-**5. SFTP-only, in `C:\ProgramData\ssh\sshd_config`.** Add this block at the **end** of the file (a `Match` block
-applies to everything after it). Leave the existing `Subsystem sftp ...` line alone: the SFTP client needs it, and
-without it the connection opens and closes straight away. User names in `Match` must be lower case.
+On the stack machine:
 
 ```
-Match User flowdesk-backup
-    AuthorizedKeysFile C:/ProgramData/ssh/flowdesk-backup.authorized_keys
-    ForceCommand internal-sftp
-    PasswordAuthentication no
-    AllowTcpForwarding no
-    PermitTTY no
+B2_BUCKET=<the bucket name>
+B2_ENDPOINT=https://s3.<region>.backblazeb2.com
+B2_KEY_ID=<the WRITE key's ID>
+B2_APPLICATION_KEY=<the WRITE key>
+BACKUP_PING_URL=<the backup check's ping URL>
+HEARTBEAT_URL=<the heartbeat check's ping URL>          # this PC is the deployed instance (Kyle, 2026-11-25)
 ```
 
-Only use keywords the Windows build supports (`KbdInteractiveAuthentication`, `X11Forwarding`, `StrictModes`
-and several others are not available there, per Microsoft's documentation).
+On the laptop, for the drill only: `B2_BUCKET`, `B2_ENDPOINT`, `B2_READ_KEY_ID`, `B2_READ_APPLICATION_KEY`. **The read
+key is never on the stack machine; the write key is never on the laptop.** Both key IDs and both keys are secrets:
+`.env` and the password manager only, never chat, logs or stored errors (the `HEARTBEAT_URL` rule).
 
-**6. Test the configuration before restarting.** A bad `sshd_config` can stop the service, and a stopped service
-is exactly the silent failure to avoid.
+### The age key, kept apart
 
-```powershell
-& "$env:WINDIR\System32\OpenSSH\sshd.exe" -t        # prints nothing if the file is valid
-Restart-Service sshd
-Get-Service sshd                                     # Running
-```
+Kyle, 2026-11-25: **generated on the laptop**. The private key is stored in the password manager, and is on the laptop's
+disk only during a restore. Kyle commits the public key to `infra/backup/recipients.txt`. **The stack machine never holds
+the private key**, so the backups and the key that opens them never share a machine.
 
-**7. Check it from the laptop, with the real tool.** Add the settings to `.env`, then:
+### Retention on B2
 
-```powershell
-docker compose up -d --build backup
-docker compose exec -u postgres backup /opt/backup/verify-destination.sh
-```
+- Each backup is uploaded once, under a unique name, and locked GOVERNANCE for **30 days** (R, Kyle: one month of
+  protection, DERIVED).
+- **Lifecycle rules:** `daysFromUploadingToHiding: 31` and `daysFromHidingToDeleting: 1`, on `flowdesk/` and on
+  `probe/`. So a backup is hidden on day 31 and deleted on day 32, after its lock has expired.
+  - Backblaze documents that a lifecycle rule never deletes a locked version, so a wrong rule cannot cut history short.
+  - Pruning is server-side only: the machine's key cannot delete.
+- **Only backups younger than 30 days are uploaded.** An older local weekly would be locked for less than the promise.
+  After lifecycle deleted its first copy it would also be re-uploaded every day.
+- Storage is about 32 × the dump size: **55 MB** at today's 1.72 MB dump (MEASURED 2026-11-25).
 
-It connects with the real key, creates a probe file, then tries to overwrite, delete, rename and make a folder,
-and says which policy is in force. **It must end with `RESULT: OK`; delete and rename must say `refused`.**
-`policy write-once` is Variant W working; `policy no-delete` is Variant D, with the overwrite warning. It leaves
-one file, `flowdesk-probe-<stamp>.tar.age`, which only an administrator can remove (that is the point).
+### The budget (the no-cost rule)
 
-If it cannot even connect and the Windows Security log shows "The user has not been granted the requested logon
-type at this computer", the account needs `Users` membership after all: see
-[What the account can reach](#what-the-account-can-reach) for the fallback and what it costs.
-
-### What the account can reach
-
-The permissions in step 3 govern one folder. The account is still a signed-in Windows user, and an SFTP session
-without a chroot can browse the whole disk as that user. Run the survey **on the desktop** to see what that
-means there (read-only; it changes nothing):
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File infra\backup\acl-survey.ps1
-```
-
-What it showed on a default Windows 10 layout (the laptop, 2026-11-09; the desktop will differ):
-
-| Place | Through `Users` only | Through Everyone / Authenticated Users / NETWORK |
-|---|---|---|
-| `C:\Windows`, `Program Files`, `Program Files (x86)` | read | nothing |
-| `C:\ProgramData` | read, and create files | nothing |
-| `C:\Users\<anyone>` (profiles) | nothing | nothing (owner only) |
-| **A folder created directly under `C:\`** | read | **read, modify and delete: `Authenticated Users:(M)` is inherited from the drive root** |
-
-On that machine 17 of 20 top-level folders carried that inherited Modify. Data drives formatted by Windows
-usually carry the same rule on their root.
-
-Two consequences, one of which corrects what this document said before:
-
-1. **Removing the account from `Users` does not close the exposure that matters.** It removes the reads of
-   Windows, Program Files and ProgramData (low value). It does not touch `Authenticated Users`, which every
-   account holds, so the account can still read, change and delete the contents of ordinary top-level folders.
-   *Earlier text said the account could not write outside the backup folder. For top-level folders on a default
-   install, that was wrong.* A leaked SSH key is therefore a key to those folders, not only to the backups.
-2. **Does Windows OpenSSH need `Users` membership to authenticate? Not established.** Nothing in Microsoft's
-   documentation says so. The only discussion found (a Win32-OpenSSH issue) is a commenter who *believes* sshd
-   does a network logon, which the default "Access this computer from the network" right grants to Everyone, and
-   a reply that sshd's own configuration governs access; nobody verified either. So test it: step 7 connects as
-   the account. If it fails with "The user has not been granted the requested logon type at this computer"
-   (Security event 4625, status `0xC000015B`), put it back and accept the extra reads:
-
-   ```powershell
-   Add-LocalGroupMember -Group 'Users' -Member 'flowdesk-backup'
-   ```
-
-What would actually close it, in increasing order of effort. None is done, and each is a decision for the desktop's
-owner:
-- **Chroot** the account to the backup folder (`ChrootDirectory` in the `Match` block). It is the real fix, because
-  the account then cannot name any other path. It is not the default because of the reports of Windows chroot
-  setups failing, including `sshd` not starting. A guarded trial: copy `sshd_config` aside first, run
-  `sshd.exe -t` before restarting, and restore the copy if the service does not come back. Only that account is
-  affected by the block, but a service that does not start affects everything.
-- **Remove `Authenticated Users` from the top-level folders** that matter (and from the data drive's root), so
-  that nothing inherits Modify for it. This changes the desktop's own permissions, which may have other
-  consequences for programs that rely on them.
-- **Keep the SSH port off the internet** (no port forward to 22) and treat the laptop's key file as the sensitive
-  part: anyone who has it and can reach the desktop on the network has this access.
+FlowDesk takes no mandatory recurring cost (`ZERO_COST_MODE`).
+- **What is free.** B2's first 10 GB of storage are "always free". Sign-up needs no credit card. Transaction
+  classes A, B and C are free. Egress is free up to 3× the stored data.
+- **What bounds it.** The bound is **copies kept × dump size**, not one year's growth (BUILD-LOG, addendum 2026-11-25
+  second). The growth rate is not measured: "1 GB a year" was a 500-symbol projection, ASSUMED.
+- **What the copy does.** It measures every version in the bucket, hidden ones included (whether B2 bills hidden
+  versions is not documented, so they are ASSUMED billed), on every run:
+  - at **80%** of 10 GB it warns on `/health/data`;
+  - at **95%** it refuses to upload and pages (`OverBudget`).
+- **What fixes it.** Not a bill: fewer copies (weekly uploads) or a shorter lock.
+- **B2's own caps** (Caps & Alerts) are set to $0 for storage and for Class A, B and C. Backblaze's docs do not say
+  whether $0 is accepted, or what happens when a cap is reached (ASSUMED: requests are refused). Kyle records what the
+  UI accepted.
 
 ### Restoring from a scheduled backup
 
-On a machine with Docker, this repo, a `.env`, and the age **private** key (in practice the desktop):
+On the laptop, with the read key in its `.env` and the age private key from the password manager on its disk for the
+duration:
 
 ```bash
-bash infra/restore-backup.sh /path/to/flowdesk_20261109T080000Z.tar.age --identity flowdesk-age.key --db flowdesk
+bash infra/restore-backup.sh --from-b2 --identity <age key file> --db <new-or-empty-db>             # the newest
+bash infra/restore-backup.sh --from-b2 <db>_<stamp>.tar.age --identity <age key file> --db <...>   # a named one
 ```
 
-It decrypts (with `age` if installed, otherwise the copy inside the backup image, so only Docker is needed),
-checks the archive holds exactly one dump and its manifest, then runs `restore.sh` unchanged. Everything in
-[If you are here because something failed](#if-you-are-here-because-something-failed) applies after that, including
-the version trap: the machine restoring needs the same Postgres image tag as the manifest's `image=`. Use Git
-Bash on Windows, as for the rest of these scripts.
+It downloads through the backup image (`fetch-b2.sh`), version-aware: a hidden backup is still found and says so.
+Everything after decryption is `infra/restore.sh` unchanged. Then delete the key file.
 
-### Telling you when it stops (the missed-run signal)
+### Telling you when it stops (the missed-run signal, and the alerts)
 
-A stale backup does **not** degrade `/health/ready`. It can wait until morning, and anything that degrades
-`ready` pages you (ADR-0008 section 4). It shows on `/health/data` instead (`backups.backup` and
-`backups.copy`, each `ok` / `stale` / `never_succeeded` / `not_configured` / `no_runs`, stale after 36 hours,
-`BACKUP_STALE_AFTER_HOURS`), and the page comes from outside the machine:
+A stale backup does **not** degrade `/health/ready`; it shows on `/health/data` (`backups`; states and fields in
+`docs/HEALTH.md`). The page comes from outside the machine:
 
-After each **successful off-box copy**, the container pings `BACKUP_PING_URL`. Make a **second** check at the
-same provider as the heartbeat (`docs/HEARTBEAT.md`), separate from the heartbeat's, with **period 1 day and
-grace 24 hours** (it alerts after 48 hours without a copy). If the pings stop for any reason (laptop asleep,
-desktop down, key broken, container dead) the provider alerts you. Like the heartbeat URL, it is a credential:
-`.env` only.
-
-**Why 24 hours and not 12.** The destination is on the home LAN, so the copy succeeds only when the laptop is
-home. On a weekday the laptop is away for most of the day, and the copy retries while it is gone. The retry
-backoff is 15, 30, then the cap; with the old 360-minute cap the first success after getting home could be
-~22:00, and a weekend ping at 09:00 followed by a Monday ping at 22:00 is 37 hours, past a 36-hour line. Two
-changes fix that together: `BACKUP_RETRY_CAP_MINUTES` is **30** (wired through compose; it applies to a
-destination that cannot be reached, below), so a copy lands within half an hour of getting home; and the grace is sized to the longest
-absence you expect, not to a single day. The trade is slower news of a real failure: a copy that has broken
-for good (a key refused) is paged about two days later, not one. `/health/data` shows it sooner (below). A
-changed host key (a pinned key that did not match) is the exception: the scheduler POSTs to `BACKUP_PING_URL/fail`
-once per occurrence, so the monitor alerts at once (`docs/HEALTH.md`). Check that your provider accepts `/fail` on the check's ping URL
-(healthchecks.io does) before relying on it.
-
-While the laptop is away, expect about twenty failed `ops.backup_copy` rows in `task_runs` per workday. That is
-normal and does not change `backups.copy.state` (see `docs/HEALTH.md`). Expect an alert when the laptop is
-away from home longer than the grace, or asleep at home through it; that is the signal working.
+- After each **verified** copy (key checked, upload sized and locked, no tampering, under budget) the container pings
+  `BACKUP_PING_URL`. Make a check at the same provider as the heartbeat, separate from the heartbeat's, with **period
+  1 day and grace 24 hours**. If the pings stop for any reason, the provider alerts.
+- **The alert classes page at once:** `AuthRefused`, `CapabilityTooBroad`, `NotLocked`, `Tampered` and `OverBudget`.
+  The scheduler POSTs the class to `BACKUP_PING_URL/fail`, once per occurrence (until the next successful copy).
+  Check that the provider accepts `/fail` (healthchecks.io does).
 
 ### How a failure is retried
 
-Retries are split by **whether another attempt can help**, not by which step failed. The failing script says so
-with its exit code (`exit_code_for_class` in `infra/backup/lib.sh`, the codes borrowed from `sysexits.h`), and the
-scheduler (`retry_plan`) applies it. Every retry starts at 15 minutes and doubles up to the cap that applies.
-
-| Failure | Exit | Retried | Why |
+| Failure | Exit | Retried | Pages at once |
 |---|---|---|---|
-| `Unreachable` (copy), or `task_runs` not writable | 75 | up to **30 minutes** (`BACKUP_RETRY_CAP_MINUTES`) | The laptop coming home, or Postgres finishing a restart, changes the outcome. |
-| `NoRecipient`, `ConfigInvalid`, `BadDatabaseName` | 78 | **not before the next slot** | No number of attempts fixes a file or setting nobody has edited. One row a day, not one every few hours. |
-| Everything else: `DumpFailed`, `DumpUnreadable`, `EncryptFailed`, `ReadFailed`, `NoTimescale`, `AuthRefused`, `HostKeyChanged`, `SftpFailed`, `SizeMismatch` | 1 | up to **6 hours** (`BACKUP_RETRY_LONG_CAP_MINUTES`) | `pg_dump` is expensive and half an hour rarely changes the answer. `AuthRefused` and `HostKeyChanged` are here on purpose: the fix may be made on the desktop, which this machine cannot see, so it keeps trying, slowly. |
+| `Unreachable` (B2 or the network away, 429, 5xx), or `task_runs` not writable | 75 | up to **30 minutes** | no |
+| `AuthRefused`, `CapabilityTooBroad`, `NotLocked`, `Tampered`, `OverBudget` | 76 | up to **6 hours** (the fix is made in Backblaze's console, which this machine cannot see) | **yes**, once |
+| `NoRecipient`, `ConfigInvalid`, `BadDatabaseName` | 78 | **not before the next slot** | no |
+| Everything else (`DumpFailed`, `UploadFailed`, `S3Failed`, `SizeMismatch`, ...) | 1 | up to **6 hours** | no |
 
-"Not before the next slot" is held in the scheduler's memory only: nothing is persisted, so **restarting the
-container (`docker compose restart backup`) retries at once**. That is also how a changed key, known_hosts or
-`.env` value is picked up. It is the right thing to do after adding the real age key to `recipients.txt`, because
-that file is read live but the scheduler is not told it changed. Before this split, a dev stack with the
-committed placeholder key wrote about 48 failed `ops.backup` rows a day (the shared 30-minute cap); now it writes
-one a day.
-
-The class comes from ssh's own error text, with the connection logged at `LogLevel=ERROR` and **not `-q`**: with
-`-q` every failure is just `Connection closed`. The patterns are anchored to the start of a line and were
-captured from OpenSSH 10.2, the version in the image; `infra/backup/selftest.sh` pins them. **Any message not
-recognised is `Unreachable`**, the mildest wrong answer, because OpenSSH's wording is not a stable interface.
-Re-run `bash infra/smoke-m2-slice2.sh` after an image bump: it provokes each class against a real sshd.
+"Not before the next slot" is held in the scheduler's memory only, so `docker compose -p flowdesk restart backup`
+retries at once. That is also how a changed `.env` or `recipients.txt` is picked up. A plan change, recorded: the plan
+put `AuthRefused`, `CapabilityTooBroad` and `NotLocked` under configuration (78). As built they page and retry slowly
+(76), so a key fixed in the console is picked up within hours without a restart.
 
 ### Closing the slice
 
-IDEA-029 closes when all of this is true, on the real hardware, and is recorded in `docs/BUILD-LOG.md`:
+1. `verify-destination.sh` against the real bucket ends `RESULT: OK (write key)`, and with the read key on the laptop
+   `RESULT: OK (read key)`.
+2. One backup taken and uploaded by the scheduler, unattended (Part B).
+3. That backup restores on the laptop and the fingerprints match (Part C).
 
-1. `verify-destination.sh` against the real desktop ends `RESULT: OK` (and `policy write-once`, the default).
-2. `docker compose logs backup` shows `backup_scheduler_started` with `"offbox":"configured"`.
-3. **Unattended:** you do not run anything by hand. A backup appears after a scheduled slot has passed (or
-   after a wake from sleep that crossed one), and its `.tar.age` arrives on the desktop.
-4. `/health/data` shows `backups.backup` and `backups.copy` both `ok`.
-5. On the desktop, `restore-backup.sh` restores that file into a database named something other than the live
-   one, with the private key from the password manager, and prints `OK: restored into ...`.
-6. The monitor shows a ping from step 3.
+### The restore drill, step by step
 
-To skip waiting for the slot while setting up, run the two steps by hand as the `postgres` user (the files
-must belong to the user the scheduler runs as):
+For Kyle, once the build is committed. **Run each step once, in order; one command per step, no `&&`.** Each step
+names its shell, what success looks like, and what to send back. **Never send a key, a key ID, or a ping URL.**
+Steps marked **IRREVERSIBLE** cannot be undone.
 
-```bash
-docker compose exec -u postgres backup /opt/backup/run-backup.sh
-docker compose exec -u postgres backup /opt/backup/run-copy.sh
+#### Part A: setup
+
+**A1. Browser: the Backblaze account.** Sign up at `https://www.backblaze.com/sign-up/cloud-storage` (Backblaze's page:
+"No credit card required"). Choose the region (it cannot be changed for the bucket later). Success: the B2 web
+console shows "Buckets".
+
+**A2. Browser, then PowerShell: the b2 command-line tool.**
+1. Download `b2-windows.exe` (v5.0.3, MIT) and `b2-windows.exe_hashes.txt` from
+   `https://github.com/Backblaze/B2_Command_Line_Tool/releases` into `C:\Tools\b2\`.
+2. PowerShell: `Get-FileHash C:\Tools\b2\b2-windows.exe -Algorithm SHA256`.
+
+Success: the hash equals the SHA256 line in the hashes file. Send back: matched, yes or no.
+
+**A3. Browser: the master application key.** Application Keys → generate the master application key. It is shown
+once: put the key ID and key in the password manager. It is used only in A4 to A9, never stored on this machine
+afterwards.
+
+**A4. Git Bash: sign the tool in.** Run `cd /c/Tools/b2`, then `./b2-windows.exe account authorize`. It prompts for the
+key ID and the key: paste the master key's there, never on the command line. Success: account details print, with no
+error.
+
+**A5. Git Bash: the bucket. IRREVERSIBLE: Object Lock cannot be turned off, and the name cannot be changed.**
+`./b2-windows.exe bucket create --file-lock-enabled flowdesk-backups-<something-random> allPrivate`
+Bucket names are global; add something random. Success: a bucket ID prints.
+
+**A6. Git Bash: the default retention, GOVERNANCE, 30 days.** Changeable later with the master key, so not
+irreversible.
+`./b2-windows.exe bucket update --default-retention-mode governance --default-retention-period "30 days" flowdesk-backups-<...>`
+Success: the bucket's JSON prints, showing default retention mode governance and 30 days.
+
+**A7. Git Bash: the lifecycle rules.** Both go in one command, because "all bucket lifecycle rules are set at once":
+
+```
+./b2-windows.exe bucket update --lifecycle-rule '{"fileNamePrefix": "flowdesk/", "daysFromUploadingToHiding": 31, "daysFromHidingToDeleting": 1}' --lifecycle-rule '{"fileNamePrefix": "probe/", "daysFromUploadingToHiding": 31, "daysFromHidingToDeleting": 1}' flowdesk-backups-<...>
 ```
 
-That tests the configuration. It does not satisfy step 3.
-
-### The restore drill, step by step (IDEA-029; for Kyle to run)
-
-> **Destination decided 2026-11-25 (Kyle): Backblaze B2.** This replaces the 2026-11-20 note that the destination was undecided. Its finding stands: the stack runs on `DESKTOP-GHDCBPQ`, a desktop, and no machine on the home network is a destination. The off-box copy will go to a B2 bucket, `age`-encrypted on the stack machine first, so B2 holds ciphertext only. It uses a bucket-scoped key with no delete or `bypassGovernance` capability, plus governance-mode Object Lock for 30 days (addendum 2026-11-25 third). The restore drill runs on the laptop with a separate read-only key. **Nothing of it is built yet**: the plan is in `docs/BUILD-LOG.md`, addendum 2026-11-25 (second). It recommends removing the SFTP path. **The drill below is the SFTP version and cannot be run.** It is kept as written on 2026-11-19 until the B2 build replaces it.
-
-This is the drill that closes IDEA-029 and lets the bars polls be scheduled (`BARS_POLL_ENABLED`, M2 slice 6 step 6). It covers the six
-points of [Closing the slice](#closing-the-slice), in order. **You hold the age identity (private) key. It is never sent to Claude, never
-pasted into a chat, never on the laptop, and lives in the password manager; it touches the desktop's disk only for the minutes of step C4
-to C6.**
-
-**Shell: Git Bash, on both machines, for every command below**, with one exception: the desktop's OpenSSH Server and NTFS setup (step A2)
-is PowerShell **as Administrator**, exactly as [The destination](#the-destination-windows-openssh-server-and-ntfs) gives it. No command
-here is chained with `&&`: run each line on its own and read its output before the next. Where a line says *expect*, anything else means
-stop and send the output.
-
-**Where things stand (MEASURED 2026-11-19 on the laptop):** `infra/backup/recipients.txt` has no real age key (backups fail closed with
-`NoRecipient`), and `.env` has no `BACKUP_SSH_HOST`. So no scheduled backup has ever been taken. Part A is the one-time setup; then Part B
-is waiting for one unattended backup; then Part C restores it on the desktop.
-
-**Which backup file:** the **first `.tar.age` that the scheduler makes on its own, after a 03:00 `America/New_York` slot, once Part A is
-done**, named `flowdesk_<UTC stamp>.tar.age` (for example `flowdesk_20261121T080004Z.tar.age`), as it arrived on the desktop in
-`C:\FlowdeskBackups`. Not one made by `run-backup.sh` by hand, and not `verify-destination.sh`'s `flowdesk-probe-*.tar.age` (point 3:
-unattended). Use the newest such file if several have arrived. The `<UTC stamp>` part of its name is the **cutoff** used in steps B4 and C7;
-copy it exactly (Postgres reads `20261121T080004Z` as is).
-
-#### Part A — one-time setup
-
-**A1. Desktop: make the age key.** In Git Bash:
-
-```bash
-winget install FiloSottile.age
-```
-
-Close and reopen Git Bash (so `age` is on PATH), then:
-
-```bash
-age-keygen -o ~/flowdesk-age.key
-```
-
-*Expect* `Public key: age1...` printed. Open the file, copy **its whole contents** (three lines: created, public key, `AGE-SECRET-KEY-1...`)
-into a new password-manager entry named `FlowDesk age identity`. Check the entry saved. Then:
-
-```bash
-grep '^# public key:' ~/flowdesk-age.key
-rm ~/flowdesk-age.key
-ls ~/flowdesk-age.key
-```
-
-*Expect* the first line to print `# public key: age1...` and the last to say `No such file or directory`. **Send Claude the `age1...` public
-key** (it can only encrypt; it is committed to the repo) or put it in `infra/backup/recipients.txt` yourself, replacing the commented
-example, and commit and push.
-
-**A2. Desktop: OpenSSH Server, the `flowdesk-backup` account, the folder and its permissions.** Follow
-[The destination: Windows OpenSSH Server and NTFS](#the-destination-windows-openssh-server-and-ntfs) top to bottom, in PowerShell as
-Administrator, with the folder `C:\FlowdeskBackups` and policy write-once. Leave the `authorized_keys` step for A3. Then
-[What to verify on the desktop first](#what-to-verify-on-the-desktop-first), points 1 to 3 and 5.
-
-**A3. Laptop: the SSH key.** In Git Bash:
-
-```bash
-ssh-keygen -t ed25519 -N "" -C flowdesk-backup -f ~/.ssh/flowdesk_backup
-cat ~/.ssh/flowdesk_backup.pub
-```
-
-Install that one `ssh-ed25519 ...` line on the desktop as [The destination](#the-destination-windows-openssh-server-and-ntfs) says
-(`C:\ProgramData\ssh\flowdesk-backup.authorized_keys`, its `icacls` line, then restart `sshd`).
-
-**A4. Laptop: pin the desktop's host key.** In Git Bash, with `<HOST>` the desktop's home-network hostname:
-
-```bash
-ssh-keyscan -t ed25519 <HOST> > ~/.ssh/flowdesk_backup_known_hosts
-ssh-keygen -lf ~/.ssh/flowdesk_backup_known_hosts
-```
-
-On the desktop (PowerShell is fine for this one read): `ssh-keygen -lf C:\ProgramData\ssh\ssh_host_ed25519_key.pub`. *Expect* the same
-`SHA256:...` on both. Different means stop.
-
-**A5. Laptop: configure and restart.** Pull the commit with the real `recipients.txt` (`git pull`), add to `.env` the block from
-[Configuration](#configuration-env-all-gitignored) (`BACKUP_SSH_HOST` = the same `<HOST>`, `BACKUP_SSH_PATH=/C:/FlowdeskBackups`,
-`BACKUP_PING_URL` = the monitor's backup check), then:
-
-```bash
-docker compose build backup
-docker compose up -d
-```
-
-**A6. Laptop: the destination probe.**
-
-```bash
-docker compose exec -u postgres backup /opt/backup/verify-destination.sh
-```
-
-*Expect* the last lines to report `policy write-once` and end `RESULT: OK`, with delete and rename `refused` (point 1). It leaves one
-`flowdesk-probe-<stamp>.tar.age` on the desktop: delete it there as an administrator.
-
-**A7. Laptop: the scheduler sees the destination.**
-
-```bash
-docker compose logs backup | grep backup_scheduler_started
-```
-
-*Expect* `"offbox":"configured"` in the last such line (point 2).
-
-#### Part B — one unattended backup (run nothing by hand)
-
-**B1.** Leave the laptop on, or asleep across 03:00 New York and then woken; the desktop awake then, or later (a failed copy retries on its
-own). Run no backup command.
-
-**B2. Laptop, the next morning: the two tasks ran on their own.**
-
-```bash
-docker compose exec -T postgres psql -U flowdesk -d flowdesk -c "SELECT id, task_name, status, started_at FROM task_runs WHERE task_name IN ('ops.backup', 'ops.backup_copy') ORDER BY id DESC LIMIT 6"
-```
-
-*Expect* an `ops.backup` row `succeeded` started just after a 03:00 New York slot (08:00 UTC in winter) or just after the wake, and an
-`ops.backup_copy` row `succeeded` after it (point 3).
-
-```bash
-curl -s http://127.0.0.1:8000/health/data | python -m json.tool | grep -A 14 '"backups"'
-```
-
-*Expect* `backup` and `copy` both `"state": "ok"` with `"last_attempt_failed": false` (point 4). **Point 6:** the external monitor shows a ping from the backup check at about
-that time.
-
-**B3. Laptop: the file's name and size.**
-
-```bash
-docker compose exec -T backup ls -l /backups
-```
-
-*Expect* `flowdesk_<stamp>.tar.age` with the stamp of the B2 run. Note its size in bytes.
-
-**B4. Laptop: the fingerprint at the cutoff** (`<stamp>` from B3, exactly):
-
-```bash
-docker compose exec -T postgres psql -U flowdesk -d flowdesk -Atq -v cutoff=<stamp> -f - < infra/drill-fingerprint.sql > laptop-fingerprint.txt
-cat laptop-fingerprint.txt
-```
-
-*Expect* eleven lines (`alembic`, `hypertables`, `insert_only_triggers`, `symbols`, `provider_mappings`, `trading_sessions_to_cutoff`, then
-`macro_metrics`, `bars_daily`, `bars_intraday`, `splits`, `distributions`, each a count and an md5). `infra/drill-fingerprint.sql` counts
-only rows ingested at or before the stamp, so what the laptop wrote after the dump does not change it.
-
-#### Part C — the restore, on the desktop
-
-**C1. A clone of the repo at the laptop's commit.** On the laptop: `git rev-parse HEAD` (call it `<sha>`). On the desktop, in Git Bash:
-
-```bash
-git clone https://github.com/VVazza17/flowdesk.git ~/flowdesk-drill
-cd ~/flowdesk-drill
-git checkout <sha>
-```
-
-The same commit is the same Postgres image tag, which the restore checks against the backup's manifest (the version trap, above).
-
-**C2. A `.env` for the drill.** Its password protects nothing that matters (a scratch database, loopback only):
-
-```bash
-cp .env.example .env
-sed -i 's/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=drill-only/' .env
-grep '^POSTGRES_' .env
-```
-
-*Expect* `POSTGRES_PASSWORD=drill-only`. If something on the desktop already holds port 5432, also set `POSTGRES_PORT` to a free port.
-
-**C3. Start Postgres only.** **Never `docker compose up -d` without a service name on the desktop:** that would start a second worker and
-Beat, which would poll FRED and Yahoo and run backups of their own into the same folder.
-
-```bash
-docker compose up -d postgres
-docker compose ps postgres
-```
-
-*Expect* `postgres` `running (healthy)` (wait a few seconds and re-run `ps` if it says `starting`).
-
-**C4. The key, from the password manager, for the next two steps only.** Create the file and paste the entry's whole contents into it, save,
-close:
-
-```bash
-notepad "$(cygpath -w ~/flowdesk-age.key)"
-head -c 20 ~/flowdesk-age.key
-```
-
-*Expect* `# created: 20...`. (Notepad may ask to create the file: yes.)
-
-**C5. Restore the file from Part B** (`<stamp>` as in B3), into a database that is not the live name:
-
-```bash
-bash infra/restore-backup.sh /c/FlowdeskBackups/flowdesk_<stamp>.tar.age --identity ~/flowdesk-age.key --db flowdesk_drill
-```
-
-*Expect* the last line `OK: restored into 'flowdesk_drill' (TimescaleDB 2.31.0, alembic <rev>)` (point 5). If it stops at the version trap,
-the clone is not at the laptop's commit (C1). If `age` cannot decrypt, the key file is not the one whose public key is in
-`recipients.txt`.
-
-**C6. Remove the key from disk.**
-
-```bash
-rm ~/flowdesk-age.key
-ls ~/flowdesk-age.key
-```
-
-*Expect* `No such file or directory`. Empty the Recycle Bin if Notepad left anything there.
-
-**C7. The fingerprint of the restored copy, at the same cutoff:**
-
-```bash
-docker compose exec -T postgres psql -U flowdesk -d flowdesk_drill -Atq -v cutoff=<stamp> -f - < infra/drill-fingerprint.sql > desktop-fingerprint.txt
-cat desktop-fingerprint.txt
-```
-
-**C8. Compare.** Copy `laptop-fingerprint.txt` across (or paste both into the message to Claude):
-
-```bash
-diff laptop-fingerprint.txt desktop-fingerprint.txt
-```
-
-*Expect* no output: every line identical, counts and md5s. **A difference in any line is a failed drill**, not a rounding matter.
-
-**C9. Afterwards** (after sending the results): `docker compose down -v` in `~/flowdesk-drill` removes the drill database. The backup file
-stays in `C:\FlowdeskBackups`.
-
-#### What to send Claude afterwards
-
-From the laptop: the output of **A6** (last 10 lines), **A7**, **B2** (both commands), **B3**, and `laptop-fingerprint.txt`; the time the
-monitor showed the ping (point 6). From the desktop: `git rev-parse HEAD` in the clone, the **whole output of C5**, `desktop-fingerprint.txt`,
-the output of **C8**, and `ls -l /c/FlowdeskBackups` (name and size of the file restored; it must equal B3's size).
-
-**Never send:** the age private key or any part of `AGE-SECRET-KEY-1...`, the contents of `~/flowdesk-age.key`, `~/.ssh/flowdesk_backup`
-(the SSH private key), or either `.env`.
-
-What Claude then does: checks the six points against what you sent, and records the drill in `docs/BUILD-LOG.md` and IDEA-029. If they all
-hold, IDEA-029 closes, and enabling `BARS_POLL_ENABLED=true` becomes a decision you can make.
-
-**Method check (MEASURED 2026-11-19 on the laptop, plain `backup.sh` and `restore.sh`, not the scheduled path):** the fingerprint of the live
-database and of a fresh restore of `flowdesk_20261119T041134Z.dump`, at that stamp, matched on all eleven lines; after changing one bar's
-volume by 1 in the restored copy, `bars_daily`'s md5 changed and its count did not. The throwaway database was then dropped.
-
-### What to verify on the desktop first
-
-1. **Is the OpenSSH Server feature installed and the `sshd` service Running and Automatic?** (Step 1.) It is
-   available on Windows 10 and 11 including Home.
-2. **Is TCP 22 reachable from the laptop** on the right firewall profile? From the laptop, `ssh -p 22
-   flowdesk-backup@<host>` should say `This service allows sftp connections only.` or at least ask for nothing
-   and close, not time out.
-3. **Will the desktop keep the same address?** Use a DHCP reservation on the router or a stable hostname. An
-   address that changes breaks the pinned `known_hosts`, which now reads as `HostKeyChanged` (a changed host
-   key), not as a dead desktop. Prefer a hostname that resolves only on your home network over a raw private IP:
-   on another network the same IP can belong to someone else's machine, and that would also read as
-   `HostKeyChanged`.
-4. **Is it awake when the copy runs?** It need not be: a failed copy is retried. But a desktop that is mostly
-   asleep means the monitor will alert on most mornings.
-5. **Disk space** on the backup drive, and see the retention section below.
-6. **The host-key fingerprints match** (see above).
-
-### Retention on the destination: not enforced yet
-
-The 14-daily plus 8-weekly rule runs inside the container, on the **local** volume. It cannot run on the
-destination: the account is deliberately unable to delete there. So today **nothing prunes the desktop, and the
-14+8 rule is aspirational for the copies that matter most** until something runs it. That now includes the
-litter from interrupted uploads (short objects and superseded retry objects): it accumulates until `prune.sh` runs,
-which is acceptable only because it is small and never gets in the way of a copy.
-
-One known edge: if the newest backup of a day has *only* short objects at the moment `prune.sh` runs (its
-upload was interrupted and not yet retried), an older complete backup from the same day is the one pruned. With
-one backup a day that needs a manual extra backup and an unlucky weekly run, and the retry completes the newer
-one. It is the reason to prune weekly and not continuously.
-
-**Fix direction (recorded, not built).** A backup whose only objects on the destination are short should not count
-as that day's backup. The copy would, after verifying the destination size equals the local size, create a tiny
-sidecar next to the object (for example `<db>_<stamp>.rN.tar.age.ok`), and `prune.sh` would count only backups that
-have one. Write-once permits this, because creating a new file is the one thing it allows. Things to settle when
-it is built: the sidecar must be created only after the size check, never before; `retention_delete` and
-`name_epoch` must treat `.ok` files as part of the backup they name and not as backups themselves; and a complete
-object that predates the sidecar convention needs a rule (treat as complete, or have the next copy add the
-sidecar).
-
-What would run it: a job on the desktop, as an administrator or SYSTEM (who have Delete), weekly, applying the
-same rule with `infra/backup/prune.sh`. That script was run under Git Bash on Windows (GNU awk), 45 files in,
-18 left, and it leaves anything not named like `<db>_<UTC stamp>.tar.age` alone, including the probe files. The
-desktop needs Git for Windows and a clone of this repo. A Task Scheduler entry would look like the following. It
-has **not** been run on the desktop, and the quoting is the part most likely to need a fix:
-
-```powershell
-schtasks /Create /TN "FlowDesk backup prune" /SC WEEKLY /D SUN /ST 04:00 /RU SYSTEM /RL HIGHEST `
-  /TR "\"C:\Program Files\Git\bin\bash.exe\" -c \"/c/path/to/Flowdesk/infra/backup/prune.sh /c/FlowdeskBackups\""
-```
-
-Try it with `--dry-run` first. If Git for Windows is not on the desktop, the alternative is a PowerShell port
-of the rule, which should be checked against `retention_delete` on the same file names so the two cannot
-drift. Neither exists yet. Until one runs, the destination grows without bound; a dump is 37 KB today, and that
-will not stay true.
+Success: the JSON lists both rules.
+
+**A8. Git Bash: check the bucket.** `./b2-windows.exe bucket get flowdesk-backups-<...>`
+Success: file lock enabled, default retention governance 30 days, the two lifecycle rules. Send back: that section of
+the output (it holds no secret).
+
+**A9. Git Bash: the two keys.** A key cannot be edited, only deleted and made again.
+1. The write key:
+   `./b2-windows.exe key create --bucket flowdesk-backups-<...> flowdesk-backup-write listBuckets,listAllBucketNames,listFiles,writeFiles,readFileRetentions`
+   It prints the key ID and the key **once**. Put them in the password manager, and in `.env` **on this PC** as
+   `B2_KEY_ID=` and `B2_APPLICATION_KEY=`.
+2. The read key:
+   `./b2-windows.exe key create --bucket flowdesk-backups-<...> flowdesk-backup-read listBuckets,listAllBucketNames,listFiles,readFiles,readFileRetentions`
+   Put it in the password manager **only**. It goes into the laptop's `.env` at Part C.
+3. Check both: `./b2-windows.exe key list -l`. Success: both keys, each restricted to the bucket, with exactly those
+   capabilities. Send back: that output **with every key ID deleted**.
+
+**A10. Git Bash: sign the tool out.** `./b2-windows.exe account clear` (ASSUMED command name, from the tool's
+`account` group; not run by Claude). If it says the command does not exist, stop and send that line back.
+
+**A11. Browser: the caps.** Caps & Alerts. For Storage, Class A, Class B and Class C, clear "No Cap" and enter **0**.
+If the UI refuses 0, enter the smallest amount it accepts and note it. Add your email for the alerts. Send back: what
+each cap accepted.
+
+**A12. Browser: the dead-man monitor.** If the healthchecks.io account from the 2026-11-05 heartbeat drill still exists,
+use it; otherwise create a free one. Make **two** checks, each alerting to email:
+- `flowdesk-heartbeat`: simple schedule, period 5 minutes, grace 40 minutes (`docs/HEARTBEAT.md`);
+- `flowdesk-backup`: period 1 day, grace 24 hours.
+
+Copy each ping URL straight into `.env` on this PC: `HEARTBEAT_URL=` and `BACKUP_PING_URL=`. **Warning (MEASURED
+2026-11-21 to 11-24 from this PC's event log):** this PC sleeps or is off most nights, for 10 to 13 hours. With the
+heartbeat check armed, every such night pages after about 45 minutes. Keep the PC awake, or decide differently, before
+arming it.
+
+**A13. Laptop: the age key.**
+1. PowerShell: `winget install FiloSottile.age`, then `age-keygen -o flowdesk-age.key`. It prints `Public key: age1...`.
+2. Put the whole file in the password manager, then delete it from the laptop's disk.
+3. On this PC, replace the commented example in `infra/backup/recipients.txt` with that `age1...` line, then commit and
+   push it.
+
+Success: `git log -1` shows the commit. Send back: the public key line (it is not a secret).
+
+**A14. Git Bash, this PC: start it.** `docker compose -p flowdesk up -d`, then
+`docker compose -p flowdesk restart backup` (it reads the new `.env` and `recipients.txt`). Success: `/health/ready` is
+`ok`.
+
+**A15. Git Bash, this PC: the probe.** `docker compose -p flowdesk exec -u postgres backup /opt/backup/verify-destination.sh`
+Success: the last line is `RESULT: OK (write key)`. Send back: the whole output. It holds capability names and its own
+words, no secret.
+
+#### Part B: one unattended backup (run nothing by hand)
+
+Leave the stack running. At 03:00 ET, or on waking if the PC slept through it, the scheduler backs up and uploads.
+Then, in Git Bash:
+
+1. `docker compose -p flowdesk exec -T postgres psql -U flowdesk -d flowdesk -Atq -c "select task_name, status, error_class, started_at from task_runs where task_name like 'ops.backup%' order by id desc limit 4"`
+   Success: an `ops.backup` and an `ops.backup_copy` row, both `succeeded`, started at or after 03:00 ET by the
+   scheduler.
+2. `curl -s http://127.0.0.1:8000/health/data`. Success: `backups.copy.state` is `ok`, `budget_state` is `ok`,
+   `tampered` is `false`, and `copied_through` is the backup's time.
+3. The `flowdesk-backup` check on healthchecks.io shows a ping.
+
+Send back: step 1's rows and step 2's `backups` object.
+
+#### Part C: the restore, on the laptop
+
+1. Clone the repo, `cp .env.example .env`, and set `B2_BUCKET`, `B2_ENDPOINT`, `B2_READ_KEY_ID` and
+   `B2_READ_APPLICATION_KEY` (the read key). Keep `POSTGRES_USER=flowdesk`, the source's user: roles are not in
+   the dump.
+2. Git Bash: `docker compose up -d postgres`.
+3. Git Bash, the read-key probe. Hand the key to the container by name, so it never appears on a command line, one
+   command per line:
+   - `set -a`
+   - `. ./.env`
+   - `set +a`
+   - `export B2_KEY_ID="$B2_READ_KEY_ID" B2_APPLICATION_KEY="$B2_READ_APPLICATION_KEY"`
+   - `docker compose run --rm --no-deps -T -e B2_KEY_ID -e B2_APPLICATION_KEY backup /opt/backup/verify-destination.sh --read`
+
+   Success: `RESULT: OK (read key)`.
+4. Copy the age key from the password manager to a file, e.g. `~/flowdesk-age.key`.
+5. Git Bash: `bash infra/restore-backup.sh --from-b2 --identity ~/flowdesk-age.key --db flowdesk_drill`
+   Success: `fetched <name>` and `OK: restored into 'flowdesk_drill'`.
+6. The fingerprints, with the same cutoff on both sides: on this PC, run `infra/drill-fingerprint.sql` against
+   `flowdesk`; on the laptop, against `flowdesk_drill`. Use the cutoff = the backup's `created_utc` from its manifest:
+   `docker compose exec -T postgres psql -U flowdesk -d <db> -Atq -v cutoff=<stamp> -f - < infra/drill-fingerprint.sql`.
+   Success: the two outputs are identical.
+7. Delete `~/flowdesk-age.key`.
+
+Send back: step 3's last line, step 5's last two lines, and both fingerprint outputs. **IDEA-029 closes when they
+match.**
 
 ### Limits
 
-- **The backup image is not covered by CI's vulnerability scan.** The `security` job builds `backend/` only.
-  The backup image's Alpine packages (`age`, `openssh-client`, `curl`, `tzdata`, `bash`) float at build time,
-  on top of an exact Postgres tag whose own packages nobody scans either. Slice 0 pinned the Python base and
-  closed that floating tag; this is a second image with the same problem, and it is open. Closing it means
-  scanning it in the same job, and probably pinning the Alpine packages or the base by digest.
-- **arm64 is untested for the backup image.** `infra/ci-checks.sh arm64` builds `backend/` only. The image is
-  built FROM the multi-arch Timescale image and Alpine publishes arm64 packages for everything it installs, but
-  neither has been built or run under emulation.
-- **Retention on the destination is not enforced** (above).
-- **Nothing here has run against Windows OpenSSH Server**, and the NTFS result was measured with Win32 calls
-  and a stand-in account, not through `sftp-server.exe`. `verify-destination.sh` is how that gets checked.
-- **The SFTP session is not chrooted, and that exposes more than the backups.** If the SSH key leaked, the
-  account could read, and on a default install **modify and delete**, the contents of ordinary top-level folders
-  (`Authenticated Users:(M)` is inherited from the drive root), as well as reading system folders unless it is
-  kept out of `Users`. The backups themselves are encrypted and, under Variant W, cannot be changed. See
-  [What the account can reach](#what-the-account-can-reach) for the measurements and the options.
-- **The SSH private key lives on the laptop**, because the container needs it. That is why what it can do on the
-  desktop is limited by NTFS, and why Variant W is the default.
-- **A write-restricted account cannot confirm a copy's integrity beyond its size.** Restore drills are the check.
-- **`BACKUP_AT` and daylight saving:** plain arithmetic on the local day, so on the two days a year the clocks
-  change the slot can be an hour off. Once a day, after the slot, is what is guaranteed.
-- **The destination's long listing is parsed from the right** (size and name are the last five columns), and the
-  name is whatever follows the last `/` or `\`. Real Windows output has not been seen.
+- **The backup image's scan is report-only** (RUNBOOK-IMAGE-CVE.md). Its Timescale base and Alpine's `age` carry fixable
+  HIGH findings, none of them in rclone. The Alpine packages float.
+- **arm64:** the image builds and its tools run under QEMU (MEASURED 2026-11-25). The backup and restore have not run
+  on arm64.
+- **Backblaze's behaviour is ASSUMED until `verify-destination.sh` runs against the real bucket:**
+  - capabilities enforced on S3 calls;
+  - path-style requests;
+  - the v2 `b2_authorize_account` shape;
+  - default retention applied to S3 uploads;
+  - what a cap does.
+
+  The stand-in proves FlowDesk's logic, never B2's semantics.
+- **The shell scripts' keyed lookups** (an object by name) are covered by the smoke's cases and the self-test, not by a
+  mutation harness: `tools/mutate.py` mutates `backend/` only.

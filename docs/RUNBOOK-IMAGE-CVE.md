@@ -119,18 +119,45 @@ base image, not in our locks, and today they appear only at MEDIUM or lower. If 
 - A package from `requirements.lock`: that is the `audit` step's job, not this one; fix it with
   `infra/lock-deps.sh`.
 
-## What this scan does not cover
+## The backup image (scanned, report-only, since 2026-11-25)
 
-**Only the `backend/` image is scanned.** The `security` job builds `backend/Dockerfile` and nothing else. The
-slice 0 pin closed the floating tag on that image, the CI tooling container, `lock-deps.sh` and the smokes. It
-did not touch the **backup image** (`infra/backup/`, M2 slice 2), which is built from the Timescale image with a
-handful of Alpine packages (`age`, `openssh-client`, `curl`, `tzdata`, `bash`) installed **without versions**, so
-they float at every build, and nothing scans that image or the OS packages of its base. This is open, and it is
-a hole next to the one slice 0 closed.
+The `security` job also builds `infra/backup/` (`docker compose -p flowdesk build backup`) and scans it with the
+same settings, **but with `fail-build: false`**: the findings are printed in the job's log and do not turn it red.
 
-What closing it takes: build the second image in the same job and scan it with the same settings (fixable HIGH
-and above only, which also keeps unfixable findings in the Timescale base from keeping the build red); then pin
-whatever that turns up, by apk version or by base digest, with a bump procedure like step 3a. Nothing here
-covers the backup image until that is done, and a red scan on it will not appear on its own.
+**Why report-only (DECISION, 2026-11-25, flagged to Kyle).** The first scan (MEASURED 2026-11-25, Grype with CI's
+flags, exit 2) found fixable HIGH and CRITICAL findings, **none of them in rclone**:
+- **The Timescale base**, `timescale/timescaledb:2.31.0-pg16`, the same image the stack's Postgres runs:
+  - `postgresql16`, `postgresql16-client` and `postgresql16-plpython3` 16.15 (38 findings, fixed in 16.16);
+  - `libpq` 18.6;
+  - `krb5-libs`, `libssl3` / `libcrypto3`, `libexpat`, `libxslt`, `musl`, `python3`, `zlib`;
+  - the image's own `timescaledb-parallel-copy` (go1.26.2, `golang.org/x/text` v0.22.0).
+- **Alpine's `age` package**, built with `golang.org/x/crypto` v0.24.0 and go1.25.10.
 
-The backup image has not been built for arm64 either (`infra/ci-checks.sh arm64` covers `backend/` only).
+A failing scan would keep CI red until the Timescale image is bumped. That is a version decision with restore
+consequences ([the version trap](BACKUP.md#the-version-trap)), and the stack's Postgres moves with it, so it is
+Kyle's, not this runbook's. **When the findings are cleared, set `fail-build: true` on that step**, and from then on
+this runbook applies to the backup image as it does to the backend.
+
+The Alpine packages (`age`, `curl`, `jq`, `tzdata`, `bash`) still float at build time. rclone does not: it is pinned
+(below).
+
+## rclone (the B2 uploader): the bump
+
+rclone is not an Alpine package here (it is only in Alpine's edge branch). `infra/backup/Dockerfile` downloads the
+release zip at an exact version and checks it against SHA256 values written in the Dockerfile, and the build refuses
+any binary whose `rclone version` is not the pinned one. `backend/tests/test_backup_budget.py` pins that there is
+exactly one version line and both hashes. To bump:
+
+1. Pick the release on `https://rclone.org/downloads/` and read its changelog for the S3 backend.
+2. In a throwaway container, download `SHA256SUMS` from `https://downloads.rclone.org/v<VERSION>/` and rclone's key
+   from `https://rclone.org/KEYS`. Run `gpg --verify SHA256SUMS`: it must say **Good signature** from the key with
+   fingerprint `FBF737ECE9F8AB18604BD2AC93935E02FF3B54FA` (`https://rclone.org/release_signing/`).
+3. Copy the `linux-amd64.zip` and `linux-arm64.zip` lines into `PIN_RCLONE_SHA256_AMD64` / `_ARM64`, and the version
+   into `PIN_RCLONE_VERSION`. Never name them `RCLONE_*`: rclone reads every `RCLONE_*` environment variable as a flag.
+4. Build for both architectures (`docker buildx build --platform linux/arm64 --load ... infra/backup`), then run
+   `bash infra/smoke-m2-slice2.sh` (the stand-in), then `verify-destination.sh` against the real bucket
+   (docs/BACKUP.md).
+5. A BUILD-LOG line: the version, and why.
+
+The backup image is built for arm64 under QEMU by hand only (MEASURED 2026-11-25: builds, and rclone, jq and age run).
+`infra/ci-checks.sh arm64` covers `backend/` only.

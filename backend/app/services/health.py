@@ -16,6 +16,7 @@ from typing import Any, Protocol
 
 import structlog
 
+from app import settings
 from app.ingest.macro import vintage_for
 from app.tasks.names import (
     BACKUP,
@@ -363,23 +364,61 @@ def classify_backup_task(
     return out
 
 
+def budget_state(bucket_bytes: int | None) -> str | None:
+    """The B2 bucket against the free tier (Kyle, 2026-11-25): `ok`, `warn` from 80%, `over` from
+    95% (where the copy refuses new uploads). None when nothing has been measured. The thresholds
+    are the copy's own (`infra/backup/lib.sh`, `budget_state`); a test pins that they agree.
+    """
+    if bucket_bytes is None:
+        return None
+    if bucket_bytes * 100 >= settings.BACKUP_BUDGET_BYTES * settings.BACKUP_BUDGET_OVER_PERCENT:
+        return "over"
+    if bucket_bytes * 100 >= settings.BACKUP_BUDGET_BYTES * settings.BACKUP_BUDGET_WARN_PERCENT:
+        return "warn"
+    return "ok"
+
+
 def assemble_backups(
     tasks: list[dict[str, Any]],
     successes: dict[str, datetime | None],
     now: datetime,
     stale_after: timedelta,
+    backup_sizes: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """The two backup steps side by side: `backup` (dump, encrypt, keep locally), `copy` (off-box).
+    """The two backup steps side by side: `backup` (dump, encrypt, keep locally), `copy` (off-box,
+    to Backblaze B2).
 
-    They are separate so a sleeping destination reads as a failed copy and not as a failed backup.
+    They are separate so a failing destination reads as a failed copy and not as a failed backup.
     This reports states; it never changes the HTTP status, and it is not in /health/ready, because a
-    stale backup can wait until morning and must not page (docs/BACKUP.md).
+    stale backup can wait until morning and must not page (docs/BACKUP.md). The copy's own alerts
+    (a refused key, a key with capabilities it must not have, an object not locked, a delete marker
+    nobody made, the bucket over budget) page through the backup monitor's /fail, not through here.
+
+    `backup.sizes_weekly`: the newest successful backup's size in each of the last 8 weeks, newest
+    first (Kyle, 2026-11-25: the dump's growth is ASSUMED until this shows it). `copy.bucket_bytes`
+    is every version in the bucket as the latest copy run measured it, hidden ones included;
+    `copied_through` the newest backup the bucket held then; `tampered` whether that run found a
+    delete marker under the backup prefix (FlowDesk never makes one).
     """
     by_name = {t["task_name"]: t for t in tasks}
-    return {
+    out = {
         key: classify_backup_task(by_name.get(name), successes.get(name), now, stale_after)
         for key, name in (("backup", BACKUP), ("copy", BACKUP_COPY))
     }
+    out["backup"]["sizes_weekly"] = [
+        {"week_start": s["week_start"], "bytes": s["bytes"]} for s in (backup_sizes or [])
+    ]
+    latest_copy = by_name.get(BACKUP_COPY) or {}
+    bucket_bytes = latest_copy.get("output_bytes")
+    out["copy"] |= {
+        "destination": "b2",
+        "bucket_bytes": bucket_bytes,
+        "budget_bytes": settings.BACKUP_BUDGET_BYTES,
+        "budget_state": budget_state(bucket_bytes),
+        "copied_through": latest_copy.get("output_watermark"),
+        "tampered": latest_copy.get("error_class") == "Tampered",
+    }
+    return out
 
 
 def assemble_data_age(
@@ -454,7 +493,9 @@ def assemble_data(
     # IDEA-024 is resolved the other way, the `backfills` key here and its probe move.
     """
     empty = not any(state.get(k) for k in ("ingestion", "backfills", "tasks"))
-    backups = assemble_backups(state.get("tasks", []), successes, now, backup_stale_after)
+    backups = assemble_backups(
+        state.get("tasks", []), successes, now, backup_stale_after, state.get("backup_sizes", [])
+    )
     data_age = assemble_data_age(macro_age or [], now, data_stale_after or {})
     return {
         "status": "no_runs" if empty else "reported",

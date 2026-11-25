@@ -16,6 +16,7 @@ from app.models.macro import MacroMetric
 from app.models.ops import BackfillRun, IngestionRun, ProvidersHealth, TaskRun
 from app.services.health import FeedRow
 from app.tasks.liveness import stale_cutoff
+from app.tasks.names import BACKUP
 from app.tasks.runs import STATUS_RUNNING, STATUS_SUCCEEDED
 
 ALEMBIC_INI = Path(__file__).resolve().parents[2] / "alembic.ini"
@@ -191,7 +192,25 @@ class SqlRedisProbes:
                         "completed_at": _iso(r.completed_at),
                         "attempt": r.attempt,
                         "error_class": r.error_class,
+                        "output_bytes": r.output_bytes,
+                        "output_watermark": _iso(r.output_watermark),
                     }
                     for r in tk
+                ],
+                # The newest successful backup of each of the last 8 weeks (Kyle, 2026-11-25:
+                # record the real dump size weekly; the growth figure is ASSUMED).
+                "backup_sizes": [
+                    {"week_start": _iso(week), "bytes": size, "at": _iso(at)}
+                    for week, size, at in await conn.execute(
+                        text(
+                            "SELECT DISTINCT ON (date_trunc('week', completed_at)) "
+                            "date_trunc('week', completed_at), output_bytes, completed_at "
+                            "FROM task_runs WHERE task_name = :name AND status = 'succeeded' "
+                            "AND output_bytes IS NOT NULL "
+                            "ORDER BY date_trunc('week', completed_at) DESC, completed_at DESC "
+                            "LIMIT 8"
+                        ),
+                        {"name": BACKUP},
+                    )
                 ],
             }

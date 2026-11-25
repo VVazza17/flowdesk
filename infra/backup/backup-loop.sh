@@ -8,8 +8,8 @@
 # writes the same task_runs table.
 #
 # Local first, off-box second, as two independent steps. A backup succeeds when it is encrypted and kept in
-# /backups. The copy is retried on its own, so a desktop that is asleep is a failed copy, never a failed
-# backup, and the copy catches up by itself when the desktop is back.
+# /backups. The copy to Backblaze B2 is retried on its own, so B2 or the network being away is a failed copy,
+# never a failed backup, and the copy catches up by itself when they are back.
 set -uo pipefail
 here=$(dirname "$0")
 # shellcheck source=lib.sh
@@ -20,7 +20,7 @@ TICK=${BACKUP_TICK_SECONDS:-30}
 # The *_SECONDS variants exist for the smoke test, which cannot wait minutes. Production uses the minutes.
 RETRY_BASE=${BACKUP_RETRY_SECONDS:-$(( ${BACKUP_RETRY_MINUTES:-15} * 60 ))}
 # Two caps, by whether a retry can help (lib.sh, exit_code_for_class): a destination that cannot be reached is
-# retried soon (RETRY_CAP, 30 minutes) because the laptop coming home changes the outcome; the rest back off to
+# retried soon (RETRY_CAP, 30 minutes) because the network coming back changes the outcome; the rest back off to
 # the long cap (6 hours). Failures nothing but an edit can fix (exit 78) are not retried before the next slot.
 RETRY_CAP=${BACKUP_RETRY_CAP_SECONDS:-$(( ${BACKUP_RETRY_CAP_MINUTES:-30} * 60 ))}
 RETRY_LONG_CAP=${BACKUP_RETRY_LONG_CAP_SECONDS:-$(( ${BACKUP_RETRY_LONG_CAP_MINUTES:-360} * 60 ))}
@@ -30,7 +30,7 @@ if ! slot=$(slot_seconds "${BACKUP_AT:-03:00}"); then
   exit 1
 fi
 jlog info backup_scheduler_started "at=${BACKUP_AT:-03:00}" "tz=${TZ:-UTC}" \
-  "offbox=$([ -n "${BACKUP_SSH_HOST:-}" ] && echo configured || echo not_configured)"
+  "offbox=$([ -n "${B2_BUCKET:-}" ] && echo b2 || echo not_configured)"
 
 stop=0
 trap 'stop=1' TERM INT
@@ -39,13 +39,13 @@ backup_delay=$RETRY_BASE
 copy_delay=$RETRY_BASE
 next_backup_try=0
 next_copy_try=0
-copy_pending=1   # on start: a restart is also a catch-up, and rsync only sends what is missing
-# DECISION: HostKeyChanged (exit 76) tells the monitor once per occurrence, held here in memory like the other
-# flags, and does not lean on the provider to deduplicate. An occurrence ends with the next successful copy. The
-# flag is set only when the monitor ACCEPTED the signal, so a signal lost to a bad network is tried again on the
-# next attempt. A container restart forgets it and may signal once more. Not AuthRefused (misconfiguration, fires
-# legitimately while the desktop is set up) and not /health/ready (ADR-0008 section 4).
-hostkey_signalled=0
+copy_pending=1   # on start: a restart is also a catch-up, and the copy only sends what the bucket lacks
+# DECISION: an alert-class failure (exit 76: AuthRefused, CapabilityTooBroad, NotLocked, Tampered, OverBudget;
+# lib.sh) tells the monitor once per occurrence, held here in memory like the other flags, and does not lean on the
+# provider to deduplicate. An occurrence ends with the next successful copy. The flag is set only when the monitor
+# ACCEPTED the signal, so a signal lost to a bad network is tried again on the next attempt. A container restart
+# forgets it and may signal once more. Never through /health/ready (ADR-0008 section 4).
+alert_signalled=0
 
 while [ "$stop" -eq 0 ]; do
   now=$(date +%s)
@@ -76,14 +76,17 @@ while [ "$stop" -eq 0 ]; do
     if [ "$rc" -eq 0 ]; then
       copy_pending=0
       copy_delay=$RETRY_BASE
-      hostkey_signalled=0
+      alert_signalled=0
     else
-      if [ "$rc" -eq "$EX_HOSTKEY" ] && [ "$hostkey_signalled" -eq 0 ] && [ -n "${BACKUP_PING_URL:-}" ]; then
-        if signal_monitor_fail "$BACKUP_PING_URL"; then
-          hostkey_signalled=1
-          jlog warning copy_fail_signalled "detail=HostKeyChanged: the monitor was told, once, until a copy succeeds"
+      if [ "$rc" -eq "$EX_ALERT" ] && [ "$alert_signalled" -eq 0 ] && [ -n "${BACKUP_PING_URL:-}" ]; then
+        # The class the copy recorded, from its own task_runs row (a class name, never provider text).
+        cls=$(psqlc -c "SELECT error_class FROM task_runs WHERE task_name = 'ops.backup_copy' ORDER BY id DESC LIMIT 1" 2> /dev/null | head -n 1)
+        [[ $cls =~ ^[A-Za-z]+$ ]] || cls=Alert
+        if signal_monitor_fail "$BACKUP_PING_URL" "$cls"; then
+          alert_signalled=1
+          jlog warning copy_fail_signalled "error_class=$cls" "detail=the monitor was told, once, until a copy succeeds"
         else
-          jlog warning copy_fail_signal_failed "detail=HostKeyChanged, and the monitor did not accept the failure signal; will try again"
+          jlog warning copy_fail_signal_failed "error_class=$cls" "detail=the monitor did not accept the failure signal; will try again"
         fi
       fi
       next_slot=$(( $(last_slot_epoch "$now" "$(local_seconds_of_day)" "$slot") + 86400 ))

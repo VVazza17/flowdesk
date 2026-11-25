@@ -60,7 +60,7 @@ prune_dir "$tmp" 14 8 > /dev/null
 check "pruning twice changes nothing" 19 "$(ls "$tmp" | grep -c 'tar.age$')"
 rm -rf "$tmp"
 
-echo "-- retry objects (an interrupted upload is stepped over, then pruned)"
+echo "-- retry objects (made by the SFTP copy until 2026-11-25; an old local volume must still prune right)"
 check "a retry name is read as the same backup" "$(name_epoch flowdesk_20261108T033000Z.tar.age)" "$(name_epoch flowdesk_20261108T033000Z.r2.tar.age)"
 tmp=$(mktemp -d)
 for n in flowdesk_20261108T030000Z.tar.age flowdesk_20261108T030000Z.r1.tar.age flowdesk_20261108T030000Z.r2.tar.age \
@@ -87,57 +87,103 @@ printf 'not a key\n' > "$r"
 fails "garbage is not a recipient" recipients_ok "$r"
 rm -f "$r"
 
-echo "-- what an ssh failure was (text captured from OpenSSH 10.2, the version in the image)"
-cls() { # RC TEXT -> the class
-  local f; f=$(mktemp); printf '%s\n' "$2" > "$f"; classify_ssh_failure "$1" "$f"; rm -f "$f"
-}
-check "a refused key" AuthRefused "$(cls 255 'fd@sink: Permission denied (publickey,keyboard-interactive).
-Connection closed')"
-check "a refused key on Windows OpenSSH's method list" AuthRefused "$(cls 255 'flowdesk-backup@desktop: Permission denied (publickey,password,keyboard-interactive).')"
-changed='@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
-@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @
-@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
-IT IS POSSIBLE THAT SOMEONE IS DOING SOMETHING NASTY!
-Offending ED25519 key in /run/backup/known_hosts:1
-Host key for sink has changed and you have requested strict checking.
-Host key verification failed.
-Connection closed'
-check "a changed host key" HostKeyChanged "$(cls 255 "$changed")"
-check "only the last line of that banner (what a 300-byte tail keeps)" HostKeyChanged "$(cls 255 'Host key verification failed.
-Connection closed')"
-check "no key pinned for this name is setup state, not an impersonation" ConfigInvalid "$(cls 255 'No ED25519 host key is known for sink and you have requested strict checking.
-Host key verification failed.
-Connection closed')"
-kh=$(mktemp); ssh-keygen -q -t ed25519 -N "" -f "$kh.k"; echo "sink $(cut -d' ' -f1,2 "$kh.k.pub")" > "$kh"; echo "[sink]:2222 $(cut -d' ' -f1,2 "$kh.k.pub")" >> "$kh"
-nokey='No RSA host key is known for sink and you have requested strict checking.
-Host key verification failed.
-Connection closed'
-f=$(mktemp); printf '%s
-' "$nokey" > "$f"
-check "that same line, but a key IS pinned for the host (other key type offered): a mismatch" HostKeyChanged "$(classify_ssh_failure 255 "$f" "$kh" sink 22)"
-check "a key is pinned for sink, none for elsewhere: setup state" ConfigInvalid "$(classify_ssh_failure 255 "$f" "$kh" elsewhere 22)"
-check "a non-default port is looked up as [host]:port" HostKeyChanged "$(classify_ssh_failure 255 "$f" "$kh" sink 2222)"
-check "the right host but a port nothing is pinned for: setup state" ConfigInvalid "$(classify_ssh_failure 255 "$f" "$kh" sink 2200)"
-rm -f "$f" "$kh" "$kh.k" "$kh.k.pub"
-check "a host that does not resolve" Unreachable "$(cls 255 'ssh: Could not resolve hostname nosuchhost.invalid: Name does not resolve
-Connection closed')"
-check "connection refused" Unreachable "$(cls 255 'ssh: connect to host sink port 2222: Connection refused
-Connection closed')"
-check "no route" Unreachable "$(cls 255 'ssh: connect to host 192.168.1.9 port 22: No route to host')"
-check "a connect timeout" Unreachable "$(cls 255 'ssh: connect to host 10.255.255.1 port 22: Operation timed out
-Connection closed')"
-check "our own timeout killing a hung sftp (exit 124)" Unreachable "$(cls 124 '')"
-check "a dropped session" Unreachable "$(cls 255 'Connection reset by 192.168.1.9 port 22
-Connection closed')"
-check "wording nobody has seen: falls back to Unreachable, never a confident class" Unreachable "$(cls 255 'ssh: something an unborn OpenSSH said')"
-check "no text at all (what -q leaves)" Unreachable "$(cls 255 'Connection closed')"
-check "a phrase quoted mid-line is not a class" Unreachable "$(cls 255 'note: the log said Host key verification failed. and then Permission denied (x)')"
-check "an SFTP-level refusal (exit 1) is not an ssh failure" SftpFailed "$(cls 1 'remote readdir: Permission denied')"
+echo "-- the S3 region of a B2 endpoint"
+check "s3.us-west-004.backblazeb2.com" us-west-004 "$(B2_REGION= s3_region https://s3.us-west-004.backblazeb2.com)"
+check "a trailing slash" eu-central-003 "$(B2_REGION= s3_region https://s3.eu-central-003.backblazeb2.com/)"
+fails "another host is refused without B2_REGION" env B2_REGION= bash -c '. /opt/backup/lib.sh; s3_region https://example.com'
+check "B2_REGION overrides (the stand-in)" us-east-1 "$(B2_REGION=us-east-1 s3_region http://standin:7070)"
 
-echo "-- the destination must be a name, not a bare IP"
-for h in 192.168.1.20 10.0.0.5 127.0.0.1 3232235797 ::1 fe80::1 '[fe80::1]' 2001:db8::1; do holds "$h is a bare IP" host_is_bare_ip "$h"; done
-for h in desktop desktop.home.arpa DESKTOP-4F2K.local sink nosuchhost.invalid 1password.example host-192-168-1-20; do fails "$h is a name" host_is_bare_ip "$h"; done
-fails "empty is not judged here (the empty check is separate)" host_is_bare_ip ''
+echo "-- what an HTTP answer was"
+check "200" ok "$(classify_http 200)"; check "204" ok "$(classify_http 204)"
+check "nothing answered" Unreachable "$(classify_http 000)"
+for c in 429 500 502 503; do check "$c is transient" Unreachable "$(classify_http $c)"; done
+for c in 401 403; do check "$c is the key" AuthRefused "$(classify_http $c)"; done
+check "404 is configuration" ConfigInvalid "$(classify_http 404)"
+check "anything else" S3Failed "$(classify_http 409)"
+
+echo "-- what an rclone failure was (text from rclone v1.76.0 against the stand-in)"
+rcl() { local f; f=$(mktemp); printf '%s\n' "$2" > "$f"; classify_rclone "$1" "$f"; rm -f "$f"; }
+check "exit 0" ok "$(rcl 0 '')"
+check "a wrong secret" AuthRefused "$(rcl 1 'ERROR : Attempt 1/1 failed with 1 errors and: operation error S3: PutObject, https response error StatusCode: 403, RequestID: X, HostID: Y, api error SignatureDoesNotMatch: The request signature we calculated does not match')"
+check "a HEAD refused (no readFiles)" AuthRefused "$(rcl 1 'operation error S3: HeadObject, https response error StatusCode: 403, RequestID: X, api error Forbidden: Forbidden')"
+check "no such host" Unreachable "$(rcl 1 'Failed to copyto: dial tcp: lookup s3.us-west-004.backblazeb2.com: no such host')"
+check "a 503" Unreachable "$(rcl 1 'https response error StatusCode: 503, RequestID: X')"
+check "our timeout" Unreachable "$(rcl 124 '')"
+check "wording nobody has seen: the long cap, never a confident class" UploadFailed "$(rcl 1 'something an unborn rclone said')"
+
+echo "-- reading a version listing (ListObjectVersions, the stand-in's shape)"
+x=$(mktemp)
+cat > "$x" << 'XML'
+<?xml version="1.0" encoding="UTF-8"?>
+<ListVersionsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>true</IsTruncated><Name>fdbk</Name><NextKeyMarker>flowdesk/b.tar.age</NextKeyMarker><NextVersionIdMarker>v9</NextVersionIdMarker><Version><ETag>&#34;x&#34;</ETag><IsLatest>true</IsLatest><Key>flowdesk/a.tar.age</Key><Size>600</Size><VersionId>v2</VersionId></Version><Version><IsLatest>false</IsLatest><Key>flowdesk/a.tar.age</Key><Size>500</Size><VersionId>v1</VersionId></Version><DeleteMarker><IsLatest>true</IsLatest><Key>flowdesk/b.tar.age</Key><VersionId>v9</VersionId></DeleteMarker><Version><IsLatest>false</IsLatest><Key>flowdesk/b.tar.age</Key><Size>70</Size><VersionId>v8</VersionId></Version><DeleteMarker><Key>probe/p.probe</Key><VersionId>v7</VersionId><IsLatest>true</IsLatest></DeleteMarker></ListVersionsResult>
+XML
+p=$(parse_versions "$x")
+check "every version, in order" "V flowdesk/a.tar.age 600 v2 true
+V flowdesk/a.tar.age 500 v1 false
+V flowdesk/b.tar.age 70 v8 false" "$(printf '%s\n' "$p" | grep '^V ')"
+check "delete markers" "D flowdesk/b.tar.age v9 true
+D probe/p.probe v7 true" "$(printf '%s\n' "$p" | grep '^D ')"
+check "the paging line" "T true flowdesk/b.tar.age v9" "$(printf '%s\n' "$p" | grep '^T ')"
+check "bytes count EVERY version, hidden ones included" 1170 "$(printf '%s\n' "$p" | bucket_bytes)"
+check "a delete marker under the backup prefix is found" flowdesk/b.tar.age "$(printf '%s\n' "$p" | delete_markers flowdesk/)"
+check "one under probe/ is not tampering with backups" "" "$(printf '%s\n' "$p" | delete_markers flowdesk/ | grep probe || true)"
+printf '<ListVersionsResult><IsTruncated>false</IsTruncated></ListVersionsResult>' > "$x"
+check "an empty bucket: no entries, not truncated" "T false - -" "$(parse_versions "$x")"
+check "an empty bucket holds 0 bytes" 0 "$(parse_versions "$x" | bucket_bytes)"
+rm -f "$x"
+
+echo "-- the budget (10 GB; warn 80%, over 95%)"
+B=10000000000
+check "0 bytes" ok "$(budget_state 0 $B)"
+check "just under 80%" ok "$(budget_state 7999999999 $B)"
+check "80%" warn "$(budget_state 8000000000 $B)"
+check "just under 95%" warn "$(budget_state 9499999999 $B)"
+check "95%" over "$(budget_state 9500000000 $B)"
+check "past 100%" over "$(budget_state 12000000000 $B)"
+
+echo "-- an object's retention"
+r=$(mktemp)
+now=$(date -u -d '2026-11-25 07:00:00' +%s)
+printf '<Retention><Mode>GOVERNANCE</Mode><RetainUntilDate>2026-12-25T07:18:05.186Z</RetainUntilDate></Retention>' > "$r"
+holds "GOVERNANCE for 30 days" retention_ok "$r" "$now" 30
+fails "GOVERNANCE but asked for 40 days" retention_ok "$r" "$now" 40
+printf '<Retention><Mode>COMPLIANCE</Mode><RetainUntilDate>2026-12-25T07:18:05Z</RetainUntilDate></Retention>' > "$r"
+fails "COMPLIANCE is not what was decided (Kyle: governance)" retention_ok "$r" "$now" 30
+printf '<Retention><Mode>GOVERNANCE</Mode><RetainUntilDate>2026-11-26T07:00:00Z</RetainUntilDate></Retention>' > "$r"
+fails "GOVERNANCE for one day only" retention_ok "$r" "$now" 30
+printf '<Error><Code>NoSuchObjectLockConfiguration</Code></Error>' > "$r"
+fails "no retention at all" retention_ok "$r" "$now" 30
+rm -f "$r"
+
+echo "-- the key's capabilities (b2_authorize_account v2 shape; ASSUMED until the real-bucket probe shows it)"
+j=$(mktemp)
+cap() { printf '{"accountId":"a","allowed":{"bucketId":"b","bucketName":%s,"capabilities":[%s],"namePrefix":null},"authorizationToken":"t"}' "$1" "$2" > "$j"; judge_capabilities "$j" fdbk "$3"; }
+W='"listBuckets","listAllBucketNames","listFiles","writeFiles","readFileRetentions"'
+R='"listBuckets","listAllBucketNames","listFiles","readFiles","readFileRetentions"'
+check "the write key as specified" ok "$(cap '"fdbk"' "$W" write)"
+check "the read key as specified" ok "$(cap '"fdbk"' "$R" read)"
+check "without the two S3-compatibility capabilities, still allowed" ok "$(cap '"fdbk"' '"listFiles","writeFiles","readFileRetentions"' write)"
+for extra in deleteFiles bypassGovernance writeFileRetentions writeBucketRetentions writeBuckets writeKeys shareFiles readFiles writeFileLegalHolds; do
+  check "write key plus $extra: too broad" CapabilityTooBroad "$(cap '"fdbk"' "$W,\"$extra\"" write)"
+done
+check "read key plus writeFiles: too broad" CapabilityTooBroad "$(cap '"fdbk"' "$R,\"writeFiles\"" read)"
+check "not restricted to a bucket: too broad" CapabilityTooBroad "$(cap null "$W" write)"
+check "restricted to another bucket" ConfigInvalid "$(cap '"elsewhere"' "$W" write)"
+check "missing writeFiles" ConfigInvalid "$(cap '"fdbk"' '"listFiles","readFileRetentions"' write)"
+check "missing readFileRetentions (the lock could not be checked)" ConfigInvalid "$(cap '"fdbk"' '"listFiles","writeFiles"' write)"
+printf '{"apiInfo":{"storageApi":{"allowed":[]}}}' > "$j"
+check "another shape (v3): unknown, fails closed" CapabilityUnknown "$(judge_capabilities "$j" fdbk write)"
+printf 'not json' > "$j"
+check "not JSON: unknown" CapabilityUnknown "$(judge_capabilities "$j" fdbk write)"
+rm -f "$j"
+
+echo "-- which backups go up (only those younger than the lock period)"
+now=$(date -u -d '2026-11-25 12:00:00' +%s)
+holds "today's" upload_wanted flowdesk_20261125T080000Z.tar.age "$now" 30
+holds "29 days old" upload_wanted flowdesk_20261027T120001Z.tar.age "$now" 30
+fails "30 days old: it would be locked for less than the promise" upload_wanted flowdesk_20261026T120000Z.tar.age "$now" 30
+fails "a weekly from two months ago (else re-uploaded daily after lifecycle deleted it)" upload_wanted flowdesk_20260920T030000Z.tar.age "$now" 30
+fails "not a backup name" upload_wanted notes.tar.age "$now" 30
 
 echo "-- the monitor's failure endpoint"
 check "plain" https://hc-ping.com/abc/fail "$(fail_ping_url https://hc-ping.com/abc)"
@@ -146,9 +192,10 @@ check "before a query string" 'https://hc.example/ping/abc/fail?rid=1' "$(fail_p
 
 echo "-- how a failure is retried: exit codes and the two caps"
 check "Unreachable is transient" 75 "$(exit_code_for_class Unreachable)"
-check "HostKeyChanged has its own code, so the scheduler can signal once" 76 "$(exit_code_for_class HostKeyChanged)"
+check "Unavailable is transient" 75 "$(exit_code_for_class Unavailable)"
+for c in AuthRefused CapabilityTooBroad NotLocked Tampered OverBudget; do check "$c pages at once (76)" 76 "$(exit_code_for_class $c)"; done
 for c in NoRecipient ConfigInvalid BadDatabaseName; do check "$c is configuration" 78 "$(exit_code_for_class $c)"; done
-for c in DumpFailed DumpUnreadable EncryptFailed ReadFailed NoTimescale AuthRefused SftpFailed SizeMismatch NothingToCopy something-new; do
+for c in DumpFailed DumpUnreadable EncryptFailed ReadFailed NoTimescale UploadFailed S3Failed SizeMismatch NothingToCopy CapabilityUnknown something-new; do
   check "$c takes the long cap" 1 "$(exit_code_for_class $c)"
 done
 # retry_plan RC NOW DELAY BASE TRANSIENT_CAP LONG_CAP NEXT_SLOT -> "NEXT_TRY NEW_DELAY"

@@ -54,30 +54,34 @@ below).
   `.env` only (both blank as of 2026-11-25). Re-run the drill on any deployed instance (quarterly, and after a provider notice).
 - **Any new `degraded` condition on `/health/ready` also pages the owner** (ADR-0008 section 4). The sender
   pings only on exactly `ok`.
-- **Scheduled backups are built (M2 slice 2) but the slice is not closed** (IDEA-029). **Correction 2026-11-20 (Kyle, MEASURED):
-  the stack runs on `DESKTOP-GHDCBPQ`, a desktop that is NOT a backup destination; off-box backup is currently impossible, and the
-  "laptop runs it, desktop receives it" text below has the machines the wrong way round. Destination decided 2026-11-25 (Kyle):
-  Backblaze B2, governance Object Lock 30 days, SFTP removed; being built (`docs/BUILD-LOG.md`, addenda 2026-11-25 second and
-  third). The SFTP text below is superseded by that build.** The `backup` compose
-  service dumps nightly (03:00 `America/New_York`, with catch-up after sleep), encrypts with `age` to the
-  public key in `infra/backup/recipients.txt`, keeps 14 dailies plus 8 weeklies locally, and then copies to
-  Kyle's Windows desktop over SFTP (Windows OpenSSH Server, a dedicated non-admin account, restricted by NTFS
-  permissions, not rsync), as a separate step, so a sleeping desktop is a failed copy and not a failed backup. With no real age key in `recipients.txt` it records `NoRecipient`
-  and writes nothing: **the placeholder is committed, and backups fail closed until Kyle adds the key.** The
-  age private key is made on the desktop and kept in the password manager, never on the laptop. A stale
-  backup shows on `/health/data` (`backups`) and never degrades `/health/ready`; the page is the external
-  monitor missing the copy's pings (`BACKUP_PING_URL`). Proven against stand-in sshd containers by
-  `infra/smoke-m2-slice2.sh`; **nothing has run against Windows OpenSSH Server**, and
-  `infra/backup/verify-destination.sh` is how the real destination gets checked. **It closes only when a real
-  unattended dump lands on the real desktop and restores from there** (`docs/BACKUP.md`, "Closing the
-  slice"). Known gaps, all in `docs/BACKUP.md` "Limits": **retention (14 daily + 8 weekly) is enforced on
-  the laptop's copy only; nothing prunes the desktop** (the account cannot delete, by design), so on the
-  destination it is aspirational until a Task Scheduler job runs `prune.sh` there; **the backup image is
-  not covered by CI's vulnerability scan** (`security` builds `backend/` only), so its Alpine packages
-  float, which is a hole next to what slice 0 closed; **arm64 is untested** for it; **the SFTP account is not
-  chrooted, so a leaked key reaches more than the backups** (on a default Windows install, `Authenticated Users`
-  can modify ordinary top-level folders; `infra/backup/acl-survey.ps1` sizes it on the desktop). A plain `pg_restore`
-  silently damages hypertables: use `infra/restore.sh`, or `infra/restore-backup.sh` for a scheduled backup.
+- **Scheduled backups with an off-box copy to Backblaze B2 are built (M2 slice 2, rebuilt 2026-11-25); the slice is not
+  closed** (IDEA-029). The stack runs on `DESKTOP-GHDCBPQ`, a desktop; the SFTP copy to "the desktop" was removed (no such
+  destination; git history keeps it; IDEA-039 obsolete). The `backup` service dumps nightly (03:00 ET, catch-up after
+  sleep), encrypts with `age` (B2 holds ciphertext only), keeps 14 dailies + 8 weeklies locally, then uploads with
+  **rclone** (pinned by version + SHA256 in `infra/backup/Dockerfile`; build args are `PIN_*`, never `RCLONE_*`, which
+  rclone reads as flags) to `flowdesk/` in the bucket. **The protection is server-side:** Object Lock GOVERNANCE, default
+  retention 30 days (Kyle: governance, so a wrong setting is recoverable with the master key, which lives only in the
+  password manager); lifecycle hides at 31 days and deletes at 32; the write key holds exactly `listBuckets,
+  listAllBucketNames, listFiles, writeFiles, readFileRetentions` (no delete, no bypassGovernance, no read).
+  **Every run re-checks it:**
+  - the key's capabilities (`CapabilityTooBroad`);
+  - each upload's lock (`NotLocked`);
+  - delete markers under `flowdesk/` (`Tampered`);
+  - the bucket against 95% of the free 10 GB (`OverBudget`; every version counted).
+
+  Those, and `AuthRefused`, exit 76 and POST the class to `BACKUP_PING_URL/fail` once per occurrence.
+  **Secrets** (`B2_KEY_ID`, `B2_APPLICATION_KEY`; the read key `B2_READ_*` on the laptop only) never reach a command
+  line, a log or `task_runs`: B2's error bodies echo the key ID, so only class names are stored. **The age private key is
+  made on the laptop and lives in the password manager**; the stack machine never holds it. Without a real key in
+  `recipients.txt` backups fail closed (`NoRecipient`, every day since 11-22). `/health/data` `backups` shows the weekly
+  dump size (`task_runs.output_bytes`, migration 0015), the bucket's bytes, `budget_state` and `tampered`; it never
+  degrades `/health/ready`. Proven against a stand-in (versitygw with Object Lock) by `infra/smoke-m2-slice2.sh`, in CI
+  (`backup-offbox`); **nothing has run against Backblaze yet**: `infra/backup/verify-destination.sh` is the real-bucket
+  probe (write mode on this PC, `--read` on the laptop). **The backup image's CI scan is REPORT-ONLY** (fixable HIGH in the
+  Timescale base, which is also the stack's Postgres, and in Alpine's `age`; none in rclone): a Timescale bump is Kyle's
+  call. It closes on the drill in `docs/BACKUP.md` (Parts A to C: Kyle's setup, one unattended backup, restore on the
+  laptop with matching fingerprints). A plain `pg_restore` silently damages hypertables: use `infra/restore.sh`, or
+  `infra/restore-backup.sh [--from-b2]` for a scheduled backup.
 - **Reference tables, universes and calendars are built (M2 slice 3, 2026-11-10).** Migration 0003 adds `currencies`, `exchanges`, `symbols`, `provider_mappings`,
   `universes`, `universe_membership` and `trading_sessions`; `python -m app.seed` (run by the `migrate` service
   after Alembic) fills them from `settings.py`'s §6.2 lists and `exchange_calendars`. The seed is idempotent
@@ -424,7 +428,7 @@ bash infra/smoke-m2-slice5-step3-sweep.sh # M2 slice 5 step 3 part C: SIGKILL th
 bash infra/smoke-m2-slice5-fred-failures.sh # M2 slice 5: FRED 500/423/429 via a URL-echoing stub through the real worker; the api_key is in no stored or served text
 bash infra/smoke-m2-f3-rolling.sh # F-6b: F3 late arrival + rolled-off exemption through the real worker, on a scratch database it creates and drops
 bash infra/smoke-m2-beat-schedule.sh # IDEA-043: image owns /var/lib/beat, compose volume, a recreated Beat catches up a missed firing with the volume and not without it (~9 min)
-bash infra/smoke-m2-slice2.sh     # M2 slice 2: encrypt, SFTP copy to stand-in sshd (3 permission policies), restore with the private key only
+bash infra/smoke-m2-slice2.sh     # M2 slice 2: encrypt, upload to a B2 stand-in (versitygw, Object Lock), key/lock/tamper/budget alerts, restore --from-b2
 docker compose run --rm worker python -m app.backfill   # FRED revision history, every series not yet captured; --series A,B [--force]
 docker compose run --rm worker python -m app.bars_backfill   # 2 years of settled daily bars, every mapped symbol; --symbols A,B. A re-run writes 0
 docker compose run --rm worker python -m app.bars_backfill --interval 15m   # 58 days of 15m (own daily split check first). Any hour (F-6a, 2026-11-20)
@@ -433,7 +437,8 @@ bash infra/smoke-m2-slice6-poll.sh # M2 slice 6 step 6: both polls through the r
 docker compose exec -T postgres psql -U flowdesk -d <db> -Atq -v cutoff=<stamp> -f - < infra/drill-fingerprint.sql   # IDEA-029 drill (docs/BACKUP.md)
 bash infra/backup.sh              # dump + manifest into dumps/. Restoring and the version trap: docs/BACKUP.md
 bash infra/restore.sh dumps/<name>.dump --db <new-or-empty-db>   # refuses a non-empty target
-bash infra/restore-backup.sh <name>.tar.age --identity <age key> --db <new-or-empty-db>   # a scheduled backup, on the desktop
+bash infra/restore-backup.sh --from-b2 [<name>.tar.age] --identity <age key> --db <new-or-empty-db>   # a scheduled backup, on the laptop, read key in .env
+docker compose -p flowdesk exec -u postgres backup /opt/backup/verify-destination.sh   # the real-bucket probe (write key); --read on the laptop
 bash infra/mutation-check.sh m2-slice6-step2   # rule 9 mutations in a copy of backend/ (backend/tools/mutate.py); each must be caught
 bash infra/mutation-check.sh m2-slice6-step3   # the yfinance client and parser (also: heartbeat-clock, m2-slice6-step4, -step5, -step5b)
 bash infra/ci-checks.sh lint      # also: test | audit | license | arm64. Same code ci.yml runs

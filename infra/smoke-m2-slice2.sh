@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
-# M2 slice 2 smoke test (IDEA-029): scheduled, encrypted backups with an off-box SFTP copy, tested end to end
-# without anything from the home network.
+# M2 slice 2 smoke test (IDEA-029): scheduled, encrypted backups with an off-box copy to Backblaze B2, tested end to
+# end against a STAND-IN, in CI and locally, with nothing from Backblaze (2026-11-25).
 #
-# What stands in for the Windows desktop: throwaway Linux sshd containers that speak SFTP only
-# (ForceCommand internal-sftp), configured to mimic the three permission policies the real account could have:
-#   no-delete   cannot delete or rename; CAN overwrite          (what "create and write, deny Delete" gives)
-#   write-once  also cannot overwrite, append or make folders   (new files are created read-only: the creating
-#                                                                handle can fill them, nothing can reopen them)
-#   open        nothing is refused                              (to prove the probe catches a broken restriction)
+# What stands in for B2: versitygw (Apache-2.0, an S3 gateway) with versioning, Object Lock and per-user bucket
+# policies, so the buckets behave like the real one in the ways the copy depends on:
+#   flowdesk-smoke    Object Lock on, DEFAULT retention GOVERNANCE 30 days; the writer may upload, list and read
+#                     retention, and nothing else (no delete, no bypass, no read); the reader may list and download.
+#   flowdesk-smoke-t  the same, for the tampering and budget cases, so they cannot spoil the main bucket.
+#   flowdesk-open     NO lock, and the writer may delete: the probe must FAIL on it, and the copy must say NotLocked.
+# B2's own key check (b2_authorize_account) is stood in for by static JSON files on a tiny HTTP server, one per case
+# (the v2 shape, ASSUMED until the real-bucket probe shows the real answer). The same server is the dead-man monitor.
 #
-# What it does NOT prove, and cannot: Windows OpenSSH Server itself, NTFS ACLs, or that a real unattended dump
-# lands on the real desktop and restores from there. The ACL semantics were measured separately on NTFS
-# (docs/BACKUP.md); the real destination is checked by infra/backup/verify-destination.sh, and the slice closes
-# on the drill in docs/BACKUP.md ("Closing the slice").
+# What it does NOT prove, and cannot: Backblaze's semantics (capabilities enforced on S3 calls, lifecycle, caps, path
+# style). infra/backup/verify-destination.sh proves those against the real bucket; the slice closes on the drill in
+# docs/BACKUP.md.
 #
 # Safety: everything runs against a scratch database and one-off containers. The running `backup` service, its
 # `backups` volume and the real database are never touched. Run from the repo root (needs a .env).
@@ -22,14 +23,16 @@ set -a; . ./.env; set +a
 . "$(dirname "$0")/lib.sh"
 export MSYS_NO_PATHCONV=1   # Git Bash on Windows would otherwise rewrite container paths
 
-SINKS="flowdesk-smoke-sink flowdesk-smoke-opensink flowdesk-smoke-wosink"
-SINK=flowdesk-smoke-sink          # alias: sink       policy: no-delete
-OPENSINK=flowdesk-smoke-opensink  # alias: opensink   policy: open
-WOSINK=flowdesk-smoke-wosink      # alias: wosink     policy: write-once
+STANDIN=flowdesk-smoke-standin   # alias: standin
+AUTHSTUB=flowdesk-smoke-authstub # alias: authstub
 LOOP=flowdesk-smoke-loop
 SCRATCH=flowdesk_smoke_s2
 RESTORED=flowdesk_smoke_s2_restored
-RDIR=/srv/backups
+EP=http://standin:7070
+ROOT_KEY=fdsmokeroot0001 ROOT_SECRET=fdsmokerootsecret0001
+# Distinctive values, so "is the secret anywhere it must not be" can be checked by grep.
+W_ID=fdsmokewriterid0001 W_SECRET=fdsmokewritersecretZZQ7
+R_ID=fdsmokereaderid0001 R_SECRET=fdsmokereadersecretZZQ8
 work=$(mktemp -d)
 
 winpath() { cygpath -m "$1" 2> /dev/null || printf '%s' "$1"; }  # a path Docker Desktop understands
@@ -37,12 +40,8 @@ psql_pg() { docker compose exec -T postgres psql -X -q -U "$POSTGRES_USER" -v ON
 
 cleanup() {
   local rc=$?
-  # shellcheck disable=SC2086
-  docker rm -f $SINKS "$LOOP" "$LOOP-cfg" "$LOOP-tr" "$LOOP-lg" > /dev/null 2>&1 || true
-  psql_pg -d postgres -c "DROP DATABASE IF EXISTS $SCRATCH WITH (FORCE)" > /dev/null 2>&1 || true
-  psql_pg -d postgres -c "DROP DATABASE IF EXISTS $RESTORED WITH (FORCE)" > /dev/null 2>&1 || true
-  psql_pg -d postgres -c "DROP DATABASE IF EXISTS ${RESTORED}_r WITH (FORCE)" > /dev/null 2>&1 || true
-  psql_pg -d postgres -c "DROP DATABASE IF EXISTS ${RESTORED}_s WITH (FORCE)" > /dev/null 2>&1 || true
+  docker rm -f "$STANDIN" "$AUTHSTUB" "$LOOP" "$LOOP-cfg" "$LOOP-tr" "$LOOP-lg" "$LOOP-al" > /dev/null 2>&1 || true
+  for d in "$SCRATCH" "$RESTORED"; do psql_pg -d postgres -c "DROP DATABASE IF EXISTS $d WITH (FORCE)" > /dev/null 2>&1 || true; done
   if [ "$rc" -ne 0 ] && [ -s "$work/err.log" ]; then echo "--- last container stderr:" >&2; tail -n 20 "$work/err.log" >&2; fi
   rm -rf "$work"
   exit "$rc"
@@ -52,21 +51,21 @@ trap cleanup EXIT
 docker compose up -d --build
 wait_ready
 
-echo "== the library's logic (schedule, catch-up, backoff, retention, recipients)"
+echo "== the library's logic (schedule, catch-up, backoff, retention, recipients, S3 answers, capabilities, budget)"
 docker compose run --rm --no-deps -T -v "$(winpath "$PWD/infra/backup/selftest.sh"):/selftest.sh:ro" \
   --entrypoint bash backup /selftest.sh > "$work/selftest.out" 2> "$work/err.log" || { cat "$work/selftest.out"; fail "selftest failed"; }
 grep -q '^FAIL' "$work/selftest.out" && { cat "$work/selftest.out"; fail "selftest reported a failure"; }
 echo "ok: $(grep -c '^ok:' "$work/selftest.out") assertions"
 
-echo "== throwaway keys: age for encryption, ssh for transport (kept distinct, as in production)"
+echo "== a throwaway age key"
 mkdir -p "$work/k"
 docker compose run --rm --no-deps -T -v "$(winpath "$work/k"):/k" --entrypoint sh backup -ec '
   age-keygen -o /k/age.key 2> /dev/null
   age-keygen -y /k/age.key > /k/recipients.txt
-  ssh-keygen -q -t ed25519 -N "" -C flowdesk-backup-smoke -f /k/id
   chmod a+r /k/*' > /dev/null 2> "$work/err.log"
 [ "$(grep -c '^age1' "$work/k/recipients.txt")" = "1" ] || fail "no age public key was made"
 ! grep -q 'AGE-SECRET-KEY' "$work/k/recipients.txt" || fail "the recipients file must hold the PUBLIC key only"
+export BACKUP_RECIPIENTS_FILE="$(winpath "$work/k/recipients.txt")"
 
 echo "== a scratch database, migrated"
 psql_pg -d postgres -c "DROP DATABASE IF EXISTS $SCRATCH WITH (FORCE)" > /dev/null
@@ -75,92 +74,85 @@ docker compose run --rm --no-deps -T \
   -e "DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${SCRATCH}" \
   migrate > /dev/null 2> "$work/err.log"
 
-echo "== stand-ins for the desktop: three SFTP-only sshd policies"
+echo "== the stand-in for B2 (versitygw) and for b2_authorize_account and the monitor (busybox httpd)"
 network=$(docker inspect -f '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{end}}' "$(docker compose ps -q postgres)")
-mkdir -p "$work/sinkctx"
-cat "$work/k/id.pub" > "$work/sinkctx/authorized_keys"
-cat > "$work/sinkctx/Dockerfile" << 'DOCKEREOF'
-FROM alpine:3.23
-RUN apk add --no-cache openssh-server openssh-sftp-server busybox-extras \
- && adduser -D -s /bin/false fd \
- && echo "fd:$(head -c 24 /dev/urandom | base64)" | chpasswd \
- && mkdir -p /srv/backups /srv/www /home/fd/.ssh \
- && echo ok > /srv/www/ping  && mkdir -p /srv/www/cgi-bin  && printf '#!/bin/sh\necho "Content-type: text/plain"\necho\necho ok\n' > /srv/www/cgi-bin/hb  && chmod +x /srv/www/cgi-bin/hb \
- && chown fd:fd /srv/backups \
- && ssh-keygen -A > /dev/null
-COPY authorized_keys /home/fd/.ssh/authorized_keys
-COPY run.sh /run.sh
-RUN chown -R fd:fd /home/fd/.ssh && chmod 700 /home/fd/.ssh && chmod 600 /home/fd/.ssh/authorized_keys
-ENTRYPOINT ["sh", "/run.sh"]
-DOCKEREOF
-cat > "$work/sinkctx/run.sh" << 'SINKEOF'
-set -eu
-# The restriction lives in sshd_config, as it does on the Windows destination: SFTP only, no shell, no tunnels.
-# SFTP_ARGS shapes what the SFTP server will do, standing in for the NTFS permissions of the real account.
-cat > /etc/ssh/sshd_config << EOF
-PasswordAuthentication no
-PubkeyAuthentication yes
-AllowUsers fd
-Subsystem sftp internal-sftp
-Match User fd
-    ForceCommand internal-sftp ${SFTP_ARGS:-}
-    AllowTcpForwarding no
-    PermitTTY no
-EOF
-busybox-extras httpd -f -p 8080 -h /srv/www -vv &
-exec /usr/sbin/sshd -D -e
-SINKEOF
-docker build -q -t flowdesk-smoke-sink "$(winpath "$work/sinkctx")" > /dev/null
-docker rm -f $SINKS > /dev/null 2>&1 || true
-# no-delete: remove/rename refused. write-once: also mkdir and setstat refused, and files are created 0444.
-docker run -d --name "$SINK" --network "$network" --network-alias sink \
-  -e "SFTP_ARGS=-P remove,rmdir,rename,posix-rename" flowdesk-smoke-sink > /dev/null
-docker run -d --name "$OPENSINK" --network "$network" --network-alias opensink flowdesk-smoke-sink > /dev/null
-docker run -d --name "$WOSINK" --network "$network" --network-alias wosink \
-  -e "SFTP_ARGS=-u 0222 -P remove,rmdir,rename,posix-rename,mkdir,setstat,fsetstat" flowdesk-smoke-sink > /dev/null
-wait_sink() { # CONTAINER
-  local deadline=$((SECONDS + 60))
-  until docker logs "$1" 2>&1 | grep -q "Server listening"; do
-    [ $SECONDS -lt $deadline ] || { docker logs "$1" 2>&1 | tail -n 20 >&2; fail "$1's sshd did not start"; }
-    sleep 1
-  done
+docker rm -f "$STANDIN" "$AUTHSTUB" > /dev/null 2>&1 || true
+# DECISION: pinned by digest is not done for these test-only images; versitygw is pinned to a release tag.
+docker run -d --name "$STANDIN" --network "$network" --network-alias standin \
+  -e "ROOT_ACCESS_KEY=$ROOT_KEY" -e "ROOT_SECRET_KEY=$ROOT_SECRET" --entrypoint sh versity/versitygw:v1.11.0 \
+  -c 'mkdir -p /tmp/iam /tmp/vers /tmp/data; exec versitygw --iam-dir /tmp/iam --port :7070 --admin-port :7071 posix --versioning-dir /tmp/vers /tmp/data' > /dev/null
+mkdir -p "$work/stub/www/cgi-bin"
+caps() { # BUCKET-OR-null CAPABILITIES -> a b2_authorize_account (v2) answer
+  printf '{"accountId":"smoke","allowed":{"bucketId":"x","bucketName":%s,"capabilities":[%s],"namePrefix":null},"apiUrl":"http://x","authorizationToken":"not-a-real-token"}\n' "$1" "$2"
 }
-for s in $SINKS; do wait_sink "$s"; done
-: > "$work/k/known_hosts"
-for pair in "$SINK:sink" "$OPENSINK:opensink" "$WOSINK:wosink"; do
-  printf '%s %s\n' "${pair#*:}" "$(docker exec "${pair%%:*}" cut -d' ' -f1,2 /etc/ssh/ssh_host_ed25519_key.pub)" >> "$work/k/known_hosts"
+W='"listBuckets","listAllBucketNames","listFiles","writeFiles","readFileRetentions"'
+R='"listBuckets","listAllBucketNames","listFiles","readFiles","readFileRetentions"'
+caps '"flowdesk-smoke"' "$W" > "$work/stub/www/write.json"
+caps '"flowdesk-smoke-t"' "$W" > "$work/stub/www/write-t.json"
+caps '"flowdesk-open"' "$W" > "$work/stub/www/write-open.json"
+caps '"flowdesk-smoke"' "$R" > "$work/stub/www/read.json"
+caps '"flowdesk-smoke"' "$W,\"deleteFiles\"" > "$work/stub/www/toobroad.json"
+caps null "$W" > "$work/stub/www/unrestricted.json"
+printf '{"apiInfo":{"storageApi":{"allowed":[]}}}\n' > "$work/stub/www/v3.json"
+echo ok > "$work/stub/www/ping"
+printf '#!/bin/sh\necho "Status: 401 Unauthorized"\necho "Content-type: application/json"\necho\necho "{\\"status\\":401}"\n' > "$work/stub/www/cgi-bin/refused"
+printf '#!/bin/sh\necho "Content-type: text/plain"\necho\necho ok\n' > "$work/stub/www/cgi-bin/hb"
+chmod 755 "$work/stub/www/cgi-bin/"*
+docker run -d --name "$AUTHSTUB" --network "$network" --network-alias authstub -v "$(winpath "$work/stub/www"):/www:ro" \
+  alpine:3.23 sh -c 'apk add --no-cache busybox-extras > /dev/null && exec busybox-extras httpd -f -p 8080 -h /www -vv' > /dev/null
+deadline=$((SECONDS + 60))
+until docker logs "$STANDIN" 2>&1 | grep -q ':7070'; do
+  [ $SECONDS -lt $deadline ] || { docker logs "$STANDIN" 2>&1 | tail -n 20 >&2; fail "the stand-in did not start"; }
+  sleep 1
 done
-echo "ok: $(wc -l < "$work/k/known_hosts" | tr -d ' ') hosts pinned"
+for u in "$W_ID:$W_SECRET" "$R_ID:$R_SECRET"; do
+  docker run --rm --network "$network" versity/versitygw:v1.11.0 admin -a "$ROOT_KEY" -s "$ROOT_SECRET" \
+    --er http://standin:7071 create-user -a "${u%%:*}" -s "${u#*:}" -r user > /dev/null 2> "$work/err.log" || fail "creating a stand-in user"
+done
 
-# One-off backup containers. The compose service's bind mounts take their sources from these variables, so
-# exporting them points the one-offs at the throwaway keys. The `backups` volume is never used: BACKUP_DIR is a
-# path inside each one-off.
-export BACKUP_SSH_KEY_FILE="$(winpath "$work/k/id")"
-export BACKUP_SSH_KNOWN_HOSTS_FILE="$(winpath "$work/k/known_hosts")"
-export BACKUP_RECIPIENTS_FILE="$(winpath "$work/k/recipients.txt")"
-# Mounted into every one-off: reads a file's size off a destination, taking the NAME from the end of the long
-# listing's path (the same rule run-copy.sh uses), so the smoke does not trust the code it is checking.
-cat > "$work/helpers.sh" << 'HELPEREOF'
-remote_size() { # HOST NAME
-  echo "ls -l \"$BACKUP_SSH_PATH\"" |
-    sftp -o LogLevel=ERROR -F /dev/null -i /run/backup/id_key -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
-      -o UserKnownHostsFile=/run/backup/known_hosts -o ConnectTimeout=10 -b - "fd@$1" |
-    awk -v n="$2" 'NF >= 9 { b = $NF; sub(/^.*[\/\\]/, "", b); if (b == n) print $(NF-4) }'
+# Root setup through curl, from the backup image itself (no other client image).
+cat > "$work/setup.sh" << SETUPEOF
+set -eu
+md5_b64() { local hex b="" i; hex=\$(printf '%s' "\$1" | md5sum | cut -c1-32); for ((i = 0; i < 32; i += 2)); do b+="\\\\x\${hex:i:2}"; done; printf "\$b" | base64; }
+sig=(--aws-sigv4 "aws:amz:us-east-1:s3" -u "$ROOT_KEY:$ROOT_SECRET")
+put() { local code; code=\$(curl -sS -o /tmp/r -w '%{http_code}' "\${sig[@]}" -X PUT "\$@"); case \$code in 2??) ;; *) echo "setup failed: \$code \$*" >&2; cat /tmp/r >&2; exit 1 ;; esac; }
+lock='<ObjectLockConfiguration><ObjectLockEnabled>Enabled</ObjectLockEnabled><Rule><DefaultRetention><Mode>GOVERNANCE</Mode><Days>30</Days></DefaultRetention></Rule></ObjectLockConfiguration>'
+for b in flowdesk-smoke flowdesk-smoke-t; do
+  put -H "x-amz-bucket-object-lock-enabled: true" "$EP/\$b"
+  put -H "Content-MD5: \$(md5_b64 "\$lock")" --data-binary "\$lock" "$EP/\$b?object-lock"
+  pol='{"Version":"2012-10-17","Statement":[
+    {"Effect":"Allow","Principal":{"AWS":["$W_ID"]},"Action":["s3:PutObject","s3:ListBucket","s3:ListBucketVersions","s3:GetObjectRetention"],"Resource":["arn:aws:s3:::'\$b'","arn:aws:s3:::'\$b'/*"]},
+    {"Effect":"Allow","Principal":{"AWS":["$R_ID"]},"Action":["s3:GetObject","s3:GetObjectVersion","s3:ListBucket","s3:ListBucketVersions","s3:GetObjectRetention"],"Resource":["arn:aws:s3:::'\$b'","arn:aws:s3:::'\$b'/*"]}]}'
+  put --data-binary "\$pol" "$EP/\$b?policy"
+done
+put "$EP/flowdesk-open"
+pol='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":["$W_ID"]},"Action":["s3:*"],"Resource":["arn:aws:s3:::flowdesk-open","arn:aws:s3:::flowdesk-open/*"]}]}'
+put --data-binary "\$pol" "$EP/flowdesk-open?policy"
+echo setup-ok
+SETUPEOF
+docker compose run --rm --no-deps -T -v "$(winpath "$work/setup.sh"):/setup.sh:ro" --entrypoint bash backup /setup.sh \
+  > "$work/setup.out" 2> "$work/err.log" || { cat "$work/setup.out" "$work/err.log" >&2; fail "stand-in setup failed"; }
+grep -qx setup-ok "$work/setup.out" || fail "stand-in setup did not finish"
+echo "ok: three buckets (two locked GOVERNANCE 30 days, one open), a writer and a reader"
+
+# Root-side reads of the stand-in, for the checks (the smoke does not trust the code it is checking).
+root_curl() { # PATH_AND_QUERY [extra curl args]
+  local p=$1; shift
+  docker compose run --rm --no-deps -T --entrypoint curl backup -sS --aws-sigv4 "aws:amz:us-east-1:s3" \
+    -u "$ROOT_KEY:$ROOT_SECRET" "$@" "$EP/$p" 2> "$work/err.log"
 }
-HELPEREOF
+# One-off backup containers. The `backups` volume is never used: BACKUP_DIR is a path inside each one-off.
 bk() { # [extra docker compose run flags] -- command...
   local flags=()
   while [ "$1" != "--" ]; do flags+=("$1"); shift; done
   shift
   docker compose run --rm --no-deps -T -e "PGDATABASE=$SCRATCH" -e BACKUP_DIR=/tmp/smoke \
-    -v "$(winpath "$work/helpers.sh"):/helpers.sh:ro" \
-    -e BACKUP_SSH_HOST=sink -e BACKUP_SSH_USER=fd -e "BACKUP_SSH_PATH=$RDIR" \
+    -e B2_BUCKET=flowdesk-smoke -e "B2_ENDPOINT=$EP" -e B2_REGION=us-east-1 \
+    -e "B2_KEY_ID=$W_ID" -e "B2_APPLICATION_KEY=$W_SECRET" -e B2_AUTHORIZE_URL=http://authstub:8080/write.json \
     "${flags[@]+"${flags[@]}"}" backup "$@" 2> "$work/err.log"
 }
-# Common sftp options for the probes that talk to a sink by hand from inside a one-off.
-SFTP='sftp -o LogLevel=ERROR -F /dev/null -i /run/backup/id_key -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/run/backup/known_hosts -o ConnectTimeout=10'
 
-echo "== a backup is encrypted and kept locally; the copy reaches the sink; a second copy sends nothing"
+echo "== a backup is encrypted and kept locally; the copy uploads it, locked; a second copy sends nothing"
 out=$(bk -- bash -c '
   mkdir -p /tmp/smoke
   /opt/backup/run-backup.sh && /opt/backup/run-copy.sh && /opt/backup/run-copy.sh
@@ -172,128 +164,83 @@ out=$(bk -- bash -c '
 printf '%s\n' "$out" | grep -q '"event":"backup_succeeded"' || { echo "$out" >&2; fail "no backup_succeeded line"; }
 [ "$(printf '%s\n' "$out" | grep -c '"event":"copy_succeeded"')" = "2" ] || { echo "$out" >&2; fail "both copies should succeed"; }
 printf '%s\n' "$out" | grep '"event":"copy_succeeded"' | sed -n 1p | grep -q '"uploaded":"1"' || fail "the first copy should upload one file"
-printf '%s\n' "$out" | grep '"event":"copy_succeeded"' | sed -n 2p | grep -q '"uploaded":"0","stepped_over":"0","skipped":"1"' || fail "the second copy should upload nothing and skip one"
-printf '%s\n' "$out" | sed -n '/^LOCAL:/,/^PLAINTEXT-LEFT:/p' | grep -q '_[0-9]\{8\}T[0-9]\{6\}Z.tar.age$' || fail "no .tar.age file kept locally"
+printf '%s\n' "$out" | grep '"event":"copy_succeeded"' | sed -n 2p | grep -q '"uploaded":"0"' || fail "the second copy should upload nothing"
+printf '%s\n' "$out" | grep '"event":"copy_succeeded"' | sed -n 2p | grep -q '"budget":"ok"' || fail "the budget should be ok"
 [ "$(printf '%s\n' "$out" | sed -n '/^PLAINTEXT-LEFT:/{n;p;}')" = "0" ] || fail "plaintext dump, manifest or partial file left behind"
 printf '%s\n' "$out" | sed -n '/^MAGIC:/{n;p;}' | grep -q '^age-encryption.org/v1' || fail "the kept file is not an age file"
 [ "$(printf '%s\n' "$out" | sed -n '/^PGDMP-IN-FILE:/{n;p;}')" = "0" ] || fail "the encrypted file contains a plaintext pg_dump header"
-landed=$(docker exec "$SINK" ls -1 "$RDIR")
-[ "$(printf '%s\n' "$landed" | wc -l | tr -d ' ')" = "1" ] || fail "expected exactly one file on the sink, got: $landed"
-echo "ok: $landed (uploaded once, skipped the second time)"
+name=$(printf '%s\n' "$out" | sed -n '/^LOCAL:/,/^PLAINTEXT-LEFT:/p' | grep '\.tar\.age$')
+listing=$(root_curl "flowdesk-smoke?versions&prefix=flowdesk/")
+[ "$(printf '%s' "$listing" | grep -o '<Key>[^<]*</Key>' | sort -u)" = "<Key>flowdesk/$name</Key>" ] || { echo "$listing" >&2; fail "expected exactly flowdesk/$name in the bucket"; }
+[ "$(printf '%s' "$listing" | grep -o '<Version>' | wc -l | tr -d ' ')" = "1" ] || fail "expected exactly one version (uploaded once)"
+ret=$(root_curl "flowdesk-smoke/flowdesk/$name?retention")
+printf '%s' "$ret" | grep -q '<Mode>GOVERNANCE</Mode>' || { echo "$ret" >&2; fail "the uploaded backup is not locked GOVERNANCE"; }
+echo "ok: flowdesk/$name, one version, GOVERNANCE (uploaded once, nothing the second time)"
 
-echo "== the copy that landed restores, using only the PRIVATE key (infra/restore-backup.sh)"
-docker cp "$SINK:$RDIR/$landed" "$(winpath "$work")/got.tar.age"   # docker.exe needs a Windows path here
-bash infra/restore-backup.sh "$work/got.tar.age" --identity "$work/k/age.key" --db "$RESTORED" > "$work/restore.out" 2>&1 \
-  || { cat "$work/restore.out" >&2; fail "restore-backup.sh failed"; }
+echo "== the copy restores on 'the laptop', with the READ key and the private age key only (restore-backup.sh --from-b2)"
+B2_BUCKET=flowdesk-smoke B2_ENDPOINT=$EP B2_REGION=us-east-1 B2_READ_KEY_ID=$R_ID B2_READ_APPLICATION_KEY=$R_SECRET \
+  bash infra/restore-backup.sh --from-b2 --identity "$work/k/age.key" --db "$RESTORED" > "$work/restore.out" 2>&1 \
+  || { cat "$work/restore.out" >&2; fail "restore-backup.sh --from-b2 failed"; }
 grep -q "^OK: restored into '$RESTORED'" "$work/restore.out" || { cat "$work/restore.out" >&2; fail "restore did not report OK"; }
-# The dump was taken while its own ops.backup row said 'running', so that row is in the restored copy.
-[ "$(psql_pg -d "$RESTORED" -c "select count(*) from task_runs where task_name = 'ops.backup' and status = 'running'")" = "1" ] \
-  || fail "the restored database does not contain the backup's own task_runs row"
+grep -q "fetched $name" "$work/restore.out" || { cat "$work/restore.out" >&2; fail "the newest backup was not the one fetched"; }
 want=$(psql_pg -d "$SCRATCH" -c "select version_num from alembic_version")
 [ "$(psql_pg -d "$RESTORED" -c "select version_num from alembic_version")" = "$want" ] || fail "alembic revision differs after restore"
-echo "ok: restored $landed into $RESTORED"
-! bash infra/restore-backup.sh "$work/got.tar.age" --identity "$work/k/id" --db "${RESTORED}_x" > /dev/null 2>&1 \
-  || fail "restore-backup.sh accepted an SSH key as the age identity"
-echo "ok: the wrong key is refused"
+echo "ok: fetched $name and restored it into $RESTORED"
+! B2_BUCKET=flowdesk-smoke B2_ENDPOINT=$EP B2_REGION=us-east-1 B2_READ_KEY_ID=$W_ID B2_READ_APPLICATION_KEY=$W_SECRET \
+  bash infra/restore-backup.sh --from-b2 --identity "$work/k/age.key" --db "${RESTORED}_x" > /dev/null 2>&1 \
+  || fail "the WRITE key could download a backup (it must have no read)"
+echo "ok: the write key cannot download"
 
-echo "== the key gets SFTP and nothing else: no shell, no delete, no rename (stand-in for the account's rights)"
-probe=$(bk -- bash -c '
-  mkdir -p /tmp/p; echo data > /tmp/p/one
-  echo "SHELL:"; ssh -F /dev/null -i /run/backup/id_key -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/run/backup/known_hosts -o ConnectTimeout=10 fd@sink "echo shell-works; id" 2>&1; echo "shell-exit=$?"
-  echo "PUT:"; echo "put /tmp/p/one '"$RDIR"'/probe-one" | '"$SFTP"' -b - fd@sink 2>&1; echo "put-exit=$?"
-  echo "RM:"; echo "rm '"$RDIR"'/probe-one" | '"$SFTP"' -b - fd@sink 2>&1; echo "rm-exit=$?"
-  echo "RENAME:"; echo "rename '"$RDIR"'/probe-one '"$RDIR"'/probe-two" | '"$SFTP"' -b - fd@sink 2>&1; echo "rename-exit=$?"
-' || true)
-printf '%s\n' "$probe" | grep -q 'shell-works' && { printf '%s\n' "$probe" >&2; fail "the key ran a shell command"; }
-printf '%s\n' "$probe" | grep -q 'uid=' && { printf '%s\n' "$probe" >&2; fail "the key ran a shell command (id)"; }
-# The refusals are checked by their own words, so a probe that fails for an unrelated reason (a dead sshd, a
-# wrong key) cannot pass as "restricted". The put in the same probe already proves the session itself works.
-printf '%s\n' "$probe" | grep -q 'This service allows sftp connections only' \
-  || { printf '%s\n' "$probe" >&2; fail "a shell request was not refused by the SFTP-only rule"; }
-echo "ok: no shell (sshd said: this service allows sftp connections only)"
-printf '%s\n' "$probe" | grep -q '^put-exit=0$' || { printf '%s\n' "$probe" >&2; fail "the key could not create a file"; }
-printf '%s\n' "$probe" | grep -q '^rm-exit=[1-9]' || { printf '%s\n' "$probe" >&2; fail "the key could delete"; }
-printf '%s\n' "$probe" | grep -q 'remote delete .*Permission denied' || { printf '%s\n' "$probe" >&2; fail "delete was not refused by the server"; }
-printf '%s\n' "$probe" | grep -q '^rename-exit=[1-9]' || { printf '%s\n' "$probe" >&2; fail "the key could rename"; }
-printf '%s\n' "$probe" | grep -q 'remote rename .*Permission denied' || { printf '%s\n' "$probe" >&2; fail "rename was not refused by the server"; }
-docker exec "$SINK" test -e "$RDIR/probe-one" || fail "the probe file vanished"
-docker exec "$SINK" test ! -e "$RDIR/probe-two" || fail "the probe file was renamed"
-echo "ok: create works; delete and rename are refused and the file is still there"
+echo "== the probe: OK on the locked bucket with each key, FAIL on an open one"
+v=$(bk -- /opt/backup/verify-destination.sh; echo "exit=$?") || true
+printf '%s\n' "$v" | grep -q '^RESULT: OK (write key)' || { echo "$v" >&2; fail "the probe should pass with the write key on the locked bucket"; }
+for want in "refused (403)" "GOVERNANCE for at least 29 more days" "the original version is still there" "the locked version is still listed after the hide"; do
+  printf '%s\n' "$v" | grep -q "$want" || { echo "$v" >&2; fail "the probe did not report: $want"; }
+done
+v=$(bk -e "B2_KEY_ID=$R_ID" -e "B2_APPLICATION_KEY=$R_SECRET" -e B2_AUTHORIZE_URL=http://authstub:8080/read.json \
+  -- /opt/backup/verify-destination.sh --read; echo "exit=$?") || true
+printf '%s\n' "$v" | grep -q '^RESULT: OK (read key)' || { echo "$v" >&2; fail "the probe should pass with the read key"; }
+printf '%s\n' "$v" | grep -q 'an upload is refused' || fail "the read key's upload should be refused"
+v=$(bk -e B2_BUCKET=flowdesk-open -e B2_AUTHORIZE_URL=http://authstub:8080/write-open.json -- /opt/backup/verify-destination.sh; echo "exit=$?") || true
+printf '%s\n' "$v" | grep -q '^RESULT: FAIL' || { echo "$v" >&2; fail "the probe passed a bucket with no lock where the key can delete"; }
+printf '%s\n' "$v" | grep -q 'the version was DELETED' || { echo "$v" >&2; fail "the probe should name the delete it was allowed"; }
+printf '%s\n' "$v" | grep -q '^exit=1$' || fail "the probe should exit 1 on the open bucket"
+echo "ok: write key OK, read key OK, the open bucket FAILS (deleted, not locked)"
 
-echo "== an interrupted upload leaves a short object; the retry is a NEW object and the short one is stepped over"
-out=$(bk -- bash -c '
-  . /helpers.sh
-  mkdir -p /tmp/smoke; /opt/backup/run-backup.sh >/dev/null && /opt/backup/run-copy.sh >/dev/null
-  f=$(ls /tmp/smoke/*.tar.age); n=${f##*/}; b=${n%.tar.age}
-  # Simulate the interruption: this destination lets the account overwrite, so cut the complete copy short.
-  head -c 50 "$f" > /tmp/short
-  echo "put /tmp/short '"$RDIR"'/$n" | '"$SFTP"' -b - fd@sink
-  echo "short: $(remote_size sink "$n")"
-  /opt/backup/run-copy.sh; echo "copy-exit=$?"
-  echo "sizes: original=$(remote_size sink "$n") retry=$(remote_size sink "$b.r1.tar.age") local=$(wc -c < "$f" | tr -d " ")"
-  /opt/backup/run-copy.sh; echo "second-copy-exit=$?"
-  echo "second-retry: [$(remote_size sink "$b.r2.tar.age")]"
-' || true)
-printf '%s\n' "$out" | grep -q '^short: 50$' || { echo "$out" >&2; fail "the setup did not leave a 50-byte object on the destination"; }
-printf '%s\n' "$out" | grep -q '"uploaded":"1","stepped_over":"1"' || { echo "$out" >&2; fail "the short object was not stepped over by a new upload"; }
-printf '%s\n' "$out" | grep -q '"event":"copy_stepped_over"' || fail "stepping over a short object should be logged"
-printf '%s\n' "$out" | grep -q '^copy-exit=0$' || fail "the retry run should succeed"
-a=$(printf '%s\n' "$out" | sed -n 's/^sizes: original=\([0-9]*\) retry=\([0-9]*\) local=\([0-9]*\)$/\1 \2 \3/p')
-[ "${a%% *}" = "50" ] || { echo "$out" >&2; fail "the short object should be left exactly as it was (got: $a)"; }
-set -- $a
-[ "$2" = "$3" ] && [ -n "$2" ] || { echo "$out" >&2; fail "the retry object is not the full size (got: $a)"; }
-printf '%s\n' "$out" | grep -q '^second-retry: \[\]$' || fail "a second run made another retry although a complete object exists"
-echo "ok: 50-byte object left in place, complete copy written beside it ($2 bytes), nothing more on the next run"
-
-echo "== write-once: nothing can be reopened, a double interruption still does not stall the chain"
-out=$(bk -e BACKUP_SSH_HOST=wosink -- bash -c '
-  . /helpers.sh
-  mkdir -p /tmp/smoke; /opt/backup/run-backup.sh >/dev/null
-  f=$(ls /tmp/smoke/*.tar.age); n=${f##*/}; b=${n%.tar.age}
-  head -c 50 "$f" > /tmp/short; head -c 80 "$f" > /tmp/short2
-  echo "put /tmp/short '"$RDIR"'/$n" | '"$SFTP"' -b - fd@wosink
-  echo "put /tmp/short2 '"$RDIR"'/$b.r1.tar.age" | '"$SFTP"' -b - fd@wosink
-  echo "put /tmp/short2 '"$RDIR"'/$n" | '"$SFTP"' -b - fd@wosink 2>&1; echo "overwrite-exit=$?"
-  /opt/backup/run-copy.sh; echo "copy-exit=$?"
-  echo "sizes: plain=$(remote_size wosink "$n") r1=$(remote_size wosink "$b.r1.tar.age") r2=$(remote_size wosink "$b.r2.tar.age") local=$(wc -c < "$f" | tr -d " ")"
-  echo "backup: $b"
-' || true)
-printf '%s\n' "$out" | grep -q '^overwrite-exit=[1-9]' || { echo "$out" >&2; fail "the write-once destination let a file be reopened; the premise of this test is gone"; }
-printf '%s\n' "$out" | grep -q '^copy-exit=0$' || { echo "$out" >&2; fail "the copy should step over two short objects and succeed"; }
-printf '%s\n' "$out" | grep -q '"stepped_over":"2"' || { echo "$out" >&2; fail "expected two short objects stepped over"; }
-a=$(printf '%s\n' "$out" | sed -n 's/^sizes: plain=\([0-9]*\) r1=\([0-9]*\) r2=\([0-9]*\) local=\([0-9]*\)$/\1 \2 \3 \4/p')
-set -- $a
-[ "$1" = "50" ] && [ "$2" = "80" ] && [ "$3" = "$4" ] && [ -n "$3" ] || { echo "$out" >&2; fail "unexpected sizes on the write-once destination: $a"; }
-backup_stem=$(printf '%s\n' "$out" | sed -n 's/^backup: //p')
-echo "ok: plain 50, r1 80 (both untouched), r2 $3 (complete)"
-
-echo "== a retry object restores; a short object is rejected before it can reach a database"
-docker cp "$WOSINK:$RDIR/$backup_stem.r2.tar.age" "$(winpath "$work")/retry.tar.age"
-docker cp "$WOSINK:$RDIR/$backup_stem.tar.age" "$(winpath "$work")/short.tar.age"
-bash infra/restore-backup.sh "$work/retry.tar.age" --identity "$work/k/age.key" --db "${RESTORED}_r" > "$work/restore2.out" 2>&1 \
-  || { cat "$work/restore2.out" >&2; fail "restoring from the retry object failed"; }
-grep -q "^OK: restored into '${RESTORED}_r'" "$work/restore2.out" || { cat "$work/restore2.out" >&2; fail "the retry object did not restore"; }
-if bash infra/restore-backup.sh "$work/short.tar.age" --identity "$work/k/age.key" --db "${RESTORED}_s" > "$work/restore3.out" 2>&1; then
-  cat "$work/restore3.out" >&2; fail "a short object was restored"
-fi
-grep -q 'could not decrypt\|wrong key, or the file is damaged\|not a tar' "$work/restore3.out" || { cat "$work/restore3.out" >&2; fail "the short object was rejected, but not for the expected reason"; }
-[ "$(psql_pg -d postgres -c "select count(*) from pg_database where datname = '${RESTORED}_s'")" = "0" ] \
-  || fail "rejecting a short object still created a database"
-echo "ok: the retry object restored; the 50-byte object was refused and created nothing"
-
-echo "== the probe tells the policies apart, and fails when the restriction is not in force"
-policy_of() { # HOST -> output and exit code of verify-destination.sh against that host
-  bk -e "BACKUP_SSH_HOST=$1" -- /opt/backup/verify-destination.sh || true
+echo "== the key check refuses a key that could undo the protection, and pages (exit 76)"
+expect_copy() { # NAME AUTHFILE-OR-URL EXIT CLASS [extra -e flags]
+  local name=$1 url=$2 want_rc=$3 want_cls=$4; shift 4
+  local o rc cls
+  o=$(bk -e "B2_AUTHORIZE_URL=$url" "$@" -- bash -c 'mkdir -p /tmp/smoke; /opt/backup/run-backup.sh > /dev/null; /opt/backup/run-copy.sh; echo "exit=$?"' || true)
+  rc=$(printf '%s\n' "$o" | sed -n 's/^exit=//p')
+  cls=$(printf '%s\n' "$o" | sed -n 's/.*"event":"copy_failed".*"error_class":"\([A-Za-z]*\)".*/\1/p' | head -1)
+  [ "$rc" = "$want_rc" ] && [ "$cls" = "$want_cls" ] || { printf '%s\n' "$o" >&2; fail "case $name: wanted exit=$want_rc class=$want_cls, got exit=$rc class=$cls"; }
+  echo "ok: $name -> $want_cls (exit $want_rc)"
 }
-v=$(bk -e BACKUP_SSH_HOST=sink -- /opt/backup/verify-destination.sh; echo "exit=$?") || true
-printf '%s\n' "$v" | grep -q 'RESULT: OK, policy no-delete' || { echo "$v" >&2; fail "expected policy no-delete on the no-delete sink"; }
-printf '%s\n' "$v" | grep -q '^exit=0$' || fail "the probe should pass on the no-delete sink"
-v=$(bk -e BACKUP_SSH_HOST=wosink -- /opt/backup/verify-destination.sh; echo "exit=$?") || true
-printf '%s\n' "$v" | grep -q 'RESULT: OK, policy write-once' || { echo "$v" >&2; fail "expected policy write-once on the write-once sink"; }
-v=$(bk -e BACKUP_SSH_HOST=opensink -- /opt/backup/verify-destination.sh; echo "exit=$?") || true
-printf '%s\n' "$v" | grep -q 'RESULT: FAIL' || { echo "$v" >&2; fail "the probe passed a destination whose key can delete"; }
-printf '%s\n' "$v" | grep -q '^exit=1$' || fail "the probe should exit 1 on an open destination"
-echo "ok: no-delete, write-once recognised; an open destination fails"
+expect_copy "a key with deleteFiles" http://authstub:8080/toobroad.json 76 CapabilityTooBroad
+expect_copy "a key not restricted to the bucket" http://authstub:8080/unrestricted.json 76 CapabilityTooBroad
+expect_copy "a refused key (401)" http://authstub:8080/cgi-bin/refused 76 AuthRefused
+expect_copy "an answer in another shape (v3)" http://authstub:8080/v3.json 78 ConfigInvalid
+expect_copy "a key for another bucket" http://authstub:8080/write-t.json 78 ConfigInvalid
+expect_copy "a bucket with no lock" http://authstub:8080/write-open.json 76 NotLocked -e B2_BUCKET=flowdesk-open
+expect_copy "a wrong secret on the S3 calls" http://authstub:8080/write.json 76 AuthRefused -e B2_APPLICATION_KEY=wrongsecretwrongsecret
+expect_copy "no such endpoint" http://authstub:8080/write.json 75 Unreachable -e B2_ENDPOINT=http://nosuchhost.invalid:7070
+expect_copy "the budget would be passed" http://authstub:8080/write.json 76 OverBudget -e BACKUP_BUDGET_BYTES=1000
+
+echo "== a delete marker under the backup prefix is tampering: uploads still go up, then the run fails and pages"
+o=$(bk -e B2_BUCKET=flowdesk-smoke-t -e B2_AUTHORIZE_URL=http://authstub:8080/write-t.json -- bash -c '
+  mkdir -p /tmp/smoke; /opt/backup/run-backup.sh > /dev/null; /opt/backup/run-copy.sh; echo "first=$?"; ls -1 /tmp/smoke' || true)
+printf '%s\n' "$o" | grep -q '^first=0$' || { echo "$o" >&2; fail "the first copy to the second bucket should succeed"; }
+tname=$(printf '%s\n' "$o" | grep '\.tar\.age$' | head -1)
+root_curl "flowdesk-smoke-t/flowdesk/$tname" -X DELETE -o /dev/null -w '%{http_code}' > "$work/hide.code" || true
+grep -q '^20[04]$' "$work/hide.code" || fail "root could not hide the object (stand-in setup)"
+o=$(bk -e B2_BUCKET=flowdesk-smoke-t -e B2_AUTHORIZE_URL=http://authstub:8080/write-t.json -- bash -c '
+  mkdir -p /tmp/smoke; /opt/backup/run-backup.sh > /dev/null; /opt/backup/run-copy.sh; echo "exit=$?"' || true)
+printf '%s\n' "$o" | grep -q '"error_class":"Tampered"' || { echo "$o" >&2; fail "a delete marker under flowdesk/ was not reported as Tampered"; }
+printf '%s\n' "$o" | grep -q '^exit=76$' || fail "Tampered should exit 76 (pages)"
+[ "$(root_curl "flowdesk-smoke-t?versions&prefix=flowdesk/" | grep -o '<Version>' | wc -l | tr -d ' ')" = "2" ] \
+  || fail "the new backup should still have been uploaded beside the hidden one"
+echo "ok: Tampered (exit 76); the hidden version is still there and the new backup went up"
 
 echo "== no recipient key: the backup fails closed, writes nothing, and says why"
 out=$(bk -v "$(winpath "$PWD/infra/backup/recipients.txt"):/placeholder:ro" -e BACKUP_RECIPIENTS_FILE=/placeholder -- bash -c '
@@ -303,31 +250,29 @@ printf '%s\n' "$out" | grep -q '^exit=78$' || fail "a backup with no recipient i
 printf '%s\n' "$out" | grep -q '^files=0$' || fail "a backup with no recipient wrote a file"
 echo "ok: refused, nothing written"
 
-echo "== no destination path: refused, because a default would copy somewhere unprotected"
-out=$(bk -e BACKUP_SSH_PATH= -- bash -c '
-  mkdir -p /tmp/smoke; /opt/backup/run-backup.sh >/dev/null; /opt/backup/run-copy.sh; echo "exit=$?"' || true)
-printf '%s\n' "$out" | grep -q '"error_class":"ConfigInvalid"' || { echo "$out" >&2; fail "expected ConfigInvalid for an empty BACKUP_SSH_PATH"; }
-printf '%s\n' "$out" | grep -q 'BACKUP_SSH_PATH is empty' || fail "the message should name BACKUP_SSH_PATH"
-printf '%s\n' "$out" | grep -q '^exit=78$' || fail "an empty BACKUP_SSH_PATH is a configuration failure and should exit 78"
-echo "ok: refused"
-
-echo "== the destination is unreachable: the backup still succeeds, only the copy fails"
-docker stop "$SINK" > /dev/null
+echo "== B2 is unreachable: the backup still succeeds, only the copy fails (transient)"
+docker stop "$STANDIN" > /dev/null
 out=$(bk -- bash -c '
   mkdir -p /tmp/smoke; /opt/backup/run-backup.sh; echo "backup-exit=$?"; /opt/backup/run-copy.sh; echo "copy-exit=$?"
   echo "kept=$(ls /tmp/smoke | wc -l)"' || true)
-printf '%s\n' "$out" | grep -q '^backup-exit=0$' || { echo "$out" >&2; fail "the backup should succeed with the destination down"; }
-printf '%s\n' "$out" | grep -q '^copy-exit=75$' || fail "a copy that cannot reach the destination is transient and should exit 75"
+printf '%s\n' "$out" | grep -q '^backup-exit=0$' || { echo "$out" >&2; fail "the backup should succeed with B2 down"; }
+printf '%s\n' "$out" | grep -q '^copy-exit=75$' || { echo "$out" >&2; fail "a copy that cannot reach B2 is transient and should exit 75"; }
 printf '%s\n' "$out" | grep -q '"error_class":"Unreachable"' || { echo "$out" >&2; fail "expected an Unreachable failure"; }
 printf '%s\n' "$out" | grep -q '^kept=1$' || fail "the local backup should be kept"
+docker start "$STANDIN" > /dev/null
+deadline=$((SECONDS + 60))
+until root_curl "flowdesk-smoke?versions" > /dev/null 2>&1 && root_curl "flowdesk-smoke?versions" | grep -q ListVersionsResult; do
+  [ $SECONDS -lt $deadline ] || fail "the stand-in did not come back"
+  sleep 1
+done
 echo "ok: a failed copy is not a failed backup"
 
-echo "== health: both steps are reported separately, from the real rows the scripts wrote"
+echo "== health: both steps, from the rows the scripts wrote (sizes, bucket bytes, budget, copied-through)"
 health() {
   docker compose run --rm --no-deps -T \
     -e "DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${SCRATCH}" \
     api python - 2> "$work/err.log" << 'PYEOF'
-import asyncio, os
+import asyncio, json, os
 from datetime import UTC, datetime
 from sqlalchemy.ext.asyncio import create_async_engine
 from app import settings
@@ -340,27 +285,29 @@ async def main() -> None:
     probes = SqlRedisProbes(eng, None)
     state = await probes.data_state()
     successes = {n: await probes.last_task_success(n) for n in (BACKUP, BACKUP_COPY)}
-    b = svc.assemble_data(state, datetime.now(UTC), successes, settings.backup_stale_after())["backups"]
-    print(f"backup={b['backup']['state']} copy={b['copy']['state']} copy_failed={b['copy']['last_attempt_failed']} "
-          f"copy_error={b['copy']['last_error_class']}")
+    body = svc.assemble_data(state, datetime.now(UTC), successes, settings.backup_stale_after())
+    print(json.dumps(body["backups"]))
     await eng.dispose()
 
 asyncio.run(main())
 PYEOF
 }
 h=$(health)
-[ "$h" = "backup=ok copy=ok copy_failed=True copy_error=Unreachable" ] \
-  || fail "unexpected backup health: $h (want the backup ok, the copy ok from earlier but its last attempt failed)"
-echo "ok: $h"
+pyq() { printf '%s' "$h" | python -c "import json,sys; b=json.load(sys.stdin); print($1)"; }
+[ "$(pyq "b['backup']['state'], b['copy']['state'], b['copy']['last_attempt_failed'], b['copy']['last_error_class']")" = "ok ok True Unreachable" ] \
+  || fail "unexpected backup health: $h"
+[ "$(pyq "b['copy']['destination'], b['copy']['budget_state'] is None or b['copy']['budget_state'], b['copy']['tampered']")" = "b2 True False" ] \
+  || fail "unexpected copy fields: $h"
+[ "$(pyq "len(b['backup']['sizes_weekly']) >= 1 and b['backup']['sizes_weekly'][0]['bytes'] > 0")" = "True" ] || fail "no weekly backup size: $h"
+echo "ok: backup ok, copy ok (last attempt Unreachable), destination b2, a weekly size of $(pyq "b['backup']['sizes_weekly'][0]['bytes']") bytes"
 
-echo "== the destination is back: the scheduler catches up by itself, pings the monitor, and backs up once"
-docker start "$SINK" > /dev/null
-wait_sink "$SINK"
+echo "== the scheduler catches up by itself, uploads, and pings the monitor"
 docker rm -f "$LOOP" > /dev/null 2>&1 || true
 docker compose run -d --name "$LOOP" --no-deps -T -e "PGDATABASE=$SCRATCH" -e BACKUP_DIR=/tmp/smoke \
-  -e BACKUP_SSH_HOST=sink -e BACKUP_SSH_USER=fd -e "BACKUP_SSH_PATH=$RDIR" -e BACKUP_AT=00:00 \
+  -e B2_BUCKET=flowdesk-smoke -e "B2_ENDPOINT=$EP" -e B2_REGION=us-east-1 -e "B2_KEY_ID=$W_ID" -e "B2_APPLICATION_KEY=$W_SECRET" \
+  -e B2_AUTHORIZE_URL=http://authstub:8080/write.json -e BACKUP_AT=00:00 \
   -e BACKUP_TICK_SECONDS=1 -e BACKUP_RETRY_SECONDS=2 -e BACKUP_RETRY_CAP_SECONDS=2 \
-  -e BACKUP_PING_URL=http://sink:8080/ping backup bash -c 'mkdir -p /tmp/smoke && exec /opt/backup/backup-loop.sh' > /dev/null 2> "$work/err.log"
+  -e BACKUP_PING_URL=http://authstub:8080/ping backup bash -c 'mkdir -p /tmp/smoke && exec /opt/backup/backup-loop.sh' > /dev/null 2> "$work/err.log"
 deadline=$((SECONDS + 90))
 until docker logs "$LOOP" 2>&1 | grep -q '"event":"copy_pinged"'; do
   docker inspect -f '{{.State.Running}}' "$LOOP" | grep -q true || { docker logs "$LOOP" >&2; fail "the scheduler stopped"; }
@@ -370,131 +317,71 @@ done
 sleep 6   # several more ticks: it must not back up again, because today's slot has been served
 logs=$(docker logs "$LOOP" 2>&1)
 [ "$(printf '%s\n' "$logs" | grep -c '"event":"backup_succeeded"')" = "1" ] || { printf '%s\n' "$logs" >&2; fail "expected exactly one backup from the scheduler"; }
-printf '%s\n' "$logs" | grep -q '"event":"backup_scheduler_started"' || fail "no scheduler start line"
-docker logs "$SINK" 2>&1 | grep -q 'url:/ping' || fail "the monitor URL was never requested"
-n_on_sink=$(docker exec "$SINK" sh -c "ls -1 $RDIR | grep -c 'tar.age\$'")
-[ "$n_on_sink" -ge 2 ] || fail "the sink should now hold the scheduler's backup as well (has $n_on_sink)"
+printf '%s\n' "$logs" | grep -q '"offbox":"b2"' || fail "the scheduler should say the off-box copy is b2"
+docker logs "$AUTHSTUB" 2>&1 | grep -q 'url:/ping' || fail "the monitor URL was never requested"
 docker rm -f "$LOOP" > /dev/null
-echo "ok: backed up once, copied after the destination returned, pinged the monitor"
+echo "ok: backed up once, uploaded, pinged the monitor"
 
-echo "== ssh failures are told apart: a refused key and a changed host key are not a sleeping desktop"
-out=$(bk -- bash -c '
-  mkdir -p /tmp/smoke; /opt/backup/run-backup.sh > /dev/null
-  ssh-keygen -q -t ed25519 -N "" -f /tmp/badkey
-  ssh-keygen -q -t ed25519 -N "" -f /tmp/otherhost
-  echo "sink $(cut -d" " -f1,2 /tmp/otherhost.pub)" > /tmp/kh_changed
-  echo "elsewhere $(cut -d" " -f1,2 /tmp/otherhost.pub)" > /tmp/kh_unknown
-  run() { name=$1; shift; o=$(env "$@" /opt/backup/run-copy.sh 2>&1); rc=$?
-    cls=$(printf "%s" "$o" | sed -n "s/.*\"error_class\":\"\([A-Za-z]*\)\".*/\1/p" | head -1)
-    echo "CASE $name exit=$rc class=$cls"; }
-  run refused    BACKUP_SSH_KEY=/tmp/badkey
-  run changed    BACKUP_SSH_KNOWN_HOSTS=/tmp/kh_changed
-  run unknown    BACKUP_SSH_KNOWN_HOSTS=/tmp/kh_unknown
-  run noresolve  BACKUP_SSH_HOST=nosuchhost.invalid
-  run closedport BACKUP_SSH_PORT=2222
-  run bareip     BACKUP_SSH_HOST=192.168.1.20
-  run reachable  X=1' || true)
-expect_case() { # NAME EXIT CLASS
-  printf '%s\n' "$out" | grep -qx "CASE $1 exit=$2 class=$3" || { printf '%s\n' "$out" >&2; fail "case $1: wanted exit=$2 class=$3"; }
-}
-expect_case refused 1 AuthRefused
-expect_case changed 76 HostKeyChanged
-expect_case unknown 78 ConfigInvalid
-expect_case noresolve 75 Unreachable
-expect_case closedport 75 Unreachable
-expect_case bareip 78 ConfigInvalid
-expect_case reachable 0 ""
-echo "ok: refused key -> AuthRefused, a changed host key -> HostKeyChanged (exit 76), an unpinned one -> ConfigInvalid (exit 78), no such host and a closed port -> Unreachable (exit 75), a bare IP -> ConfigInvalid (exit 78), a healthy copy -> exit 0"
-
-echo "== the probe refuses a bare IP"
-out=$(bk -- bash -c 'o=$(env BACKUP_SSH_HOST=192.168.1.20 /opt/backup/verify-destination.sh); echo "exit=$?"; echo "$o"' || true)
-printf '%s
-' "$out" | grep -q '^exit=1$' || { echo "$out" >&2; fail "the probe should refuse a bare IP"; }
-printf '%s
-' "$out" | grep -q 'bare IP' || fail "the probe should say why it refused"
-echo "ok: refused, with the reason"
-
-echo "== the probe names what went wrong, with the class HEALTH.md documents (the first thing run on the real desktop)"
-out=$(bk -- bash -c '
-  ssh-keygen -q -t ed25519 -N "" -f /tmp/badkey
-  ssh-keygen -q -t ed25519 -N "" -f /tmp/otherhost
-  echo "sink $(cut -d" " -f1,2 /tmp/otherhost.pub)" > /tmp/kh_changed
-  echo "elsewhere $(cut -d" " -f1,2 /tmp/otherhost.pub)" > /tmp/kh_unknown
-  probe() { name=$1; shift; o=$(env "$@" /opt/backup/verify-destination.sh 2>&1); rc=$?
-    echo "CASE $name exit=$rc says=$(printf "%s" "$o" | grep -o "^  [A-Za-z]*:" | head -1 | tr -d " :")"; }
-  probe changed   BACKUP_SSH_KNOWN_HOSTS=/tmp/kh_changed
-  probe unpinned  BACKUP_SSH_KNOWN_HOSTS=/tmp/kh_unknown
-  probe refused   BACKUP_SSH_KEY=/tmp/badkey
-  probe noresolve BACKUP_SSH_HOST=nosuchhost.invalid' || true)
-for c in "changed HostKeyChanged" "unpinned ConfigInvalid" "refused AuthRefused" "noresolve Unreachable"; do
-  set -- $c
-  printf '%s\n' "$out" | grep -qx "CASE $1 exit=1 says=$2" || { printf '%s\n' "$out" >&2; fail "probe case $1: wanted exit=1 and the class $2"; }
-done
-echo "ok: changed key -> HostKeyChanged, unpinned -> ConfigInvalid, refused key -> AuthRefused, no such host -> Unreachable"
-
-echo "== a changed host key tells the monitor ONCE (POST <ping url>/fail); a refused key and an unpinned host never do"
-for c in "$LOOP-hk" "$LOOP-rf" "$LOOP-up"; do docker rm -f "$c" > /dev/null 2>&1 || true; done
-# Every attempt fails at once and retries every ~2 s, so a signal on every failure would show as many requests.
-# The sink's /cgi-bin/hb answers 200 to a POST, as a real monitor does (its static files answer 501).
-hk_env=(--no-deps -T -e "PGDATABASE=$SCRATCH" -e BACKUP_DIR=/tmp/smoke -e BACKUP_SSH_HOST=sink -e BACKUP_SSH_USER=fd -e "BACKUP_SSH_PATH=$RDIR"
-  -e BACKUP_AT=00:00 -e BACKUP_TICK_SECONDS=1 -e BACKUP_RETRY_SECONDS=2 -e BACKUP_RETRY_CAP_SECONDS=2 -e BACKUP_RETRY_LONG_CAP_SECONDS=2)
-docker compose run -d --name "$LOOP-hk" "${hk_env[@]}" -e BACKUP_PING_URL=http://sink:8080/cgi-bin/hb/hk -e BACKUP_SSH_KNOWN_HOSTS=/tmp/kh   backup bash -c 'mkdir -p /tmp/smoke && ssh-keygen -q -t ed25519 -N "" -f /tmp/o && echo "sink $(cut -d" " -f1,2 /tmp/o.pub)" > /tmp/kh && exec /opt/backup/backup-loop.sh' > /dev/null 2> "$work/err.log"
-docker compose run -d --name "$LOOP-rf" "${hk_env[@]}" -e BACKUP_PING_URL=http://sink:8080/cgi-bin/hb/rf -e BACKUP_SSH_KEY=/tmp/badkey   backup bash -c 'mkdir -p /tmp/smoke && ssh-keygen -q -t ed25519 -N "" -f /tmp/badkey && exec /opt/backup/backup-loop.sh' > /dev/null 2> "$work/err.log"
-docker compose run -d --name "$LOOP-up" "${hk_env[@]}" -e BACKUP_PING_URL=http://sink:8080/cgi-bin/hb/up -e BACKUP_SSH_KNOWN_HOSTS=/tmp/kh   backup bash -c 'mkdir -p /tmp/smoke && ssh-keygen -q -t ed25519 -N "" -f /tmp/o && echo "elsewhere $(cut -d" " -f1,2 /tmp/o.pub)" > /tmp/kh && exec /opt/backup/backup-loop.sh' > /dev/null 2> "$work/err.log"
+echo "== an alert class tells the monitor ONCE (POST <ping url>/fail, with the class); a transient failure never does"
+docker rm -f "$LOOP-al" "$LOOP-tr" > /dev/null 2>&1 || true
+al_env=(--no-deps -T -e "PGDATABASE=$SCRATCH" -e BACKUP_DIR=/tmp/smoke -e B2_BUCKET=flowdesk-smoke -e "B2_ENDPOINT=$EP" -e B2_REGION=us-east-1
+  -e "B2_KEY_ID=$W_ID" -e "B2_APPLICATION_KEY=$W_SECRET" -e BACKUP_AT=00:00 -e BACKUP_TICK_SECONDS=1
+  -e BACKUP_RETRY_SECONDS=2 -e BACKUP_RETRY_CAP_SECONDS=2 -e BACKUP_RETRY_LONG_CAP_SECONDS=2)
+docker compose run -d --name "$LOOP-al" "${al_env[@]}" -e B2_AUTHORIZE_URL=http://authstub:8080/toobroad.json \
+  -e BACKUP_PING_URL=http://authstub:8080/cgi-bin/hb/al backup bash -c 'mkdir -p /tmp/smoke && exec /opt/backup/backup-loop.sh' > /dev/null 2> "$work/err.log"
+docker compose run -d --name "$LOOP-tr" "${al_env[@]}" -e B2_AUTHORIZE_URL=http://authstub:8080/write.json -e B2_ENDPOINT=http://nosuchhost.invalid:7070 \
+  -e BACKUP_PING_URL=http://authstub:8080/cgi-bin/hb/tr backup bash -c 'mkdir -p /tmp/smoke && exec /opt/backup/backup-loop.sh' > /dev/null 2> "$work/err.log"
 sleep 20
-sinklog=$(docker logs "$SINK" 2>&1)
-n_hk=$(docker logs "$LOOP-hk" 2>&1 | grep -c '"event":"copy_failed".*"error_class":"HostKeyChanged"' || true)
-n_up_cls=$(docker logs "$LOOP-up" 2>&1 | grep -c '"error_class":"ConfigInvalid"' || true)
-n_rf_cls=$(docker logs "$LOOP-rf" 2>&1 | grep -c '"error_class":"AuthRefused"' || true)
-[ "$n_hk" -ge 4 ] || { docker logs "$LOOP-hk" 2>&1 | tail -n 12 >&2; fail "the changed-key loop should have failed at least 4 times in 20 s, got $n_hk"; }
-[ "$n_rf_cls" -ge 3 ] || fail "the refused-key loop should have failed as AuthRefused at least 3 times, got $n_rf_cls"
-[ "$n_up_cls" -ge 1 ] || fail "the unpinned-host loop should have failed as ConfigInvalid"
-n_sig=$(printf '%s
-' "$sinklog" | grep -c 'url:/cgi-bin/hb/hk/fail' || true)
-[ "$n_sig" = "1" ] || { printf '%s
-' "$sinklog" | tail -n 20 >&2; fail "$n_hk changed-key failures should have signalled the monitor exactly once, got $n_sig"; }
-! printf '%s
-' "$sinklog" | grep -q 'url:/cgi-bin/hb/rf' || fail "a refused key reached the monitor, and only a changed host key may"
-! printf '%s
-' "$sinklog" | grep -q 'url:/cgi-bin/hb/up' || fail "an unpinned host reached the monitor, and only a changed host key may"
-docker logs "$LOOP-hk" 2>&1 | grep -qE '"event":"copy_fail_signal(led|_failed)"' || fail "the signal was sent but the scheduler logged nothing about it"
-for c in "$LOOP-hk" "$LOOP-rf" "$LOOP-up"; do docker rm -f "$c" > /dev/null; done
-echo "ok: $n_hk changed-key failures, exactly $n_sig signal to the monitor; $n_rf_cls refused-key and $n_up_cls unpinned-host failures, none"
+stub=$(docker logs "$AUTHSTUB" 2>&1)
+n_al=$(docker logs "$LOOP-al" 2>&1 | grep -c '"event":"copy_failed".*"error_class":"CapabilityTooBroad"' || true)
+n_tr=$(docker logs "$LOOP-tr" 2>&1 | grep -c '"error_class":"Unreachable"' || true)
+[ "$n_al" -ge 4 ] || { docker logs "$LOOP-al" 2>&1 | tail -n 12 >&2; fail "the alert loop should have failed at least 4 times in 20 s, got $n_al"; }
+[ "$n_tr" -ge 3 ] || fail "the transient loop should have failed at least 3 times, got $n_tr"
+n_sig=$(printf '%s\n' "$stub" | grep -c 'url:/cgi-bin/hb/al/fail' || true)
+[ "$n_sig" = "1" ] || { printf '%s\n' "$stub" | tail -n 20 >&2; fail "$n_al alert failures should have signalled the monitor exactly once, got $n_sig"; }
+! printf '%s\n' "$stub" | grep -q 'url:/cgi-bin/hb/tr' || fail "a transient failure reached the monitor"
+docker logs "$LOOP-al" 2>&1 | grep -q '"event":"copy_fail_signalled".*"error_class":"CapabilityTooBroad"' || fail "the signal should name the class"
+docker rm -f "$LOOP-al" "$LOOP-tr" > /dev/null
+echo "ok: $n_al CapabilityTooBroad failures, exactly 1 signal to the monitor; $n_tr Unreachable failures, none"
 
-echo "== each failure is retried as it deserves: transient soon, the rest slowly, configuration not at all"
+echo "== each failure is retried as it deserves: transient soon, alerts slowly, configuration not at all"
 for c in "$LOOP-cfg" "$LOOP-tr" "$LOOP-lg"; do docker rm -f "$c" > /dev/null 2>&1 || true; done
-# Base 2 s, transient cap 2 s, long cap 600 s. Without the split, all three would retry every ~2 s.
-loop_env=(--no-deps -T -e "PGDATABASE=$SCRATCH" -e BACKUP_DIR=/tmp/smoke -e BACKUP_SSH_USER=fd -e "BACKUP_SSH_PATH=$RDIR"
+loop_env=(--no-deps -T -e "PGDATABASE=$SCRATCH" -e BACKUP_DIR=/tmp/smoke -e B2_BUCKET=flowdesk-smoke -e "B2_ENDPOINT=$EP" -e B2_REGION=us-east-1
+  -e "B2_KEY_ID=$W_ID" -e "B2_APPLICATION_KEY=$W_SECRET" -e B2_AUTHORIZE_URL=http://authstub:8080/write.json
   -e BACKUP_AT=00:00 -e BACKUP_TICK_SECONDS=1 -e BACKUP_RETRY_SECONDS=2 -e BACKUP_RETRY_CAP_SECONDS=2 -e BACKUP_RETRY_LONG_CAP_SECONDS=600)
-# configuration: the committed placeholder has no key -> NoRecipient -> exit 78 -> one attempt, then wait for the next slot
-docker compose run -d --name "$LOOP-cfg" "${loop_env[@]}" -e BACKUP_SSH_HOST=sink \
+docker compose run -d --name "$LOOP-cfg" "${loop_env[@]}" \
   -v "$(winpath "$PWD/infra/backup/recipients.txt"):/placeholder:ro" -e BACKUP_RECIPIENTS_FILE=/placeholder \
   backup bash -c 'mkdir -p /tmp/smoke && exec /opt/backup/backup-loop.sh' > /dev/null 2> "$work/err.log"
-# transient: the host does not resolve -> Unreachable -> exit 75 -> retried at the short cap
-docker compose run -d --name "$LOOP-tr" "${loop_env[@]}" -e BACKUP_SSH_HOST=nosuchhost.invalid \
+docker compose run -d --name "$LOOP-tr" "${loop_env[@]}" -e B2_ENDPOINT=http://nosuchhost.invalid:7070 \
   backup bash -c 'mkdir -p /tmp/smoke && exec /opt/backup/backup-loop.sh' > /dev/null 2> "$work/err.log"
-# long: the key is refused -> AuthRefused -> exit 1 -> backs off 2, 4, 8, 16 s toward the long cap
-docker compose run -d --name "$LOOP-lg" "${loop_env[@]}" -e BACKUP_SSH_HOST=sink -e BACKUP_SSH_KEY=/tmp/badkey \
-  backup bash -c 'mkdir -p /tmp/smoke && ssh-keygen -q -t ed25519 -N "" -f /tmp/badkey && exec /opt/backup/backup-loop.sh' > /dev/null 2> "$work/err.log"
+docker compose run -d --name "$LOOP-lg" "${loop_env[@]}" -e B2_AUTHORIZE_URL=http://authstub:8080/cgi-bin/refused \
+  backup bash -c 'mkdir -p /tmp/smoke && exec /opt/backup/backup-loop.sh' > /dev/null 2> "$work/err.log"
 sleep 16
 n_cfg=$(docker logs "$LOOP-cfg" 2>&1 | grep -c '"event":"backup_failed"' || true)
 n_tr=$(docker logs "$LOOP-tr" 2>&1 | grep -c '"event":"copy_failed"' || true)
 n_lg=$(docker logs "$LOOP-lg" 2>&1 | grep -c '"event":"copy_failed"' || true)
 docker logs "$LOOP-cfg" 2>&1 | grep -q '"event":"backup_not_retried"' || { docker logs "$LOOP-cfg" >&2; fail "a configuration failure should say it is not being retried"; }
-docker logs "$LOOP-tr" 2>&1 | grep -q '"error_class":"Unreachable"' || fail "the transient loop should be failing as Unreachable"
 docker logs "$LOOP-lg" 2>&1 | grep -q '"error_class":"AuthRefused"' || fail "the long loop should be failing as AuthRefused"
 for c in "$LOOP-cfg" "$LOOP-tr" "$LOOP-lg"; do docker rm -f "$c" > /dev/null; done
 [ "$n_cfg" = "1" ] || fail "configuration failure: wanted exactly 1 attempt in 16 s, got $n_cfg"
 [ "$n_tr" -ge 5 ] || fail "transient failure: wanted at least 5 attempts in 16 s at a 2 s cap, got $n_tr"
-[ "$n_lg" -ge 2 ] && [ "$n_lg" -le 4 ] || fail "long-cap failure: wanted 2 to 4 attempts in 16 s (2, 4, 8 s backoff), got $n_lg"
-echo "ok: in 16 s a missing key was tried $n_cfg time, an unreachable host $n_tr times, a refused key $n_lg times"
+[ "$n_lg" -ge 2 ] && [ "$n_lg" -le 4 ] || fail "alert (long-cap) failure: wanted 2 to 4 attempts in 16 s (2, 4, 8 s backoff), got $n_lg"
+echo "ok: in 16 s a missing key was tried $n_cfg time, an unreachable B2 $n_tr times, a refused key $n_lg times"
 
-echo "== no destination configured: the copy is recorded as skipped, never as a success"
-bk -e BACKUP_SSH_HOST= -- bash -c 'mkdir -p /tmp/smoke; /opt/backup/run-backup.sh >/dev/null; /opt/backup/run-copy.sh; echo "exit=$?"' > "$work/nc.out" || true
+echo "== no bucket configured: the copy is recorded as skipped, never as a success"
+bk -e B2_BUCKET= -- bash -c 'mkdir -p /tmp/smoke; /opt/backup/run-backup.sh >/dev/null; /opt/backup/run-copy.sh; echo "exit=$?"' > "$work/nc.out" || true
 grep -q '"event":"copy_not_configured"' "$work/nc.out" || { cat "$work/nc.out" >&2; fail "expected copy_not_configured"; }
 grep -q '^exit=0$' "$work/nc.out" || fail "an unconfigured copy should exit 0"
 h=$(health)
-[ "$h" = "backup=ok copy=not_configured copy_failed=False copy_error=NotConfigured" ] || fail "unexpected backup health: $h"
-echo "ok: $h"
+[ "$(pyq "b['copy']['state'], b['copy']['last_error_class']")" = "not_configured NotConfigured" ] || fail "unexpected backup health: $h"
+echo "ok: not_configured"
 
-echo "OK: M2 slice 2 smoke passed (encrypted, kept locally, copied over SFTP, restored with the private key only; no shell/delete/rename; an interrupted upload is stepped over by a new retry object on every policy, and a short object never restores; the probe tells no-delete from write-once and fails an open destination; fails closed with no recipient or path; a down destination fails the copy and not the backup; the scheduler catches up and pings; a refused key, a changed host key and an unreachable host are told apart and retried as each deserves; unconfigured is reported as such)"
+echo "== the secrets are nowhere they must not be: task_runs and /health/data"
+leaks=$(psql_pg -d "$SCRATCH" -c "select count(*) from task_runs where coalesce(error_message,'') || coalesce(error_class,'') ~ '($W_SECRET|$R_SECRET|$W_ID|$R_ID|$ROOT_SECRET)'")
+[ "$leaks" = "0" ] || fail "a key or key ID is stored in task_runs"
+body=$(curl -s --max-time 10 "http://127.0.0.1:${API_PORT:-8000}/health/data")
+case "$body" in *"$W_SECRET"* | *"$W_ID"* | *"$R_SECRET"*) fail "/health/data serves a key or key ID" ;; esac
+printf '%s\n' "$h" | grep -q "$W_SECRET\|$W_ID" && fail "the health body carries a key"
+echo "ok: no key or key ID in task_runs or /health/data"
+
+echo "OK: M2 slice 2 smoke passed (encrypted, kept locally, uploaded to a locked stand-in bucket once, restored on 'the laptop' with the read key and the private key only; the write key cannot read, delete or bypass; the probe passes both keys and fails an open bucket; a key that could undo the protection, a refused key, an unlocked bucket, a hide and an over-budget bucket each page once; transient failures retry soon and never page; fails closed with no recipient; a down B2 fails the copy and not the backup; health reports sizes, bucket bytes and budget; no secret stored or served)"

@@ -60,7 +60,91 @@ M14 = "alembic/versions/0014_macro_metrics_provider_claimed.py"
 F3_POLL = "tests/test_fred_poll.py"
 F3_SCHEMA = "tests/test_macro_metrics.py"
 
+HEALTH = "app/services/health.py"
+PROBES = "app/services/health_probes.py"
+
 SUITES: dict[str, tuple[str, list[Mutation]]] = {
+    # The B2 off-box copy's health (2026-11-25): every keyed read, and the budget lines.
+    "b2-backup": (
+        "tests/test_backup_health.py",
+        [
+            Mutation(
+                "the copy's fields come from the backup's row",
+                HEALTH,
+                "latest_copy = by_name.get(BACKUP_COPY) or {}",
+                "latest_copy = by_name.get(BACKUP) or {}",
+                "its_own_measurement",
+            ),
+            Mutation(
+                "tampered is read from any task's row",
+                HEALTH,
+                '"tampered": latest_copy.get("error_class") == "Tampered",',
+                '"tampered": any(t.get("error_class") == "Tampered" for t in tasks),',
+                "tampered_is_the_copys",
+            ),
+            Mutation(
+                "the over line is strict",
+                HEALTH,
+                "100 >= settings.BACKUP_BUDGET_BYTES * settings.BACKUP_BUDGET_OVER_PERCENT",
+                "100 > settings.BACKUP_BUDGET_BYTES * settings.BACKUP_BUDGET_OVER_PERCENT",
+                "budget_states",
+            ),
+            Mutation(
+                "the warn line is ignored",
+                HEALTH,
+                "100 >= settings.BACKUP_BUDGET_BYTES * settings.BACKUP_BUDGET_WARN_PERCENT",
+                "100 >= 10**30 * settings.BACKUP_BUDGET_WARN_PERCENT",
+                "budget_states",
+            ),
+            Mutation(
+                "weekly sizes are not shown",
+                HEALTH,
+                "for s in (backup_sizes or [])",
+                "for s in []",
+                "weekly_sizes",
+            ),
+            Mutation(
+                "the weekly query loses its task name",
+                PROBES,
+                "\"FROM task_runs WHERE task_name = :name AND status = 'succeeded' \"",
+                "\"FROM task_runs WHERE status = 'succeeded' \"",
+                "newest_successful_backup",
+                "tests/test_backup_sizes_db.py",
+            ),
+            Mutation(
+                "the weekly query loses its status",
+                PROBES,
+                "\"FROM task_runs WHERE task_name = :name AND status = 'succeeded' \"",
+                '"FROM task_runs WHERE task_name = :name "',
+                "newest_successful_backup",
+                "tests/test_backup_sizes_db.py",
+            ),
+            Mutation(
+                "the weekly query keeps rows with no size",
+                PROBES,
+                '"AND output_bytes IS NOT NULL "',
+                '""',
+                "newest_successful_backup",
+                "tests/test_backup_sizes_db.py",
+            ),
+            Mutation(
+                "the weekly query takes the oldest success of a week",
+                PROBES,
+                "\"ORDER BY date_trunc('week', completed_at) DESC, completed_at DESC \"",
+                "\"ORDER BY date_trunc('week', completed_at) DESC, completed_at ASC \"",
+                "newest_successful_backup",
+                "tests/test_backup_sizes_db.py",
+            ),
+            Mutation(
+                "the weekly query is unbounded",
+                PROBES,
+                '"LIMIT 8"',
+                '"LIMIT 100"',
+                "at_most_eight",
+                "tests/test_backup_sizes_db.py",
+            ),
+        ],
+    ),
     # F-6b, 2026-11-24: the rolled-off exemption (rules 3 and 5) and ADR-0003 addendum F3.
     "f3-rolling": (
         "tests/test_macro_f3_rolling.py",

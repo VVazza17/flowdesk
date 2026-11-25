@@ -731,6 +731,17 @@ All four ship in the image.
 - **certifi: a per-package MPL-2.0 exception**, the `pathspec` precedent, except that certifi SHIPS. **Condition: shipped unmodified, its source
   public on PyPI. A commercial distribution warrants a proper licence review.**
 
+**Addendum 2026-11-25 (the B2 off-box copy): licences outside the pip gate.** `tools/license_audit.py` reads pip metadata only, so
+nothing it runs covers what the backup image or the CI stand-in bring. Recorded here instead, each read from its own project:
+- **rclone 1.76.0: MIT** (its README: "free software under the terms of the MIT license"; GitHub; Alpine's metadata). SHIPS in the backup
+  image, pinned by version and SHA256 (`infra/backup/Dockerfile`; `backend/tests/test_backup_budget.py` pins the single definition).
+  A bump re-reads the licence (`docs/RUNBOOK-IMAGE-CVE.md`, "rclone").
+- **jq: MIT** (Alpine package, floating like the other apk packages in that image). Ships in the backup image.
+- **versitygw v1.11.0: Apache-2.0** (the image's `org.opencontainers.image.licenses` label, MEASURED 2026-11-25). **Test-only**: the CI
+  stand-in for B2 in `infra/smoke-m2-slice2.sh`, never shipped. Chosen over MinIO (AGPL-3.0), per Kyle (2026-11-25: MinIO only if versitygw
+  cannot do Object Lock, and only after asking); versitygw did Object Lock, versioning and per-user policies in the first measurement.
+- **The b2 command-line tool (v5.0.3): MIT**, Kyle's own machine only, for creating the bucket and keys. Not in any image.
+
 ---
 
 ## IDEA-028: Decision 14 bans bare "arbitrage"; §7.5, §15 and §17 ban only "arbitrage opportunity"

@@ -1,0 +1,43 @@
+# bash infra/smoke-m2-slice2.sh, run 2026-11-25 07:31Z on the B2 build (uncommitted tree); exit 0
+== the library's logic (schedule, catch-up, backoff, retention, recipients, S3 answers, capabilities, budget)
+ok: 124 assertions
+== a throwaway age key
+== a scratch database, migrated
+== the stand-in for B2 (versitygw) and for b2_authorize_account and the monitor (busybox httpd)
+ok: three buckets (two locked GOVERNANCE 30 days, one open), a writer and a reader
+== a backup is encrypted and kept locally; the copy uploads it, locked; a second copy sends nothing
+ok: flowdesk/flowdesk_smoke_s2_20261125T073157Z.tar.age, one version, GOVERNANCE (uploaded once, nothing the second time)
+== the copy restores on 'the laptop', with the READ key and the private age key only (restore-backup.sh --from-b2)
+ok: fetched flowdesk_smoke_s2_20261125T073157Z.tar.age and restored it into flowdesk_smoke_s2_restored
+ok: the write key cannot download
+== the probe: OK on the locked bucket with each key, FAIL on an open one
+ok: write key OK, read key OK, the open bucket FAILS (deleted, not locked)
+== the key check refuses a key that could undo the protection, and pages (exit 76)
+ok: a key with deleteFiles -> CapabilityTooBroad (exit 76)
+ok: a key not restricted to the bucket -> CapabilityTooBroad (exit 76)
+ok: a refused key (401) -> AuthRefused (exit 76)
+ok: an answer in another shape (v3) -> ConfigInvalid (exit 78)
+ok: a key for another bucket -> ConfigInvalid (exit 78)
+ok: a bucket with no lock -> NotLocked (exit 76)
+ok: a wrong secret on the S3 calls -> AuthRefused (exit 76)
+ok: no such endpoint -> Unreachable (exit 75)
+ok: the budget would be passed -> OverBudget (exit 76)
+== a delete marker under the backup prefix is tampering: uploads still go up, then the run fails and pages
+ok: Tampered (exit 76); the hidden version is still there and the new backup went up
+== no recipient key: the backup fails closed, writes nothing, and says why
+ok: refused, nothing written
+== B2 is unreachable: the backup still succeeds, only the copy fails (transient)
+ok: a failed copy is not a failed backup
+== health: both steps, from the rows the scripts wrote (sizes, bucket bytes, budget, copied-through)
+ok: backup ok, copy ok (last attempt Unreachable), destination b2, a weekly size of 217336 bytes
+== the scheduler catches up by itself, uploads, and pings the monitor
+ok: backed up once, uploaded, pinged the monitor
+== an alert class tells the monitor ONCE (POST <ping url>/fail, with the class); a transient failure never does
+ok: 11 CapabilityTooBroad failures, exactly 1 signal to the monitor; 11 Unreachable failures, none
+== each failure is retried as it deserves: transient soon, alerts slowly, configuration not at all
+ok: in 16 s a missing key was tried 1 time, an unreachable B2 9 times, a refused key 4 times
+== no bucket configured: the copy is recorded as skipped, never as a success
+ok: not_configured
+== the secrets are nowhere they must not be: task_runs, the containers' logs, /health/data
+ok: no key or key ID in task_runs or /health/data
+OK: M2 slice 2 smoke passed (encrypted, kept locally, uploaded to a locked stand-in bucket once, restored on 'the laptop' with the read key and the private key only; the write key cannot read, delete or bypass; the probe passes both keys and fails an open bucket; a key that could undo the protection, a refused key, an unlocked bucket, a hide and an over-budget bucket each page once; transient failures retry soon and never page; fails closed with no recipient; a down B2 fails the copy and not the backup; health reports sizes, bucket bytes and budget; no secret stored or served)

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Shared by the backup container's scripts and by prune.sh. Source it; it has no side effects on load.
+# Shared by the backup container's scripts. Source it; it has no side effects on load.
 # Runbook: docs/BACKUP.md
 
 # One JSON object per line on stdout, like the rest of the stack. Values have quotes, backslashes and
@@ -82,98 +82,229 @@ next_delay() {
 
 # --- what a failure means, and whether another attempt can help ---------------------------------------
 #
-# Two exit codes, borrowed from sysexits.h, tell the scheduler how to retry. Everything else that fails exits 1.
-#   75 EX_TEMPFAIL  a retry soon can change the outcome (the laptop comes home; Postgres finishes restarting)
+# Three exit codes tell the scheduler how to retry and whether to page. Everything else that fails exits 1.
+#   75 EX_TEMPFAIL  a retry soon can change the outcome (the network or B2 is back; Postgres finishes restarting)
+#   76 EX_ALERT     something the owner must hear about NOW: a refused key, a key holding capabilities it must not
+#                   have, an upload that is not locked, a delete marker FlowDesk did not make, the bucket over
+#                   budget. Retried like any long-cap failure; the scheduler POSTs to the monitor's /fail once per
+#                   occurrence (backup-loop.sh), since each attempt is a new process and cannot remember it did.
 #   78 EX_CONFIG    no number of attempts fixes it: a file nobody has edited, a setting nobody has changed
-#   76 EX_PROTOCOL  a pinned host key did not match. Retried like any long-cap failure; it has its own number only so
-#                   the scheduler can tell the monitor once (backup-loop.sh), since each attempt is a new process
 EX_TRANSIENT=75
-EX_HOSTKEY=76
+EX_ALERT=76
 EX_CONFIG=78
 
 # Which exit code a failure class gets.   exit_code_for_class CLASS
-# DECISION: split by whether a retry can help, not by step. Only a destination that cannot be reached is
-# transient. NoRecipient, ConfigInvalid and BadDatabaseName are configuration. Everything else gets the long
-# retry cap, deliberately including DumpFailed (pg_dump is expensive and a half hour rarely changes the answer)
-# and AuthRefused / HostKeyChanged: the fix for those may be made on the desktop, which this machine cannot see,
-# so it keeps trying, slowly, and a container restart tries at once.
+# DECISION: split by whether a retry can help, and by whether it pages. Only an unreachable or unavailable
+# destination is transient. Configuration is NoRecipient, ConfigInvalid, BadDatabaseName. The alert classes
+# (AuthRefused, CapabilityTooBroad, NotLocked, Tampered, OverBudget) page at once and back off to the long cap: the
+# fix is made in Backblaze's console, which this machine cannot see, so it keeps trying, slowly, and a container
+# restart tries at once. Everything else (DumpFailed, UploadFailed, SizeMismatch, ...) takes the long cap.
 exit_code_for_class() {
   case $1 in
-    Unreachable) echo "$EX_TRANSIENT" ;;
-    HostKeyChanged) echo "$EX_HOSTKEY" ;;
+    Unreachable | Unavailable) echo "$EX_TRANSIENT" ;;
+    AuthRefused | CapabilityTooBroad | NotLocked | Tampered | OverBudget) echo "$EX_ALERT" ;;
     NoRecipient | ConfigInvalid | BadDatabaseName) echo "$EX_CONFIG" ;;
     *) echo 1 ;;
   esac
 }
 
-# What an ssh/sftp failure was, from its exit code and the text it wrote to stderr (a file).
-#   classify_ssh_failure RC STDERR_FILE [KNOWN_HOSTS_FILE HOST PORT]      prints a class
+# --- Backblaze B2, through its S3-compatible API (2026-11-25; docs/BACKUP.md) -------------------------------
 #
-# sftp exits 255 when ssh itself failed, 124 when our `timeout` killed it, and anything else when the SFTP
-# session ran and an operation failed. Only 255 is read for text.
-#   HostKeyChanged  a key IS pinned for this host and what answered did not match it. Something other than the
-#                   desktop may have answered: a security signal, not an outage.
-#   ConfigInvalid   "No <type> host key is known for <host>" and NOTHING is pinned for the host: setup state, the
-#                   key was never pinned, so nothing can be impersonating it. The pinning step in docs/BACKUP.md.
-#                   DECISION: OpenSSH prints the same line when the host HAS pinned keys but the server offers a
-#                   type that is not among them, which is a mismatch. So the optional known_hosts arguments
-#                   decide: if ssh-keygen finds the host in the file, it is HostKeyChanged. Without them the
-#                   line reads as setup state.
-#   AuthRefused     the server answered and refused the key.
-#   Unreachable     everything else: resolution failures, timeouts, no route, connection refused and closed,
-#                   AND any message not recognised. DECISION: OpenSSH's wording is not a stable interface, so
-#                   an unrecognised message must never produce a confident wrong class; "host away" is the
-#                   mildest wrong answer and the monitor still pages when copies stop.
-# The patterns are anchored to the start of a line, as OpenSSH prints them (checked against OpenSSH 10.2), so a
-# phrase quoted in the middle of some other message does not count. This needs ssh at LogLevel=ERROR: with -q
-# every failure collapses to "Connection closed" and nothing here could tell them apart.
-classify_ssh_failure() {
-  local rc=$1 file=$2 kh=${3:-} host=${4:-} port=${5:-22}
-  case $rc in
-    255) ;;
-    124) echo Unreachable; return 0 ;;
-    *) echo SftpFailed; return 0 ;;
+# Two clients, each for what the other cannot do. rclone uploads (MIT, pinned by digest in the Dockerfile); curl's
+# --aws-sigv4 reads what rclone does not expose: an object's retention, and the version listing with its delete
+# markers. Neither ever sees the secret on its command line: rclone takes it from RCLONE_CONFIG_* in its own
+# environment, curl from a config on stdin. NOTHING a provider returns is logged or stored: B2's (and S3's) error
+# bodies echo the access key ID, which is itself a secret here, so only a class name ever leaves this file.
+
+# The SigV4 region for an endpoint: s3.<region>.backblazeb2.com -> <region>. B2_REGION overrides it (the stand-in).
+#   s3_region ENDPOINT
+s3_region() {
+  if [ -n "${B2_REGION:-}" ]; then echo "$B2_REGION"; return 0; fi
+  local host=${1#*://}
+  host=${host%%/*}
+  [[ $host =~ ^s3\.([a-z0-9-]+)\.backblazeb2\.com$ ]] || return 1
+  echo "${BASH_REMATCH[1]}"
+}
+
+# One signed S3 request. Body to OUT, HTTP code on stdout ("000" when nothing answered). The key pair comes from
+# S3_KEY_ID / S3_SECRET in the environment and reaches curl on stdin, never on its argv.
+#   s3_request METHOD PATH_AND_QUERY OUT [extra curl args...]
+s3_request() {
+  local method=$1 path=$2 out=$3 region
+  shift 3
+  region=$(s3_region "$B2_ENDPOINT") || { echo 000; return 1; }
+  printf 'user = "%s:%s"\n' "$S3_KEY_ID" "$S3_SECRET" |
+    curl -sS -K - -o "$out" -w '%{http_code}' -m 60 --aws-sigv4 "aws:amz:$region:s3" -X "$method" "$@" \
+      "${B2_ENDPOINT%/}/$path" 2> /dev/null || true
+}
+
+# What an HTTP answer was.   classify_http CODE   (prints a class; "ok" for 2xx)
+#   000 (nothing answered), 429 and 5xx are transient. 401/403 are the key. 404 is the bucket or the object not
+#   being there: configuration. Anything else is S3Failed, the long cap.
+classify_http() {
+  case $1 in
+    2??) echo ok ;;
+    000 | 429 | 5??) echo Unreachable ;;
+    401 | 403) echo AuthRefused ;;
+    404) echo ConfigInvalid ;;
+    *) echo S3Failed ;;
   esac
-  # Checked first: this line is followed by "Host key verification failed.", which would otherwise match below.
-  if grep -Eq '^No [A-Za-z0-9-]+ host key is known for ' "$file" 2> /dev/null; then
-    if [ -n "$kh" ] && [ -n "$host" ]; then
-      [ "$port" = 22 ] || host="[$host]:$port"
-      if ssh-keygen -F "$host" -f "$kh" > /dev/null 2>&1; then echo HostKeyChanged; return 0; fi
-    fi
-    echo ConfigInvalid
-  elif grep -Eq '^Host key verification failed\.|^@ +WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!|^Host key for .+ has changed' "$file" 2> /dev/null; then
-    echo HostKeyChanged
-  elif grep -Eq '^[^ ]+: Permission denied \(' "$file" 2> /dev/null; then
+}
+
+# What an rclone failure was, from its exit code and stderr (a file). Unrecognised text is UploadFailed (the long
+# cap), never a confident wrong class.   classify_rclone RC ERRFILE
+classify_rclone() {
+  local rc=$1 file=$2
+  [ "$rc" -ne 0 ] || { echo ok; return 0; }
+  [ "$rc" -ne 124 ] || { echo Unreachable; return 0; }   # our own timeout
+  if grep -Eq 'StatusCode: 40[13]|SignatureDoesNotMatch|InvalidAccessKeyId|AccessDenied|api error Forbidden' "$file" 2> /dev/null; then
     echo AuthRefused
-  else
+  elif grep -Eq 'dial tcp|no such host|connection refused|i/o timeout|TLS handshake timeout|context deadline exceeded|StatusCode: (429|5[0-9][0-9])' "$file" 2> /dev/null; then
     echo Unreachable
+  else
+    echo UploadFailed
   fi
 }
 
-# Is HOST a bare IP address rather than a name?   host_is_bare_ip HOST   (true = bare IP)
-# DECISION: BACKUP_SSH_HOST must be a name, because HostKeyChanged pages the owner at once (run-copy.sh). A private
-# IP is not an identity: on another network the same address belongs to someone else's machine, the pinned key
-# does not match, and the owner is paged for going to work. A name that resolves only at home is Unreachable
-# everywhere else, which is the quiet answer. So: anything with a colon (IPv6, bracketed or not) or made only of
-# digits and dots (IPv4, in any spelling) is refused.
-host_is_bare_ip() {
-  case $1 in
-    '') return 1 ;;
-    *:* | \[*) return 0 ;;
-    *[!0-9.]*) return 1 ;;
-    *) return 0 ;;
-  esac
+# The version listing of an S3 ListObjectVersions answer, one line per entry:
+#   V <key> <size> <versionId> <isLatest>      a stored version
+#   D <key> <versionId> <isLatest>             a delete marker (B2: a "hide")
+# and, last, "T <true|false> <nextKeyMarker> <nextVersionIdMarker>" for paging. Keys are FlowDesk's own names
+# (letters, digits, _ . / -), so plain text extraction is enough; a key with XML escapes would print escaped.
+#   parse_versions FILE
+parse_versions() {
+  tr '<' '\n' < "$1" | awk -F'>' '
+    $1 == "Version"           { kind = "V"; k = ""; s = ""; v = ""; l = ""; next }
+    $1 == "DeleteMarker"      { kind = "D"; k = ""; v = ""; l = ""; next }
+    $1 == "/Version"          { print "V", k, s, v, l; kind = ""; next }
+    $1 == "/DeleteMarker"     { print "D", k, v, l; kind = ""; next }
+    kind != "" && $1 == "Key"       { k = $2 }
+    kind != "" && $1 == "Size"      { s = $2 }
+    kind != "" && $1 == "VersionId" { v = $2 }
+    kind != "" && $1 == "IsLatest"  { l = $2 }
+    kind == "" && $1 == "IsTruncated"         { t = $2 }
+    kind == "" && $1 == "NextKeyMarker"       { nk = $2 }
+    kind == "" && $1 == "NextVersionIdMarker" { nv = $2 }
+    END { print "T", (t == "" ? "false" : t), (nk == "" ? "-" : nk), (nv == "" ? "-" : nv) }'
 }
 
-# Said wherever a bare IP is refused.
-bare_ip_message() { # HOST
-  printf 'BACKUP_SSH_HOST is a bare IP address (%s). Use a hostname that resolves only on your home network. On any other network that address can belong to a stranger'"'"'s machine, which reads as a changed host key and pages you. A name that does not resolve away from home is just Unreachable, the quiet answer. A hosts-file or extra_hosts entry that maps the name to the IP defeats this and is the same thing as a bare IP.' "$1"
+# Every version and delete marker in the bucket (all pages), parsed, into OUT. Prints the HTTP class: "ok", or
+# what went wrong (OUT is then incomplete and must not be used).   list_all_versions BUCKET PREFIX OUT
+list_all_versions() {
+  local bucket=$1 prefix=$2 out=$3 km="" vm="" page code cls q trunc
+  page=$(mktemp)
+  : > "$out"
+  while :; do
+    q="$bucket?versions&max-keys=1000"
+    [ -z "$prefix" ] || q+="&prefix=$prefix"
+    [ -z "$km" ] || q+="&key-marker=$km"
+    [ -z "$vm" ] || q+="&version-id-marker=$vm"
+    code=$(s3_request GET "$q" "$page")
+    cls=$(classify_http "$code")
+    if [ "$cls" != ok ]; then rm -f "$page" "$page.p"; echo "$cls"; return 0; fi
+    parse_versions "$page" > "$page.p"
+    grep -v '^T ' "$page.p" >> "$out"
+    read -r _ trunc km vm < <(grep '^T ' "$page.p")
+    rm -f "$page.p"
+    [ "$trunc" = true ] || break
+    [ "$km" != "-" ] || km=""
+    [ "$vm" != "-" ] || vm=""
+  done
+  rm -f "$page"
+  echo ok
 }
 
-# Tell the monitor now. POSTs to the ping URL's /fail. Prints nothing (the URL is a credential); returns 0 only if the
-# monitor accepted it.   signal_monitor_fail URL
+# Every version's bytes, hidden ones included (whether B2 bills hidden versions is not documented: ASSUMED billed).
+#   bucket_bytes < parsed-listing
+bucket_bytes() { awk '$1 == "V" { n += $3 } END { printf "%d\n", n }'; }
+
+# Delete markers under PREFIX. FlowDesk never makes one there, so any is tampering (or a person in the console).
+#   delete_markers PREFIX < parsed-listing
+delete_markers() { awk -v p="$1" '$1 == "D" && index($2, p) == 1 { print $2 }'; }
+
+# The bucket against B2's always-free 10 GB (Kyle, 2026-11-25): ok, warn from 80%, over from 95%. The same numbers
+# as app/settings.py (BACKUP_BUDGET_*), pinned equal by backend/tests/test_backup_budget.py.
+#   budget_state BYTES BUDGET
+BUDGET_WARN_PERCENT=80
+BUDGET_OVER_PERCENT=95
+budget_state() {
+  if [ $(($1 * 100)) -ge $(($2 * BUDGET_OVER_PERCENT)) ]; then echo over
+  elif [ $(($1 * 100)) -ge $(($2 * BUDGET_WARN_PERCENT)) ]; then echo warn
+  else echo ok
+  fi
+}
+
+# Is an object locked as the bucket's default should lock it? GOVERNANCE, retained at least DAYS-1 days from NOW
+# (one day of slack: B2 rounds and the clocks differ). Reads an S3 GetObjectRetention answer.
+#   retention_ok FILE NOW_EPOCH DAYS
+retention_ok() {
+  local mode until_s until_e
+  mode=$(tr '<' '\n' < "$1" | awk -F'>' '$1 == "Mode" { print $2 }')
+  until_s=$(tr '<' '\n' < "$1" | awk -F'>' '$1 == "RetainUntilDate" { print $2 }')
+  [ "$mode" = GOVERNANCE ] || return 1
+  [ -n "$until_s" ] || return 1
+  until_e=$(date -u -d "$(printf '%s' "$until_s" | sed 's/T/ /; s/\.[0-9]*//; s/Z$//')" +%s 2> /dev/null) || return 1
+  [ "$until_e" -ge $(($2 + ($3 - 1) * 86400)) ]
+}
+
+# The two keys' capabilities (docs/BACKUP.md, "The two keys"). Exactly these and no others; listBuckets and
+# listAllBucketNames are needed for S3 compatibility (Backblaze's S3 app-keys page).
+WRITE_CAPABILITIES="listBuckets listAllBucketNames listFiles writeFiles readFileRetentions"
+READ_CAPABILITIES="listBuckets listAllBucketNames listFiles readFiles readFileRetentions"
+
+# Judge a b2_authorize_account (v2) answer: the key must be restricted to BUCKET and hold no capability outside the
+# set for MODE. Prints ok, CapabilityTooBroad (an extra capability, or no bucket restriction: pages), ConfigInvalid
+# (another bucket, or a required capability missing) or CapabilityUnknown (the answer is not the shape expected:
+# ASSUMED v2 shape, so a changed API fails closed instead of passing). With CAP_INFO_FILE set, also writes the
+# bucket and capability NAMES there (not secret) for the probe to show.   judge_capabilities FILE BUCKET write|read
+judge_capabilities() {
+  local file=$1 bucket=$2 mode=$3 allowed caps name c extra="" missing=""
+  allowed=$WRITE_CAPABILITIES
+  [ "$mode" = write ] || allowed=$READ_CAPABILITIES
+  name=$(jq -r '.allowed.bucketName // empty' "$file" 2> /dev/null) || { echo CapabilityUnknown; return 0; }
+  caps=$(jq -r '.allowed.capabilities[]?' "$file" 2> /dev/null | tr '\n' ' ') || { echo CapabilityUnknown; return 0; }
+  [ -n "$caps" ] || { echo CapabilityUnknown; return 0; }
+  [ -z "${CAP_INFO_FILE:-}" ] || echo "bucket=${name:-<all buckets>} capabilities=${caps% }" > "$CAP_INFO_FILE"
+  [ -n "$name" ] || { echo CapabilityTooBroad; return 0; }
+  [ "$name" = "$bucket" ] || { echo ConfigInvalid; return 0; }
+  for c in $caps; do
+    case " $allowed " in *" $c "*) ;; *) extra+="$c " ;; esac
+  done
+  [ -z "$extra" ] || { echo CapabilityTooBroad; return 0; }
+  for c in listFiles readFileRetentions; do
+    case " $caps " in *" $c "*) ;; *) missing+="$c " ;; esac
+  done
+  if [ "$mode" = write ]; then case " $caps " in *" writeFiles "*) ;; *) missing+="writeFiles " ;; esac; fi
+  if [ "$mode" = read ]; then case " $caps " in *" readFiles "*) ;; *) missing+="readFiles " ;; esac; fi
+  [ -z "$missing" ] || { echo ConfigInvalid; return 0; }
+  echo ok
+}
+
+# Ask B2 what the key in S3_KEY_ID / S3_SECRET may do, and judge it.   check_key BUCKET write|read
+# Prints a class. The answer holds an authorization token: it stays in a private temp file and is deleted.
+check_key() {
+  local out code cls
+  out=$(mktemp)
+  code=$(printf 'user = "%s:%s"\n' "$S3_KEY_ID" "$S3_SECRET" |
+    curl -sS -K - -o "$out" -w '%{http_code}' -m 30 "${B2_AUTHORIZE_URL:-https://api.backblazeb2.com/b2api/v2/b2_authorize_account}" 2> /dev/null || true)
+  cls=$(classify_http "$code")
+  if [ "$cls" = ok ]; then judge_capabilities "$out" "$1" "$2"; else echo "$cls"; fi
+  rm -f "$out"
+}
+
+# Is a local backup young enough to upload? Only backups younger than the lock period go to B2: an older one would
+# be locked for less time than the rule promises, and after lifecycle deleted its first copy it would be uploaded
+# again, every day, forever.   upload_wanted NAME NOW_EPOCH DAYS
+upload_wanted() {
+  local e
+  e=$(name_epoch "$1") || return 1
+  [ $(($2 - e)) -lt $(($3 * 86400)) ]
+}
+
+# Tell the monitor now. POSTs the class to the ping URL's /fail. Prints nothing (the URL is a credential); returns 0
+# only if the monitor accepted it.   signal_monitor_fail URL CLASS
 signal_monitor_fail() {
-  curl -fsS -m 10 --retry 2 -o /dev/null -d HostKeyChanged "$(fail_ping_url "$1")" 2> /dev/null
+  curl -fsS -m 10 --retry 2 -o /dev/null -d "${2:-Alert}" "$(fail_ping_url "$1")" 2> /dev/null
 }
 
 # The monitor's failure endpoint for a ping URL: /fail appended to the path, ahead of any query string.
@@ -216,7 +347,8 @@ retry_plan() {
 # DECISION: "weeks" are 7-day buckets counted from the epoch, not ISO calendar weeks. Same count of weekly
 # copies, no calendar library.
 #
-# Retry objects (<db>_<stamp>.r<N>.tar.age, made when an upload was interrupted; see run-copy.sh) sort
+# Retry objects (<db>_<stamp>.r<N>.tar.age) were made by the SFTP copy, removed 2026-11-25; none are made now, and
+# the rule below is kept so an old local volume still prunes right. They sort
 # AFTER the plain name for the same stamp, so the highest-numbered object of a backup is the one kept and
 # the short ones below it are deleted. That is right because a retry is only ever made when every lower
 # object is short. Known edge: if the newest backup of a day has ONLY short objects when this runs (its upload
@@ -284,13 +416,19 @@ task_start() {
 }
 
 #   task_finish ID STATUS [ERROR_CLASS [ERROR_MESSAGE]]
+# TASK_OUTPUT_BYTES and TASK_OUTPUT_WATERMARK (epoch seconds) in the environment, when set, go to task_runs'
+# output_bytes (migration 0015) and output_watermark: what the run measured, on success or failure.
 task_finish() {
-  local id=$1 status=$2 cls=${3:-} msg=${4:-}
+  local id=$1 status=$2 cls=${3:-} msg=${4:-} bytes=${TASK_OUTPUT_BYTES:-} wm=${TASK_OUTPUT_WATERMARK:-}
   [[ $id =~ ^[0-9]+$ ]] || return 1
-  psqlc -v id="$id" -v st="$status" -v cls="$cls" -v msg="${msg:0:500}" <<'SQL'
+  [[ $bytes =~ ^[0-9]*$ ]] || bytes=""
+  [[ $wm =~ ^[0-9]*$ ]] || wm=""
+  psqlc -v id="$id" -v st="$status" -v cls="$cls" -v msg="${msg:0:500}" -v bytes="$bytes" -v wm="$wm" <<'SQL'
 UPDATE task_runs
    SET status = :'st', completed_at = now(), heartbeat_at = now(),
-       error_class = NULLIF(:'cls', ''), error_message = NULLIF(:'msg', '')
+       error_class = NULLIF(:'cls', ''), error_message = NULLIF(:'msg', ''),
+       output_bytes = NULLIF(:'bytes', '')::bigint,
+       output_watermark = to_timestamp(NULLIF(:'wm', '')::double precision)
  WHERE id = :id;
 SQL
 }

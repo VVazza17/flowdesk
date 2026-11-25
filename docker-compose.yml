@@ -196,28 +196,20 @@ services:
       BACKUP_RETRY_LONG_CAP_MINUTES: ${BACKUP_RETRY_LONG_CAP_MINUTES:-360}
       BACKUP_KEEP_DAILY: ${BACKUP_KEEP_DAILY:-14}
       BACKUP_KEEP_WEEKLY: ${BACKUP_KEEP_WEEKLY:-8}
-      # Blank host = no off-box copy: recorded as not_configured on /health/data, never as a success.
-      BACKUP_SSH_HOST: ${BACKUP_SSH_HOST:-}
-      BACKUP_SSH_USER: ${BACKUP_SSH_USER:-}
-      BACKUP_SSH_PORT: ${BACKUP_SSH_PORT:-22}
-      # No default, on purpose: the copy refuses to run without it. See run-copy.sh.
-      BACKUP_SSH_PATH: ${BACKUP_SSH_PATH:-}
+      # The off-box copy to Backblaze B2 (2026-11-25; docs/BACKUP.md). Blank bucket = no off-box copy: recorded
+      # as not_configured on /health/data, never as a success. The key ID and key are SECRETS: .env only.
+      B2_BUCKET: ${B2_BUCKET:-}
+      B2_ENDPOINT: ${B2_ENDPOINT:-}
+      B2_KEY_ID: ${B2_KEY_ID:-}
+      B2_APPLICATION_KEY: ${B2_APPLICATION_KEY:-}
+      # The bucket's default retention, which the copy checks every upload against; set on the bucket, not here.
+      B2_LOCK_DAYS: ${B2_LOCK_DAYS:-30}
       BACKUP_PING_URL: ${BACKUP_PING_URL:-}
     volumes:
       # The encrypted backups kept locally. `docker compose down -v` wipes them with the database; the
       # off-box copy is what survives that.
       - backups:/backups
-      # Long syntax, because a Windows path like C:/Users/... breaks the short form's colon parsing. The
-      # default is an empty committed file, so an unset variable mounts nothing useful and ssh reports
-      # "no SSH key" instead of Docker creating a directory by that name.
-      - type: bind
-        source: ${BACKUP_SSH_KEY_FILE:-./infra/backup/unset}
-        target: /mnt/ssh_key
-        read_only: true
-      - type: bind
-        source: ${BACKUP_SSH_KNOWN_HOSTS_FILE:-./infra/backup/unset}
-        target: /mnt/known_hosts
-        read_only: true
+      # Long syntax, because a Windows path like C:/Users/... breaks the short form's colon parsing.
       - type: bind
         source: ${BACKUP_RECIPIENTS_FILE:-./infra/backup/recipients.txt}
         target: /etc/backup/recipients.txt

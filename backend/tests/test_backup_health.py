@@ -187,3 +187,101 @@ def test_the_default_stale_window_is_36_hours(monkeypatch: pytest.MonkeyPatch) -
 
     monkeypatch.delenv("BACKUP_STALE_AFTER_HOURS", raising=False)
     assert settings.backup_stale_after() == timedelta(hours=36)
+
+
+# --- the B2 copy's fields (2026-11-25) ------------------------------------------------------------
+
+
+def with_bytes(
+    row: dict[str, Any], output_bytes: int | None, watermark: str | None = None
+) -> dict[str, Any]:
+    return {**row, "output_bytes": output_bytes, "output_watermark": watermark}
+
+
+def test_budget_states_follow_the_free_tier_line() -> None:
+    from app.services.health import budget_state
+
+    assert budget_state(None) is None
+    assert budget_state(0) == "ok"
+    assert budget_state(7_999_999_999) == "ok"
+    assert budget_state(8_000_000_000) == "warn"
+    assert budget_state(9_499_999_999) == "warn"
+    assert budget_state(9_500_000_000) == "over"
+
+
+def test_the_copy_reports_its_own_measurement_not_the_backups() -> None:
+    """Rule 9: the backup row carries a LARGER output_bytes (and a later watermark) than the copy
+    row.
+    A lookup that lost its task name would report the backup's numbers as the bucket's."""
+    probes = FakeProbes(
+        tasks=[
+            with_bytes(run(BACKUP, "succeeded"), 9_900_000_000, "2026-11-09T03:00:00+00:00"),
+            with_bytes(run(BACKUP_COPY, "succeeded"), 4_000_000, "2026-11-08T03:00:00+00:00"),
+        ],
+        successes={BACKUP: NOW, BACKUP_COPY: NOW},
+    )
+    copy = client(probes).get("/health/data").json()["backups"]["copy"]
+    assert copy["destination"] == "b2"
+    assert copy["bucket_bytes"] == 4_000_000
+    assert copy["budget_bytes"] == 10_000_000_000
+    assert copy["budget_state"] == "ok"
+    assert copy["copied_through"] == "2026-11-08T03:00:00+00:00"
+    assert copy["tampered"] is False
+
+
+def test_an_over_budget_failure_still_reports_what_it_measured() -> None:
+    probes = FakeProbes(
+        tasks=[with_bytes(run(BACKUP_COPY, "failed", "OverBudget"), 9_600_000_000)],
+        successes={BACKUP_COPY: NOW - timedelta(hours=30)},
+    )
+    copy = client(probes).get("/health/data").json()["backups"]["copy"]
+    assert copy["budget_state"] == "over"
+    assert copy["last_error_class"] == "OverBudget"
+    assert (
+        copy["state"] == "ok"
+    )  # an earlier copy is recent enough; the page comes from the monitor's /fail
+
+
+def test_tampered_is_the_copys_own_verdict() -> None:
+    """Rule 9: the BACKUP row is the one that says Tampered here; only the copy's row may set
+    the flag."""
+    probes = FakeProbes(
+        tasks=[run(BACKUP, "failed", "Tampered"), run(BACKUP_COPY, "succeeded")],
+        successes={BACKUP: NOW, BACKUP_COPY: NOW},
+    )
+    assert client(probes).get("/health/data").json()["backups"]["copy"]["tampered"] is False
+    probes = FakeProbes(
+        tasks=[run(BACKUP, "succeeded"), run(BACKUP_COPY, "failed", "Tampered")],
+        successes={BACKUP: NOW, BACKUP_COPY: NOW},
+    )
+    assert client(probes).get("/health/data").json()["backups"]["copy"]["tampered"] is True
+
+
+def test_weekly_sizes_are_shown_newest_first() -> None:
+    class WithSizes(FakeProbes):
+        async def data_state(self) -> dict[str, list[dict[str, Any]]]:
+            return {
+                "ingestion": [],
+                "backfills": [],
+                "tasks": self.tasks,
+                "backup_sizes": [
+                    {"week_start": "2026-11-09T00:00:00+00:00", "bytes": 1_800_000, "at": "x"},
+                    {"week_start": "2026-11-02T00:00:00+00:00", "bytes": 1_720_000, "at": "y"},
+                ],
+            }
+
+    backup = client(WithSizes()).get("/health/data").json()["backups"]["backup"]
+    assert backup["sizes_weekly"] == [
+        {"week_start": "2026-11-09T00:00:00+00:00", "bytes": 1_800_000},
+        {"week_start": "2026-11-02T00:00:00+00:00", "bytes": 1_720_000},
+    ]
+
+
+def test_no_measurement_yet() -> None:
+    probes = FakeProbes(tasks=[run(BACKUP_COPY, "skipped", "NotConfigured")])
+    copy = client(probes).get("/health/data").json()["backups"]["copy"]
+    assert (copy["bucket_bytes"], copy["budget_state"], copy["copied_through"]) == (
+        None,
+        None,
+        None,
+    )

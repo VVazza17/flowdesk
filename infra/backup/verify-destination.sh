@@ -1,121 +1,153 @@
 #!/usr/bin/env bash
-# Probe the real destination for the one property the whole design rests on: THIS KEY CANNOT DELETE OR RENAME.
-# Runs inside the backup container, with the same key, host-key pinning and path the copy step uses.
-#   docker compose exec -u postgres backup /opt/backup/verify-destination.sh
+# The probe for the real B2 bucket (2026-11-25). Run it once after setup, then quarterly and after any rclone bump.
+# It proves what the copy relies on but never does itself. Runbook: docs/BACKUP.md
 #
-# It reports, it does not change the destination's rules. It leaves one small file behind, named
-# flowdesk-probe-<UTC stamp>.tar.age (the retention rule ignores that name); delete it on the destination as
-# an administrator. That it cannot be deleted from here is the point.
+#   write mode (default), on the stack machine, with the write key from .env:
+#     docker compose -p flowdesk exec -u postgres backup /opt/backup/verify-destination.sh
+#   read mode, on the laptop, with the read key (B2_KEY_ID / B2_APPLICATION_KEY set to the READ key for this run):
+#     ... /opt/backup/verify-destination.sh --read
 #
-# Exit status: 0 when the key cannot delete or rename and can create; 1 otherwise.
-#   policy "write-once":  create works; overwrite, append, delete, rename and mkdir are all refused.
-#   policy "no-delete":   create works; delete and rename are refused, but an existing file CAN be overwritten,
-#                         so a stolen key can still destroy a backup by truncating it.
+# Write mode, in order:
+#   1. the key holds exactly the write capabilities and is restricted to the bucket (no deleteFiles, no
+#      bypassGovernance, no readFiles, ...);
+#   2. a probe upload to probe/ succeeds;
+#   3. it is locked GOVERNANCE for B2_LOCK_DAYS days (the bucket's default retention);
+#   4. deleting that VERSION is refused;
+#   5. deleting it with x-amz-bypass-governance-retention is refused;
+#   6. a same-name upload leaves the original version listed, at its size (B2 cannot refuse the upload; it keeps
+#      the old version, which is what "cannot overwrite" means here);
+#   7. a hide (delete without a version id) is RECORDED: Backblaze documents that writeFiles allows it. Either way the
+#      locked version must still be listed afterwards;
+#   8. the bucket against the budget.
+# Read mode: the read capabilities; the newest backup under the prefix downloads at its listed size; an upload is
+# refused.
+#
+# Probe objects are a few bytes, under probe/, and stay locked for the lock period: expected, and counted in the
+# budget. Nothing provider-written is printed: classes and our own words only (B2's error bodies echo the key ID).
 set -uo pipefail
 here=$(dirname "$0")
 # shellcheck source=lib.sh
 . "$here/lib.sh"
 
-KEY=${BACKUP_SSH_KEY:-/run/backup/id_key}
-KNOWN_HOSTS=${BACKUP_SSH_KNOWN_HOSTS:-/run/backup/known_hosts}
-for v in BACKUP_SSH_HOST BACKUP_SSH_USER BACKUP_SSH_PATH; do
-  [ -n "${!v:-}" ] || { echo "FAIL: $v is empty (set it in .env)"; exit 1; }
-done
-if host_is_bare_ip "$BACKUP_SSH_HOST"; then echo "FAIL: $(bare_ip_message "$BACKUP_SSH_HOST")"; exit 1; fi
-[ -s "$KEY" ] && [ -s "$KNOWN_HOSTS" ] || { echo "FAIL: no SSH key or known_hosts mounted (BACKUP_SSH_KEY_FILE, BACKUP_SSH_KNOWN_HOSTS_FILE)"; exit 1; }
-
-rdir=${BACKUP_SSH_PATH%/}
-target="${BACKUP_SSH_USER}@${BACKUP_SSH_HOST}"
-# LogLevel=ERROR and not -q: -q silences ssh's own error text, so a changed host key could not be told from a sleeping
-# desktop (classify_ssh_failure, lib.sh). The class printed on a failure is the one docs/HEALTH.md documents.
-sftp_opts=(-o LogLevel=ERROR -F /dev/null -i "$KEY" -P "${BACKUP_SSH_PORT:-22}"
-  -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$KNOWN_HOSTS"
-  -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
-
-work=$(mktemp -d /tmp/verify.XXXXXX)
+mode=write
+[ "${1:-}" != "--read" ] || mode=read
+LOCK_DAYS=${B2_LOCK_DAYS:-30}
+PREFIX=${B2_PREFIX:-flowdesk/}
+BUDGET=${BACKUP_BUDGET_BYTES:-10000000000}
+work=$(mktemp -d /tmp/probe.XXXXXX)
 trap 'rm -rf "$work"' EXIT
-stamp=$(date -u +%Y%m%dT%H%M%SZ)
-probe="flowdesk-probe-$stamp.tar.age"
-head -c 100 /dev/urandom > "$work/a"
-head -c 200 /dev/urandom > "$work/b"
-
-try() { # sets last_rc, and returns it
-  printf '%s\n' "$1" | timeout 120 sftp "${sftp_opts[@]}" -b - "$target" > "$work/out" 2> "$work/err"
-  last_rc=$?
-  return "$last_rc"
-}
-# "<Class>: what it means" for the failure of the LAST try. Same class names and meanings as docs/HEALTH.md.
-why() {
-  local cls
-  cls=$(classify_ssh_failure "$last_rc" "$work/err" "$KNOWN_HOSTS" "$BACKUP_SSH_HOST" "${BACKUP_SSH_PORT:-22}")
-  case $cls in
-    HostKeyChanged) echo "HostKeyChanged: a pinned host key did not match. Something other than the desktop may have answered; do not proceed until you know why" ;;
-    ConfigInvalid) echo "ConfigInvalid: no host key is pinned for this host. Pin it first (docs/BACKUP.md), comparing the fingerprint on the desktop" ;;
-    AuthRefused) echo "AuthRefused: the server answered and refused the key (the account or authorized_keys on the desktop)" ;;
-    Unreachable) echo "Unreachable: the desktop is away or asleep, the name does not resolve here, or the port is blocked" ;;
-    SftpFailed) echo "SftpFailed: connected and authenticated, but the SFTP operation failed (path or permissions)" ;;
-    *) echo "$cls" ;;
-  esac
-}
-# What ssh said, flattened to one line.   said FILE
-said() { tail -c 300 "$1" | tr '\n' ' '; }
-size_of() { # NAME -> bytes on the destination, or empty; ssh's text goes to $work/size_err
-  printf 'ls -l "%s"\n' "$rdir" | timeout 120 sftp "${sftp_opts[@]}" -b - "$target" 2> "$work/size_err" |
-    awk -v n="$1" 'NF >= 9 { b = $NF; sub(/^.*[\/\\]/, "", b); if (b == n) print $(NF-4) }'
-}
 bad=0
-row() { printf '%-44s %s\n' "$1" "$2"; }
+ok() { echo "  OK    $1"; }
+no() { echo "  FAIL  $1"; bad=1; }
+note() { echo "  NOTE  $1"; }
+finish() {
+  if [ "$bad" -eq 0 ]; then echo "RESULT: OK ($mode key)"; exit 0; fi
+  echo "RESULT: FAIL ($mode key)"; exit 1
+}
 
-try "ls -l \"$rdir\"" || { row "connect and list $rdir" "FAIL (exit $last_rc)"; echo "  $(why)"; echo "  ssh said: $(said "$work/err")"; exit 1; }
-row "connect and list $rdir" "ok"
+for v in B2_BUCKET B2_ENDPOINT B2_KEY_ID B2_APPLICATION_KEY; do
+  [ -n "${!v:-}" ] || { echo "  FAIL  $v is empty (.env; docs/BACKUP.md)"; echo "RESULT: FAIL ($mode key)"; exit 1; }
+done
+s3_region "$B2_ENDPOINT" > /dev/null || { echo "  FAIL  B2_ENDPOINT is not https://s3.<region>.backblazeb2.com"; echo "RESULT: FAIL ($mode key)"; exit 1; }
+export S3_KEY_ID=$B2_KEY_ID S3_SECRET=$B2_APPLICATION_KEY
+echo "== $mode key, bucket $B2_BUCKET"
 
-try "put \"$work/a\" \"$rdir/$probe\"" || { row "create a new file" "FAIL (exit $last_rc)"; echo "  $(why)"; echo "  ssh said: $(said "$work/err")"; exit 1; }
-got=$(size_of "$probe")
-[ "$got" = "100" ] || { row "create a new file" "FAIL: uploaded 100 bytes, destination reports '$got'"; echo "  ssh said: $(said "$work/size_err")"; exit 1; }
-row "create a new file (100 bytes, size confirmed)" "ok"
+echo "-- 1. what the key may do"
+export CAP_INFO_FILE=$work/caps
+cls=$(check_key "$B2_BUCKET" "$mode")
+[ ! -s "$CAP_INFO_FILE" ] || echo "        $(cat "$CAP_INFO_FILE")"
+if [ "$cls" = ok ]; then ok "exactly the $mode capabilities, restricted to $B2_BUCKET"; else no "the key: $cls"; finish; fi
 
-if try "put \"$work/b\" \"$rdir/$probe\""; then
-  overwrite=allowed
-  row "overwrite it with 200 bytes" "ALLOWED  (a stolen key could truncate existing backups)"
-else
-  overwrite=refused
-  row "overwrite it with 200 bytes" "refused  (good)"
-fi
+rclone_put() { # LOCAL KEY
+  RCLONE_CONFIG_B2_TYPE=s3 RCLONE_CONFIG_B2_PROVIDER=Other RCLONE_CONFIG_B2_ENDPOINT="$B2_ENDPOINT" \
+    RCLONE_CONFIG_B2_REGION="$(s3_region "$B2_ENDPOINT")" RCLONE_CONFIG_B2_ACCESS_KEY_ID="$S3_KEY_ID" \
+    RCLONE_CONFIG_B2_SECRET_ACCESS_KEY="$S3_SECRET" RCLONE_CONFIG=/dev/null \
+    timeout 300 rclone copyto --no-check-dest --s3-no-head --s3-no-check-bucket --retries 1 -q "$1" "B2:$B2_BUCKET/$2" 2> "$work/rclone.err"
+  classify_rclone $? "$work/rclone.err"
+}
+versions_of() { # KEY -> "V key size version latest" lines for that key
+  local c
+  c=$(list_all_versions "$B2_BUCKET" "$1" "$work/l") || true
+  [ "$c" = ok ] || { echo "LISTFAIL $c"; return 0; }
+  awk -v k="$1" '$2 == k' "$work/l"
+}
 
-if try "rm \"$rdir/$probe\""; then
-  row "delete it" "ALLOWED  <-- the key can delete: the restriction is NOT in force"
-  bad=1
-else
-  row "delete it" "refused  (required)"
-fi
-
-if [ "$bad" -eq 0 ]; then
-  if try "rename \"$rdir/$probe\" \"$rdir/$probe.moved\""; then
-    row "rename it" "ALLOWED  <-- the key can rename: the restriction is NOT in force"
-    bad=1
-  else
-    row "rename it" "refused  (required)"
+if [ "$mode" = read ]; then
+  echo "-- 2. the newest backup downloads"
+  c=$(list_all_versions "$B2_BUCKET" "$PREFIX" "$work/l")
+  [ "$c" = ok ] || { no "listing the bucket: $c"; finish; }
+  newest=$(awk '$1 == "V" { print $2, $3, $4 }' "$work/l" | sort -r | head -n 1)
+  if [ -z "$newest" ]; then note "no backup under $PREFIX yet: nothing to download"; else
+    read -r key size ver <<< "$newest"
+    code=$(s3_request GET "$B2_BUCKET/$key?versionId=$ver" "$work/got")
+    if [ "$(classify_http "$code")" = ok ] && [ "$(wc -c < "$work/got" | tr -d ' ')" = "$size" ]; then
+      ok "downloaded ${key##*/} ($size bytes, the listed size)"
+    else no "downloading ${key##*/}: $(classify_http "$code")"; fi
   fi
+  echo "-- 3. the read key cannot write"
+  echo probe > "$work/p"
+  code=$(s3_request PUT "$B2_BUCKET/probe/read-key-$(date -u +%Y%m%dT%H%M%SZ).probe" "$work/out" -T "$work/p")
+  if [ "$(classify_http "$code")" = AuthRefused ]; then ok "an upload is refused ($code)"; else no "an upload was NOT refused (HTTP $code)"; fi
+  finish
 fi
 
-if try "mkdir \"$rdir/flowdesk-probe-dir-$stamp\""; then
-  mkdir_result=allowed
-  row "create a subfolder" "allowed"
-  try "rmdir \"$rdir/flowdesk-probe-dir-$stamp\"" || row "  (and it could not be removed)" "delete the folder flowdesk-probe-dir-$stamp on the destination"
-else
-  mkdir_result=refused
-  row "create a subfolder" "refused"
-fi
+stamp=$(date -u +%Y%m%dT%H%M%SZ)
+key="probe/flowdesk-probe-$stamp.probe"
+head -c 48 /dev/urandom > "$work/p1"
+head -c 96 /dev/urandom > "$work/p2"
 
-echo
-if [ "$bad" -ne 0 ]; then
-  echo "RESULT: FAIL. This key can delete or rename on the destination. Fix its permissions (docs/BACKUP.md) before trusting this destination."
-  exit 1
-fi
-if [ "$overwrite" = refused ] && [ "$mkdir_result" = refused ]; then
-  echo "RESULT: OK, policy write-once. The key can add backups and nothing else."
-else
-  echo "RESULT: OK, policy no-delete. It cannot delete or rename, but it CAN overwrite (overwrite $overwrite, subfolders $mkdir_result)."
-  echo "        Use the write-once variant in docs/BACKUP.md to close that."
-fi
-echo "Left on the destination: $probe  (delete it as an administrator)"
+echo "-- 2. upload"
+cls=$(rclone_put "$work/p1" "$key")
+if [ "$cls" = ok ]; then ok "uploaded $key (48 bytes)"; else no "upload: $cls"; finish; fi
+first=$(versions_of "$key" | awk '$1 == "V" { print $4 }' | head -n 1)
+[ -n "$first" ] || { no "the upload is not in the listing"; finish; }
+
+echo "-- 3. locked"
+code=$(s3_request GET "$B2_BUCKET/$key?retention" "$work/ret.xml")
+if [ "$(classify_http "$code")" = ok ] && retention_ok "$work/ret.xml" "$(date +%s)" "$LOCK_DAYS"; then
+  ok "GOVERNANCE for at least $((LOCK_DAYS - 1)) more days"
+else no "not locked GOVERNANCE for $LOCK_DAYS days (HTTP $code): the bucket's default retention"; fi
+
+echo "-- 4. deleting the version is refused"
+code=$(s3_request DELETE "$B2_BUCKET/$key?versionId=$first" "$work/out")
+case $(classify_http "$code") in
+  AuthRefused) ok "refused ($code)" ;;
+  ok) no "the version was DELETED (HTTP $code): the key can delete" ;;
+  *) no "unexpected answer (HTTP $code)" ;;
+esac
+
+echo "-- 5. deleting it with bypass-governance is refused"
+code=$(s3_request DELETE "$B2_BUCKET/$key?versionId=$first" "$work/out" -H 'x-amz-bypass-governance-retention: true')
+case $(classify_http "$code") in
+  AuthRefused) ok "refused ($code)" ;;
+  ok) no "the version was DELETED with bypass (HTTP $code): the key holds bypassGovernance" ;;
+  *) no "unexpected answer (HTTP $code)" ;;
+esac
+
+echo "-- 6. a same-name upload leaves the original"
+cls=$(rclone_put "$work/p2" "$key")
+note "the same-name upload: $cls (B2 keeps the old version either way)"
+if versions_of "$key" | awk -v v="$first" '$1 == "V" && $4 == v && $3 == 48' | grep -q .; then
+  ok "the original version is still there, 48 bytes"
+else no "the original version is gone or changed"; fi
+
+echo "-- 7. a hide (delete without a version id)"
+code=$(s3_request DELETE "$B2_BUCKET/$key" "$work/out")
+case $(classify_http "$code") in
+  ok) note "allowed ($code), as documented for writeFiles: a delete marker under probe/ (the copy ignores probe/)" ;;
+  AuthRefused) note "refused ($code)" ;;
+  *) note "unexpected answer (HTTP $code)" ;;
+esac
+if versions_of "$key" | awk -v v="$first" '$1 == "V" && $4 == v' | grep -q .; then
+  ok "the locked version is still listed after the hide"
+else no "the locked version is gone after the hide"; fi
+
+echo "-- 8. the budget"
+c=$(list_all_versions "$B2_BUCKET" "" "$work/all")
+if [ "$c" = ok ]; then
+  b=$(bucket_bytes < "$work/all")
+  st=$(budget_state "$b" "$BUDGET")
+  if [ "$st" = over ]; then no "$b bytes: over 95% of $BUDGET"; else ok "$b bytes of $BUDGET ($st)"; fi
+else no "listing the bucket: $c"; fi
+
+finish
