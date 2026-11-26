@@ -135,8 +135,18 @@ flags, exit 2) found fixable HIGH and CRITICAL findings, **none of them in rclon
 
 A failing scan would keep CI red until the Timescale image is bumped. That is a version decision with restore
 consequences ([the version trap](BACKUP.md#the-version-trap)), and the stack's Postgres moves with it, so it is
-Kyle's, not this runbook's. **When the findings are cleared, set `fail-build: true` on that step**, and from then on
-this runbook applies to the backup image as it does to the backend.
+Kyle's, not this runbook's. **Decided 2026-11-26 (Kyle): the bump to 16.16 is approved, scheduled after IDEA-029's restore
+drill passes, never before.** Never change the database image before an off-box backup has been proven to restore. The
+order:
+1. the drill passes;
+2. a fresh verified backup;
+3. the bump per this runbook, including any TimescaleDB extension update (`ALTER EXTENSION timescaledb UPDATE`;
+   the version trap in BACKUP.md);
+4. the gate;
+5. CI.
+
+**Then set `fail-build: true` on that step**, and from then on this runbook applies to the backup image as it does to
+the backend.
 
 The Alpine packages (`age`, `curl`, `jq`, `tzdata`, `bash`) still float at build time. rclone does not: it is pinned
 (below).

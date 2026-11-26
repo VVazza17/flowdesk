@@ -12,6 +12,11 @@ the answer is exactly `ok`. After 45 minutes without a ping, the monitor alerts.
 
 **`HEARTBEAT_URL` stays blank on development machines and is set only on a deployed instance.**
 
+**Not armed on DESKTOP-GHDCBPQ (Kyle, 2026-11-26), although FlowDesk runs there:** it is off or asleep 10 to 13 hours
+most nights (MEASURED from its event log), so it would page nightly. It waits for an always-on host. **Known gap:** until
+then an outage on an awake PC shows on `/health/*` but does not page. The backup check (`BACKUP_PING_URL`, 1 day plus 12 h
+grace; `docs/BACKUP.md`) still pages within 36 hours if the stack is dead.
+
 A laptop that sleeps nightly would page constantly and train you to ignore the alerts, which is worse than no
 monitoring. The drill below proves the mechanism; it isn't a reason to leave it armed on a dev machine.
 

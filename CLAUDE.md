@@ -50,8 +50,10 @@ below).
 - **The external heartbeat is proven end to end** (drill passed, recorded 2026-11-05 in `docs/BUILD-LOG.md`): the real
   provider took the pings, the DOWN alert arrived 44 minutes after the stack stopped, and the UP notice followed.
   `HEARTBEAT_URL` stays blank on development machines; a sleeping laptop would page constantly. **This PC
-  (DESKTOP-GHDCBPQ) is the deployed instance (Kyle, 2026-11-25)**: `HEARTBEAT_URL` and `BACKUP_PING_URL` are set here, in
-  `.env` only (both blank as of 2026-11-25). Re-run the drill on any deployed instance (quarterly, and after a provider notice).
+  (DESKTOP-GHDCBPQ) runs FlowDesk but is off or asleep 10-13 h most nights, so `HEARTBEAT_URL` is NOT armed here (Kyle,
+  2026-11-26); it waits for an always-on host. Known gap: an outage on an awake PC shows on `/health/*` but does not page.**
+  Only `BACKUP_PING_URL` is armed (healthchecks.io, period 1 day, grace 12 h: a page means no verified backup in 36 h).
+  Re-run the drill on any always-on deployed instance (quarterly, and after a provider notice).
 - **Any new `degraded` condition on `/health/ready` also pages the owner** (ADR-0008 section 4). The sender
   pings only on exactly `ok`.
 - **Scheduled backups with an off-box copy to Backblaze B2 are built (M2 slice 2, rebuilt 2026-11-25); the slice is not
@@ -78,8 +80,9 @@ below).
   degrades `/health/ready`. Proven against a stand-in (versitygw with Object Lock) by `infra/smoke-m2-slice2.sh`, in CI
   (`backup-offbox`); **nothing has run against Backblaze yet**: `infra/backup/verify-destination.sh` is the real-bucket
   probe (write mode on this PC, `--read` on the laptop). **The backup image's CI scan is REPORT-ONLY** (fixable HIGH in the
-  Timescale base, which is also the stack's Postgres, and in Alpine's `age`; none in rclone): a Timescale bump is Kyle's
-  call. It closes on the drill in `docs/BACKUP.md` (Parts A to C: Kyle's setup, one unattended backup, restore on the
+  Timescale base, which is also the stack's Postgres, and in Alpine's `age`; none in rclone). **The bump to 16.16 is approved
+  for AFTER IDEA-029's drill passes, never before (Kyle, 2026-11-26): drill, then a fresh verified backup, then the bump per
+  the runbook (with any TimescaleDB extension update), then gate and CI. The scan stays report-only until then.** It closes on the drill in `docs/BACKUP.md` (Parts A to C: Kyle's setup, one unattended backup, restore on the
   laptop with matching fingerprints). A plain `pg_restore` silently damages hypertables: use `infra/restore.sh`, or
   `infra/restore-backup.sh [--from-b2]` for a scheduled backup.
 - **Reference tables, universes and calendars are built (M2 slice 3, 2026-11-10).** Migration 0003 adds `currencies`, `exchanges`, `symbols`, `provider_mappings`,

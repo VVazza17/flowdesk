@@ -4211,8 +4211,11 @@ The early-morning read's 11-19 on one series is ASSUMED to be a cached response 
 
 Each item names where it was decided. **The flag flips only when every box is checked, and only on Kyle's word.**
 
-- [ ] **IDEA-029 closed:** a real unattended backup lands off-box and restores from there. Currently impossible: no destination exists
-  (machine-roles correction, addendum 2026-11-20). Waits on Kyle choosing one (likely an Oracle Cloud Always Free VM).
+- [ ] **IDEA-029 closed:** a real unattended backup lands off-box and restores from there. Destination decided 2026-11-25: Backblaze B2
+  (addenda 2026-11-25 second and third); built in `97dd30e`; closes on the drill in `docs/BACKUP.md` (Parts A to C).
+- [ ] **The database image bumped and the backup image's scan failing again** (Kyle, 2026-11-26): after the drill passes and a fresh
+  verified backup, Timescale/Postgres 16.15 to 16.16 per `docs/RUNBOOK-IMAGE-CVE.md` (with any TimescaleDB extension update), gate,
+  CI; then the backup image's scan back to `fail-build: true`. Report-only until then.
 - [ ] **Repeated holds fail the run:** a symbol held on two consecutive scheduled poll runs fails it, named, `empty_result`
   (item 4 above). Not built.
 - [x] **The polls run at 10:05 ET, after today's daily row exists** (addendum 2026-11-20 second, built in `6ac96f4`). On the dev stack
@@ -4732,3 +4735,30 @@ this PC's `backup` service on the new image before migration 0015 existed. Its r
 to `failed` / `NoRecipient` with an `error_message` saying why: one `UPDATE ... WHERE id = 15663 AND status = 'running'`. The stack is now
 at 0015, and the 08:00Z run wrote its row normally. Lesson: a smoke that rebuilds the stack runs new code against the dev database's
 current schema. Run the migration first when a build adds one.
+
+### Addendum 2026-11-26 — Kyle approves adbdd75, 97dd30e, 5222520 and the three plan changes; the heartbeat; the database image bump
+
+**Approved:** `adbdd75`, `97dd30e`, `5222520`, and all three changes from the plan (no `--immutable`; the alert classes exit 76 and retry at
+the long cap; the backup image's scan report-only).
+
+1. **The heartbeat is NOT armed on this PC.** MEASURED: it is off or asleep 10 to 13 hours most nights (event log, 2026-11-21 to 11-24), so a
+   5-minute heartbeat would page nightly, and an alert that fires every night teaches ignoring it.
+   - **Armed:** `BACKUP_PING_URL` only. The healthchecks.io check has period 1 day and grace 12 hours. DERIVED: a page means no verified
+     backup in 36 hours, and a night off fits inside that window.
+   - Worked through from the event log: after a wake-time catch-up near 09:00 and a next day off until about 16:15, the gap between
+     pings is about 31 hours, inside 36.
+   - The same 36 hours as `BACKUP_STALE_AFTER_HOURS`, so the page and `/health/data`'s `stale` agree.
+   - **`HEARTBEAT_URL` waits until FlowDesk runs on an always-on host. Known gap, recorded** (CLAUDE.md, `docs/HEARTBEAT.md`,
+     `docs/BACKUP.md` Limits): until then, an outage on an awake PC shows on `/health/*` but does not page. A dead stack still stops the
+     backup pings, so it pages within 36 hours that way, and only that way.
+   - This replaces addendum 2026-11-25 (third) item 7's "both get set here".
+2. **The Timescale/Postgres image bump (16.15 to 16.16): approved, scheduled after IDEA-029's drill passes.** Never change the database
+   image before an off-box backup has been proven to restore. **Order:**
+   1. the drill passes;
+   2. a fresh verified backup;
+   3. the bump per `docs/RUNBOOK-IMAGE-CVE.md`, including any TimescaleDB extension update;
+   4. the gate;
+   5. CI.
+
+   The backup image's scan stays report-only until then. Added to the pre-flag checklist.
+3. **Kyle's steps** in `docs/BACKUP.md` are updated for item 1: step A12 makes one check, `flowdesk-backup`, and `HEARTBEAT_URL` stays blank.

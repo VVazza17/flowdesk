@@ -270,7 +270,7 @@ B2_ENDPOINT=https://s3.<region>.backblazeb2.com
 B2_KEY_ID=<the WRITE key's ID>
 B2_APPLICATION_KEY=<the WRITE key>
 BACKUP_PING_URL=<the backup check's ping URL>
-HEARTBEAT_URL=<the heartbeat check's ping URL>          # this PC is the deployed instance (Kyle, 2026-11-25)
+# HEARTBEAT_URL stays BLANK on this PC (Kyle, 2026-11-26): it is off or asleep most nights, so it would page nightly.
 ```
 
 On the laptop, for the drill only: `B2_BUCKET`, `B2_ENDPOINT`, `B2_READ_KEY_ID`, `B2_READ_APPLICATION_KEY`. **The read
@@ -330,8 +330,9 @@ A stale backup does **not** degrade `/health/ready`; it shows on `/health/data` 
 `docs/HEALTH.md`). The page comes from outside the machine:
 
 - After each **verified** copy (key checked, upload sized and locked, no tampering, under budget) the container pings
-  `BACKUP_PING_URL`. Make a check at the same provider as the heartbeat, separate from the heartbeat's, with **period
-  1 day and grace 24 hours**. If the pings stop for any reason, the provider alerts.
+  `BACKUP_PING_URL`. Make a check at healthchecks.io with **period 1 day and grace 12 hours** (Kyle, 2026-11-26): a page
+  means no verified backup in 36 hours, the same 36 hours as `/health/data`'s `stale`, and a night with this PC off fits
+  inside it (DERIVED). If the pings stop for any reason, the provider alerts.
 - **The alert classes page at once:** `AuthRefused`, `CapabilityTooBroad`, `NotLocked`, `Tampered` and `OverBudget`.
   The scheduler POSTs the class to `BACKUP_PING_URL/fail`, once per occurrence (until the next successful copy).
   Check that the provider accepts `/fail` (healthchecks.io does).
@@ -423,15 +424,18 @@ the output (it holds no secret).
 If the UI refuses 0, enter the smallest amount it accepts and note it. Add your email for the alerts. Send back: what
 each cap accepted.
 
-**A12. Browser: the dead-man monitor.** If the healthchecks.io account from the 2026-11-05 heartbeat drill still exists,
-use it; otherwise create a free one. Make **two** checks, each alerting to email:
-- `flowdesk-heartbeat`: simple schedule, period 5 minutes, grace 40 minutes (`docs/HEARTBEAT.md`);
-- `flowdesk-backup`: period 1 day, grace 24 hours.
+**A12. Browser: the backup monitor (ONE check; no heartbeat check).** If the healthchecks.io account from the 2026-11-05
+heartbeat drill still exists, use it; otherwise create a free one.
+1. Add Check. Name: `flowdesk-backup`.
+2. Schedule: **Simple**.
+3. **Period: 1 day. Grace Time: 12 hours.** A page then means no verified backup in 36 hours.
+4. Notifications: email (on by default for the account's address).
+5. Copy its ping URL (`https://hc-ping.com/<uuid>`) straight into `.env` on this PC as `BACKUP_PING_URL=`.
 
-Copy each ping URL straight into `.env` on this PC: `HEARTBEAT_URL=` and `BACKUP_PING_URL=`. **Warning (MEASURED
-2026-11-21 to 11-24 from this PC's event log):** this PC sleeps or is off most nights, for 10 to 13 hours. With the
-heartbeat check armed, every such night pages after about 45 minutes. Keep the PC awake, or decide differently, before
-arming it.
+**Leave `HEARTBEAT_URL` blank** (Kyle, 2026-11-26). This PC is off or asleep 10 to 13 hours most nights (MEASURED from
+its event log, 2026-11-21 to 11-24), so a 5-minute heartbeat would page every night. It waits for an always-on host.
+If a `flowdesk-heartbeat` check is left over from the 2026-11-05 drill, pause it. Success: the check shows
+"new" (no ping yet). Send back: done, yes or no. Never the URL.
 
 **A13. Laptop: the age key.**
 1. PowerShell: `winget install FiloSottile.age`, then `age-keygen -o flowdesk-age.key`. It prints `Public key: age1...`.
@@ -493,7 +497,10 @@ match.**
 ### Limits
 
 - **The backup image's scan is report-only** (RUNBOOK-IMAGE-CVE.md). Its Timescale base and Alpine's `age` carry fixable
-  HIGH findings, none of them in rclone. The Alpine packages float.
+  HIGH findings, none of them in rclone. The Alpine packages float. **The database image bump (16.15 to 16.16) is approved
+  for after this drill passes**, never before (Kyle, 2026-11-26); the scan fails the build again after it.
+- **No heartbeat on this PC** (Kyle, 2026-11-26). Known gap: an outage on an awake PC shows on `/health/*` but does not
+  page. A dead stack still stops the backup pings, so it pages within 36 hours that way.
 - **arm64:** the image builds and its tools run under QEMU (MEASURED 2026-11-25). The backup and restore have not run
   on arm64.
 - **Backblaze's behaviour is ASSUMED until `verify-destination.sh` runs against the real bucket:**

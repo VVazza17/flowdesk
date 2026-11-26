@@ -381,7 +381,7 @@ copy whose last attempt failed is still `ok` while an earlier copy is recent eno
 
 | `last_error_class` | What it means | Retried | Pages at once |
 |---|---|---|---|
-| `Unreachable` | Nothing answered, a 429 or 5xx, a timeout, or an rclone network error. Also the fallback for network-shaped text not recognised. | up to 30 min | no (the monitor alerts if copies stop for 48 h) |
+| `Unreachable` | Nothing answered, a 429 or 5xx, a timeout, or an rclone network error. Also the fallback for network-shaped text not recognised. | up to 30 min | no (the monitor alerts if copies stop for 36 h) |
 | `AuthRefused` | B2 refused the key (401/403), or a wrong secret | up to 6 h | **yes** |
 | `CapabilityTooBroad` | The key holds a capability outside its list (e.g. `deleteFiles`, `bypassGovernance`), or is not restricted to the bucket | up to 6 h | **yes** |
 | `NotLocked` | An upload is not locked GOVERNANCE for the full period: the bucket's default retention is wrong or gone | up to 6 h | **yes** |
@@ -395,7 +395,7 @@ secret, so `error_message` holds only FlowDesk's own words.
 
 **The alert classes page at once, through the monitor and not through `/health/ready`.** The scheduler POSTs the
 class to `BACKUP_PING_URL` + `/fail` (the monitor's failure endpoint) when the copy exits 76, so the alert does
-not wait out the 48 hours. **At most once per occurrence:** the scheduler remembers it has told the monitor and
+not wait out the 36 hours. **At most once per occurrence:** the scheduler remembers it has told the monitor and
 does not depend on the provider to deduplicate; the next successful copy ends the occurrence, and a container
 restart forgets it. A signal the monitor did not accept is retried on the next attempt. The log lines are
 `copy_fail_signalled` and `copy_fail_signal_failed`, each with the `error_class`.
