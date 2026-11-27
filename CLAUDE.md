@@ -83,7 +83,9 @@ below).
   Timescale base, which is also the stack's Postgres, and in Alpine's `age`; none in rclone). **The bump to 16.16 is approved
   for AFTER IDEA-029's drill passes, never before (Kyle, 2026-11-26): drill, then a fresh verified backup, then the bump per
   the runbook (with any TimescaleDB extension update), then gate and CI. The scan stays report-only until then.** It closes on the drill in `docs/BACKUP.md` (Parts A to C: Kyle's setup, one unattended backup, restore on the
-  laptop with matching fingerprints). A plain `pg_restore` silently damages hypertables: use `infra/restore.sh`, or
+  laptop with matching fingerprints) **and on the tamper check ignoring lifecycle hides** (today any delete marker under `flowdesk/` is
+  `Tampered`, so B2's day-31 hide would page nightly; fix decided 2026-11-27, classify by the name's upload stamp, NOT BUILT; deadline: before
+  the first real upload turns 31 days old; `docs/BUILD-LOG.md` addendum 2026-11-27). A plain `pg_restore` silently damages hypertables: use `infra/restore.sh`, or
   `infra/restore-backup.sh [--from-b2]` for a scheduled backup.
 - **Reference tables, universes and calendars are built (M2 slice 3, 2026-11-10).** Migration 0003 adds `currencies`, `exchanges`, `symbols`, `provider_mappings`,
   `universes`, `universe_membership` and `trading_sessions`; `python -m app.seed` (run by the `migrate` service

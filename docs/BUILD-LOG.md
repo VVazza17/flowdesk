@@ -4762,3 +4762,39 @@ the long cap; the backup image's scan report-only).
 
    The backup image's scan stays report-only until then. Added to the pre-flag checklist.
 3. **Kyle's steps** in `docs/BACKUP.md` are updated for item 1: step A12 makes one check, `flowdesk-backup`, and `HEARTBEAT_URL` stays blank.
+
+### Addendum 2026-11-27 — OPEN slice-2 item: the tamper check treats B2's lifecycle hides as tampering. Fix decided, NOT BUILT
+
+**Found** (2026-11-27, reading the code during drill step A7, before any real upload). The check fails `Tampered` on **any**
+delete marker under `flowdesk/`, with no notion of age:
+
+- `infra/backup/lib.sh:223`: `delete_markers() { awk -v p="$1" '$1 == "D" && index($2, p) == 1 { print $2 }'; }`
+- `infra/backup/run-copy.sh:82` counts them; `:149`: `[ "$tampered" -eq 0 ] || fail Tampered ...`
+
+Its premise, "FlowDesk never makes one there" (`lib.sh:221`), is false once step A7's lifecycle rule exists: the rule FlowDesk configures hides
+each object at 31 days. B2's S3 API lists a hide as a delete marker (ASSUMED from Backblaze's docs; a lifecycle hide has never been observed, and
+`verify-destination.sh` step 7 only makes a manual hide under `probe/`). **Consequence:** from 31 days after the first real upload, every nightly
+copy fails `Tampered`, exits 76 and pages; a real hide would then look the same as the noise. CI cannot see it: the versitygw stand-in has no
+lifecycle rules, and `selftest.sh:124-129` tests the parser only.
+
+**Fix (Kyle, 2026-11-27; build after drill Part A, not before):** classify each delete marker by the upload stamp in the object's own name
+(`flowdesk_<UTC stamp>.tar.age`), with R = the 30-day retention:
+
+1. marker on a key whose stamp is **less than R+1 = 31 days** old: `Tampered` (pages, as now);
+2. marker on a key **31 days or older**: an expected lifecycle hide. Counted in `/health/data` (for example `lifecycle_hidden`), no page;
+3. marker on a key that **does not match the name pattern**: `Tampered`.
+
+No dependence on `LastModified`, and none on whether B2 removes the marker at day 32 (ASSUMED either way until observed on the real bucket).
+
+**Tests:** the stand-in with a lifecycle-style marker on an old key (passes) and an early hide on a recent key (fails `Tampered`); a mutation
+check of the age boundary.
+
+**Deadline:** before the first real upload to B2 turns 31 days old. None has happened yet (backups fail closed with `NoRecipient` until drill
+step A13). **Added as a condition for closing IDEA-029** (`docs/SPEC-DEFECTS.md`, `docs/BACKUP.md` "Closing the slice").
+
+**Drill progress, recorded here (Part A, 2026-11-26 to 11-27):** A1 (region CA East), A2 (`b2-windows.exe` v5.0.3; SHA256 matched the release's
+`sha256` line, checked 2026-11-27 on this PC), A3, A4, A5 (bucket `flowdesk-backups-<random>`, Object Lock on, `allPrivate`; the name is kept in `.env` and Bitwarden, not here) and A6 (governance,
+30 days, checked) are done. **A3 was done twice:** the first master key was pasted into a Claude Code session before it was saved anywhere, so it
+was regenerated (which revokes the first) before any use, and the new one lives only in Bitwarden. Steps A4 onwards ran in **Windows PowerShell,
+not Git Bash**: A7's JSON needs `--%` and backslash-escaped quotes there (PowerShell 5.1 strips embedded double quotes). `docs/BACKUP.md` still
+gives the Git Bash forms; correct it when the drill is written up.

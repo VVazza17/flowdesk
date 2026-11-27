@@ -357,6 +357,10 @@ put `AuthRefused`, `CapabilityTooBroad` and `NotLocked` under configuration (78)
    `RESULT: OK (read key)`.
 2. One backup taken and uploaded by the scheduler, unattended (Part B).
 3. That backup restores on the laptop and the fingerprints match (Part C).
+4. **The tamper check no longer counts lifecycle hides as tampering** (Kyle, 2026-11-27; `docs/BUILD-LOG.md`, addendum 2026-11-27). Today
+   any delete marker under `flowdesk/` fails `Tampered`, so the day-31 lifecycle hide would page every night. Classify by the name's upload
+   stamp: under 31 days, or a name that does not match `flowdesk_<UTC stamp>.tar.age`, is `Tampered`; 31 days or older is counted in
+   `/health/data`, no page. Built and tested before the first real upload turns 31 days old.
 
 ### The restore drill, step by step
 
