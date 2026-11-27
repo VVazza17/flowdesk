@@ -4763,7 +4763,7 @@ the long cap; the backup image's scan report-only).
    The backup image's scan stays report-only until then. Added to the pre-flag checklist.
 3. **Kyle's steps** in `docs/BACKUP.md` are updated for item 1: step A12 makes one check, `flowdesk-backup`, and `HEARTBEAT_URL` stays blank.
 
-### Addendum 2026-11-27 — OPEN slice-2 item: the tamper check treats B2's lifecycle hides as tampering. Fix decided, NOT BUILT
+### Addendum 2026-11-27 — OPEN slice-2 items: the tamper check treats B2's lifecycle hides as tampering; a spending-cap refusal pages as a key problem; the test gate shows the DB password in a process listing. Fixes decided, NOT BUILT
 
 **Found** (2026-11-27, reading the code during drill step A7, before any real upload). The check fails `Tampered` on **any**
 delete marker under `flowdesk/`, with no notion of age:
@@ -4792,9 +4792,61 @@ check of the age boundary.
 **Deadline:** before the first real upload to B2 turns 31 days old. None has happened yet (backups fail closed with `NoRecipient` until drill
 step A13). **Added as a condition for closing IDEA-029** (`docs/SPEC-DEFECTS.md`, `docs/BACKUP.md` "Closing the slice").
 
+**Second open item, same post-Part-A fix: a B2 spending-cap refusal pages as a key problem** (found 2026-11-27 at drill step A11).
+Both paths classify by HTTP status alone:
+
+- `infra/backup/lib.sh:148` (`classify_http`, used by `check_key` and the version listing): `401 | 403) echo AuthRefused ;;`
+- `infra/backup/lib.sh:160` (`classify_rclone`, the upload): `StatusCode: 40[13]|...|AccessDenied|...` gives `AuthRefused`
+
+B2 answers a reached cap with 403 (ASSUMED from Backblaze's docs, which list `transaction_cap_exceeded` and its storage and download variants for
+the native API; the S3 API's wording is undocumented; never measured). The first call of every run, `b2_authorize_account` in `check_key`, is
+Class C, so a reached Class C cap would fail the run `AuthRefused`, exit 76, and page "the B2 key was refused". Likelihood today is low (a run
+makes a handful of Class B/C calls against 2,500 a day each; the call count is ASSUMED, not counted), and the storage cap sits at the free
+10 GB, above `OverBudget`'s 95% line, which should fire first (not measured).
+
+**Fix (Kyle, 2026-11-27; built with the tamper fix, after drill Part A):**
+
+1. A new class **`CapExceeded`**. It pages (exit 76, `/fail` once per occurrence) with the message **"B2 spending cap reached, backups stopped"**.
+2. It is decided from the **response body**, matching B2's documented cap codes: the native JSON `code` (`check_key`), the S3 XML `<Code>` (the
+   listing), and rclone's stderr (the upload). **The codes are ASSUMED until one real cap refusal is captured**, and say so in the code.
+3. **A 401/403 that matches no known cap code stays `AuthRefused`**, so an unknown refusal never gets quieter.
+4. Tests as for the tamper fix (rule 9): each path with a cap body gives `CapExceeded`, a plain 401/403 and an unknown body give
+   `AuthRefused`; mutation checks on each match.
+
+**Added as a condition for closing IDEA-029** (Kyle, 2026-11-27), like the tamper fix: `docs/SPEC-DEFECTS.md`, `docs/BACKUP.md`
+"Closing the slice" (item 5), `CLAUDE.md`.
+
+Caps found at A11, already set when the account was opened (Kyle edited nothing): Storage $0 (10 GB), Download $0 (1 GB/day), Class B and Class C
+at the free 2,500/day; Class A is not listed (Backblaze does not charge for it). Email alerts on, all.
+
+**Third open item, small: `ci-checks.sh` puts the dev database password on a command line** (found 2026-11-27, MEASURED: a `ps -ef`
+during the test gate printed it). `infra/ci-checks.sh:77` passes
+`-e "DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}"` to `docker run`, so the value
+is an argument of the `docker` process and any process listing on the machine shows it. It is the local stack's `POSTGRES_PASSWORD`, not a
+B2 credential; it is now also in one Claude Code session transcript.
+
+**Fix (Kyle, 2026-11-27):**
+
+1. Pass it through the environment, never as an argument value: export the variable and use `-e DATABASE_URL` (the name only), or
+   `--env-file` on a private temp file.
+2. A test that the command line contains no secret (the `docker run` argument list holds no `POSTGRES_PASSWORD` value).
+3. **Rotate `POSTGRES_PASSWORD` in the post-drill maintenance window, with the Timescale/Postgres image bump** (addendum 2026-11-26 item
+   2), not now.
+
+Not a condition for closing IDEA-029.
+
+**Also recorded (2026-11-27, the gate runs around this addendum):** the first `commit-gated.sh` call was refused by auto mode and did not
+run, and the session reported it as running; the retry did run. Stopping a background task stopped its wrapper shell but **not**
+`commit-gated.sh` under it, which would have committed `docs/BUILD-LOG.md` alone with a message for four files. It was found with `ps`
+and stopped with its test run and test container before any commit. The killed run left one scratch database (`flowdesk_macro_<hex>`,
+made by `test_macro_metrics.py`'s fixture, whose `finally` never ran); it was dropped by hand. Check with `ps` that a stopped gate is
+gone before starting the next.
+
 **Drill progress, recorded here (Part A, 2026-11-26 to 11-27):** A1 (region CA East), A2 (`b2-windows.exe` v5.0.3; SHA256 matched the release's
-`sha256` line, checked 2026-11-27 on this PC), A3, A4, A5 (bucket `flowdesk-backups-<random>`, Object Lock on, `allPrivate`; the name is kept in `.env` and Bitwarden, not here) and A6 (governance,
-30 days, checked) are done. **A3 was done twice:** the first master key was pasted into a Claude Code session before it was saved anywhere, so it
+`sha256` line, checked 2026-11-27 on this PC), A3, A4, A5 (bucket `flowdesk-backups-<random>`, Object Lock on, `allPrivate`; the name is kept in `.env` and Bitwarden, not here) A6 (governance,
+30 days, checked), A7 (both lifecycle rules, checked), A8 (bucket re-read: lock, retention, rules, `allPrivate`), A9 (write key in `.env` on this
+PC and Bitwarden, read key in Bitwarden only; `key list -l` checked: two keys, bucket-restricted, exactly the listed capabilities), A10 (signed
+out) and A11 (caps, above) are done. **A3 was done twice:** the first master key was pasted into a Claude Code session before it was saved anywhere, so it
 was regenerated (which revokes the first) before any use, and the new one lives only in Bitwarden. Steps A4 onwards ran in **Windows PowerShell,
 not Git Bash**: A7's JSON needs `--%` and backslash-escaped quotes there (PowerShell 5.1 strips embedded double quotes). `docs/BACKUP.md` still
 gives the Git Bash forms; correct it when the drill is written up.

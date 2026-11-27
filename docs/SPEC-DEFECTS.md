@@ -786,7 +786,8 @@ Resolve before the first premium-module template is written (§7.5).
 
 Plan, not built: `docs/BUILD-LOG.md`, addendum 2026-11-25 (second). **This entry closes when a backup the scheduler took and uploaded
 unattended restores on the laptop with matching fingerprints, and the tamper check ignores lifecycle hides** (Kyle, 2026-11-27: the
-day-31 lifecycle hide is a delete marker, which today fails `Tampered`; fix decided, not built, in `docs/BUILD-LOG.md`, addendum 2026-11-27). The bars polls stay behind `BARS_POLL_ENABLED=false` until then.
+day-31 lifecycle hide is a delete marker, which today fails `Tampered`; fix decided, not built, in `docs/BUILD-LOG.md`, addendum 2026-11-27), **and a B2 spending-cap refusal pages as `CapExceeded`,
+not `AuthRefused`** (Kyle, 2026-11-27: today any 401/403 is `AuthRefused`; fix decided, not built, same addendum). The bars polls stay behind `BARS_POLL_ENABLED=false` until then.
 
 ### The proposal
 §13 says "Nightly `pg_dump` to a local disk path or free-tier object storage". No slice or milestone owns

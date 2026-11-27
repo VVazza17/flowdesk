@@ -361,6 +361,10 @@ put `AuthRefused`, `CapabilityTooBroad` and `NotLocked` under configuration (78)
    any delete marker under `flowdesk/` fails `Tampered`, so the day-31 lifecycle hide would page every night. Classify by the name's upload
    stamp: under 31 days, or a name that does not match `flowdesk_<UTC stamp>.tar.age`, is `Tampered`; 31 days or older is counted in
    `/health/data`, no page. Built and tested before the first real upload turns 31 days old.
+5. **A B2 spending-cap refusal pages as `CapExceeded`, not `AuthRefused`** (Kyle, 2026-11-27; same addendum). Today any 401/403 is
+   `AuthRefused`, so a reached cap would page "the B2 key was refused". The class is decided from the response body (native JSON
+   `code`, S3 XML `<Code>`, rclone stderr), matching B2's documented cap codes, ASSUMED until one real refusal is captured; it pages
+   "B2 spending cap reached, backups stopped". A 401/403 matching no known code stays `AuthRefused`.
 
 ### The restore drill, step by step
 
