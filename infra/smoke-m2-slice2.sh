@@ -66,6 +66,10 @@ docker compose run --rm --no-deps -T -v "$(winpath "$work/k"):/k" --entrypoint s
 [ "$(grep -c '^age1' "$work/k/recipients.txt")" = "1" ] || fail "no age public key was made"
 ! grep -q 'AGE-SECRET-KEY' "$work/k/recipients.txt" || fail "the recipients file must hold the PUBLIC key only"
 export BACKUP_RECIPIENTS_FILE="$(winpath "$work/k/recipients.txt")"
+# A comments-only recipients file: the shape of the placeholder before setup. Not the committed file, which
+# holds the real public key since drill step A13 (2026-11-28).
+printf '%s
+' '# no key yet' '# age1....' > "$work/k/placeholder.txt"
 
 echo "== a scratch database, migrated"
 psql_pg -d postgres -c "DROP DATABASE IF EXISTS $SCRATCH WITH (FORCE)" > /dev/null
@@ -243,7 +247,7 @@ printf '%s\n' "$o" | grep -q '^exit=76$' || fail "Tampered should exit 76 (pages
 echo "ok: Tampered (exit 76); the hidden version is still there and the new backup went up"
 
 echo "== no recipient key: the backup fails closed, writes nothing, and says why"
-out=$(bk -v "$(winpath "$PWD/infra/backup/recipients.txt"):/placeholder:ro" -e BACKUP_RECIPIENTS_FILE=/placeholder -- bash -c '
+out=$(bk -v "$(winpath "$work/k/placeholder.txt"):/placeholder:ro" -e BACKUP_RECIPIENTS_FILE=/placeholder -- bash -c '
   mkdir -p /tmp/smoke; /opt/backup/run-backup.sh; echo "exit=$?"; echo "files=$(ls /tmp/smoke | wc -l)"' || true)
 printf '%s\n' "$out" | grep -q '"error_class":"NoRecipient"' || { echo "$out" >&2; fail "expected a NoRecipient failure"; }
 printf '%s\n' "$out" | grep -q '^exit=78$' || fail "a backup with no recipient is a configuration failure and should exit 78"
@@ -350,7 +354,7 @@ loop_env=(--no-deps -T -e "PGDATABASE=$SCRATCH" -e BACKUP_DIR=/tmp/smoke -e B2_B
   -e "B2_KEY_ID=$W_ID" -e "B2_APPLICATION_KEY=$W_SECRET" -e B2_AUTHORIZE_URL=http://authstub:8080/write.json
   -e BACKUP_AT=00:00 -e BACKUP_TICK_SECONDS=1 -e BACKUP_RETRY_SECONDS=2 -e BACKUP_RETRY_CAP_SECONDS=2 -e BACKUP_RETRY_LONG_CAP_SECONDS=600)
 docker compose run -d --name "$LOOP-cfg" "${loop_env[@]}" \
-  -v "$(winpath "$PWD/infra/backup/recipients.txt"):/placeholder:ro" -e BACKUP_RECIPIENTS_FILE=/placeholder \
+  -v "$(winpath "$work/k/placeholder.txt"):/placeholder:ro" -e BACKUP_RECIPIENTS_FILE=/placeholder \
   backup bash -c 'mkdir -p /tmp/smoke && exec /opt/backup/backup-loop.sh' > /dev/null 2> "$work/err.log"
 docker compose run -d --name "$LOOP-tr" "${loop_env[@]}" -e B2_ENDPOINT=http://nosuchhost.invalid:7070 \
   backup bash -c 'mkdir -p /tmp/smoke && exec /opt/backup/backup-loop.sh' > /dev/null 2> "$work/err.log"
